@@ -156,6 +156,23 @@ export interface DecayOptions {
   readonly olderThanDays: number
 }
 
+/** 管理列表过滤条件（管理面板用；可看全部状态）。 */
+export interface ListFilter {
+  readonly scope: EngramScope
+  readonly status?: EngramStatus
+  readonly kind?: EngramKind
+  /** content 子串匹配。 */
+  readonly q?: string
+  readonly limit: number
+  readonly offset: number
+}
+
+/** 分页列表结果。 */
+export interface ListResult {
+  readonly records: readonly MemoryRecord[]
+  readonly total: number
+}
+
 /** dsh-engram 统一错误：加载/使用期的可诊断失败都抛此类型。 */
 export class EngramError extends Error {
   /** 机器可读原因码，如 EMBEDDER_DOWNLOAD_FAILED / SCHEMA_INCOMPATIBLE。 */

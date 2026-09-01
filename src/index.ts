@@ -17,6 +17,7 @@ import { ingestPreviousTurn } from './ingest/hook.ts'
 import type { IngestRequestEventData } from './ingest/hook.ts'
 import { streamText } from './llm/client.ts'
 import type { SessionEventLike } from './llm/client.ts'
+import { registerEngramRoutes } from './routes.ts'
 import { openEngramStore } from './store/sqlite.ts'
 import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
@@ -131,6 +132,15 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   })) {
     ctx.tools.register(tool)
   }
+
+  // 管理面板（可选）：webServer 就绪后注册 /engram 页面与 /api/engram/* 接口。
+  // 注入子 fiber 在无 webServer 的组合（headless）下保持等待，不阻塞主装载，
+  // 工具/画像注入/摄取/衰减等其余能力不受影响。
+  ctx.inject(['webServer'], (webCtx) => {
+    // 必须用注入回调的子 ctx：ctx.webServer 属性代理拓扑敏感，
+    // 外层 ctx 未依赖 webServer 时属性不可用。
+    registerEngramRoutes(webCtx, { openStore, exportDir: `${resolved.dbDir}/exports` })
+  })
 
   if (resolved.injectProfile || resolved.ingest !== 'off') {
     ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, resolved, embedder, payload, next), { prepend: true })

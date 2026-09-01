@@ -11,7 +11,8 @@ import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { EngramError, asMemoryId } from '../types.ts'
 import type {
-  DecayOptions, EngramEdgeType, EngramScope, ExportData, MemoryEdge, MemoryId,
+  DecayOptions, EngramEdgeType, EngramScope, ExportData, ListFilter, ListResult,
+  MemoryEdge, MemoryId,
   MemoryRecord, ReviewView, SearchHit, SearchResult, StoreStats,
   TimelineQuery, UpdateInput, WriteInput,
 } from '../types.ts'
@@ -402,6 +403,19 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
     async topActive(scope: EngramScope, n: number) {
       const rows = sqlTopActive.all(scope, n) as unknown as NodeRow[]
       return rows.map(rowToRecord)
+    },
+
+    async list(filter: ListFilter): Promise<ListResult> {
+      const conds: string[] = ['scope = ?']
+      const params: (string | number)[] = [filter.scope]
+      if (filter.status !== undefined) { conds.push('status = ?'); params.push(filter.status) }
+      if (filter.kind !== undefined) { conds.push('kind = ?'); params.push(filter.kind) }
+      if (filter.q !== undefined && filter.q !== '') { conds.push('instr(content, ?) > 0'); params.push(filter.q) }
+      const where = conds.join(' AND ')
+      const total = (db.prepare(`SELECT COUNT(*) AS n FROM nodes WHERE ${where}`).get(...params) as unknown as { n: number }).n
+      const rows = db.prepare(`SELECT * FROM nodes WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+        .all(...params, filter.limit, filter.offset) as unknown as NodeRow[]
+      return { records: rows.map(rowToRecord), total }
     },
 
     async review(id: MemoryId): Promise<ReviewView | undefined> {

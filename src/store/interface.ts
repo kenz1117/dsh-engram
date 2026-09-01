@@ -5,7 +5,8 @@
  */
 
 import type {
-  DecayOptions, EngramEdgeType, EngramScope, ExportData, MemoryId, MemoryRecord,
+  DecayOptions, EngramEdgeType, EngramScope, ExportData, ListFilter, ListResult,
+  MemoryId, MemoryRecord,
   ReviewView, SearchQuery, SearchResult, StoreStats, TimelineQuery, UpdateInput, WriteInput,
 } from '../types.ts'
 
@@ -30,6 +31,8 @@ export interface EngramStore {
   restore(id: MemoryId): Promise<MemoryRecord>
   /** 画像注入/蒸馏取材：指定 scope 的 active 条目按 importance、confidence 倒序取前 n。 */
   topActive(scope: EngramScope, n: number): Promise<MemoryRecord[]>
+  /** 管理列表：按 scope/status/kind/子串过滤的分页视图（含全部状态），附总数。 */
+  list(filter: ListFilter): Promise<ListResult>
   /** 审计视图：条目 + supersedes/contradicts/related 邻居 + 最近操作日志。 */
   review(id: MemoryId): Promise<ReviewView | undefined>
   /** 全库统计。 */
