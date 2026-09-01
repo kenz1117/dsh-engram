@@ -13,7 +13,6 @@ import { resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { createLocalEmbedder } from './embedder/local.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
-import type { DistillRequestEventData } from './flywheel/distill.ts'
 import { ingestPreviousTurn } from './ingest/hook.ts'
 import type { IngestRequestEventData } from './ingest/hook.ts'
 import { streamText } from './llm/client.ts'
@@ -32,15 +31,6 @@ export const inject = ['tools', 'llm']
 /** Loader 读取的配置校验面（cordis.yml config 字段）。 */
 export { Config } from './config.ts'
 export type { EngramConfig } from './config.ts'
-
-declare module '@deepseek-ai/dsh-session/types' {
-  interface SessionEventMap {
-    /** Log-only pre-dispatch record of one engram ingestion auxiliary request. */
-    'engram/ingest-request': IngestRequestEventData
-    /** Log-only pre-dispatch record of one engram distillation auxiliary request. */
-    'engram/distill-request': DistillRequestEventData
-  }
-}
 
 /** 会话开始注入的画像渲染：top-N 高重要性 user 记忆一行一条。 */
 export function renderProfile(topN: readonly { kind: string; content: string }[]): string {
@@ -77,7 +67,10 @@ async function preStep(
       mode: resolved.ingest,
       routeOverride: resolved.routeOverride,
       call: params => streamText(ctx, { ...params, sessionId: agent.session.id }),
-      logRequest: (data) => { agent.session.append('engram/ingest-request', data) },
+      // 辅助请求写 engram 自己的操作日志（下游插件禁止向会话日志写未知事件类型）。
+      logRequest: (data: IngestRequestEventData) => {
+        void openStore('user').then(store => store.audit('ingest-request', 'AUX', JSON.stringify(data))).catch(() => { /* 审计失败不影响摄取 */ })
+      },
       signal,
     }).catch((error: unknown) => {
       console.warn('[dsh-engram] 本轮自动摄取失败（已跳过，不影响对话）：', error)

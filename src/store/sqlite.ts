@@ -162,9 +162,11 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
   const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string } | undefined
   if (versionRow === undefined) {
     db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(String(SCHEMA_VERSION))
-  } else if (Number(versionRow.value) > SCHEMA_VERSION) {
+  } else if (Number(versionRow.value) !== SCHEMA_VERSION) {
+    // pre-release 无兼容承诺：版本不一致（更高或更低）一律拒绝加载，
+    // 不做原地迁移——旧库由用户备份后删除重建。
     db.close()
-    throw new EngramError('SCHEMA_INCOMPATIBLE', `engram 数据库 schema 版本 ${versionRow.value} 高于插件支持的 ${SCHEMA_VERSION}，请升级插件`)
+    throw new EngramError('SCHEMA_INCOMPATIBLE', `engram 数据库 schema 版本 ${versionRow.value} 与插件支持的 ${SCHEMA_VERSION} 不一致：请备份并删除旧库文件（${path}）后重试`)
   }
 
   const sqlGet = db.prepare('SELECT * FROM nodes WHERE id = ?')
@@ -480,6 +482,10 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
         }
       })
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
+    },
+
+    async audit(op: string, targetId: string, detail: string | null) {
+      sqlLog.run(Date.now(), op, targetId, detail)
     },
 
     async purge() {

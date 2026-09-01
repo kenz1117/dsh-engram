@@ -376,7 +376,12 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
         embedder,
         scope,
         call: params => call({ ...params, sessionId: exec.agent === undefined ? undefined : String(exec.agent.session.id) }),
-        logRequest: (data) => { exec.agent?.session?.append('engram/distill-request', data) },
+        logRequest: (data) => {
+          void (async () => {
+            const store = await deps.openStore(scope)
+            await store.audit('distill-request', 'AUX', JSON.stringify(data))
+          })().catch(() => { /* 审计失败不影响蒸馏 */ })
+        },
         route,
         signal: exec.signal,
       })

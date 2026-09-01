@@ -1,5 +1,8 @@
 # dsh-engram bundle patch：dsh plugin add @kenz1117/dsh-engram 时以单条目插入 profile 根，
 # 行 id 指向本插件 host 半（注册 engram_ 工具与画像注入）。
+# 本地实测配置：开启 light 档自动摄取（发布版不带此 config，默认 off）。
 - insert:
     - id: dsh-engram
       name: '@kenz1117/dsh-engram'
+      config:
+        ingest: 'light'

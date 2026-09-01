@@ -44,6 +44,8 @@ export interface EngramStore {
   linkEdge(from: MemoryId, to: MemoryId, type: EngramEdgeType): Promise<void>
   /** 蒸馏写入原语：单事务内写新条目、归档全部旧条目并逐条建立 supersedes 边。 */
   supersedeMany(input: WriteInput, oldIds: readonly MemoryId[]): Promise<MemoryRecord>
+  /** 写入一条结构化审计记录（辅助 LLM 请求等，不进会话日志——下游插件禁止写未知事件类型）。 */
+  audit(op: string, targetId: string, detail: string | null): Promise<void>
   /** 物理清除本库全部数据（节点、边、FTS、操作日志）。 */
   purge(): Promise<void>
   /** 关闭数据库句柄。 */
