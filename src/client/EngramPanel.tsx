@@ -1,5 +1,5 @@
 /**
- * 记忆库设置面板：统计卡片、过滤列表、编辑（取代链）、遗忘/恢复、导出。
+ * 记忆库设置面板：统计卡片、过滤列表、批量操作、编辑（取代链）、遗忘/恢复、导出。
  * 数据经回环 API（/api/engram/*）读写；详情与编辑为条目下方行内展开
  * （不嵌套弹窗）；文案全部走宿主 locale 词典（zh/en），语言切换自动
  * 重渲染；数据层英文枚举（status/kind/op）只在显示层映射；内容节点
@@ -73,6 +73,7 @@ const OP_KEY: Record<string, EngramKey> = {
   forget: 'opForget',
   restore: 'opRestore',
   decay: 'opDecay',
+  superseded: 'opSuperseded',
   'ingest-request': 'opIngestRequest',
   'distill-request': 'opDistillRequest',
 }
@@ -81,6 +82,12 @@ const REL_KEY: Record<string, EngramKey> = {
   supersedes: 'relSupersedes',
   contradicts: 'relContradicts',
   related: 'relRelated',
+}
+/** 操作日志 detail JSON 的已知键 → 词典键（write/update/superseded 的小对象）。 */
+const DETAIL_KEY: Record<string, EngramKey> = {
+  kind: 'labelKind',
+  scope: 'labelScope',
+  status: 'labelStatus',
 }
 
 /** kind 数据值 → 本地化标签（未知值回退原文）。 */
@@ -93,6 +100,26 @@ function kindLabel(t: T, kind: string): string {
 function opLabel(t: T, op: string): string {
   const key = OP_KEY[op]
   return key === undefined ? op : t(key)
+}
+
+/** 操作日志 detail 的本地化：write/update/superseded 的小对象转中文键值；摄取/蒸馏请求的完整 JSON 保持原样（审计诚实性优先）。 */
+function formatOpDetail(t: T, op: string, detail: string | null): string {
+  if (detail === null) return ''
+  if (op !== 'write' && op !== 'update' && op !== 'superseded') return ` ${detail}`
+  try {
+    const parsed = JSON.parse(detail) as Record<string, unknown>
+    const entries = Object.entries(parsed)
+    if (entries.length === 0) return ` ${detail}`
+    return ' ' + entries.map(([key, value]) => {
+      const label = DETAIL_KEY[key]
+      if (label === undefined) return `${key}=${String(value)}`
+      if (key === 'kind' && typeof value === 'string') return `${t(label)}=${kindLabel(t, value)}`
+      if (key === 'scope' && (value === 'user' || value === 'project')) return `${t(label)}=${t(SCOPE_KEY[value])}`
+      return `${t(label)}=${String(value)}`
+    }).join(' · ')
+  } catch {
+    return ` ${detail}`
+  }
 }
 
 /** 来源会话展示片段：截短的会话 id + 可选轮次。 */
@@ -143,7 +170,7 @@ function ReviewBody({ t, recordId, scope }: {
         const operations = view.operations as { at: number; op: string; detail: string | null }[] | undefined
         if (operations !== undefined && operations.length > 0) {
           lines.push(`${t('detailOperations')}:`)
-          operations.forEach(op => lines.push(`  ${fmtTime(op.at)} ${opLabel(t, op.op)}${op.detail ? ` ${op.detail}` : ''}`))
+          operations.forEach(op => lines.push(`  ${fmtTime(op.at)} ${opLabel(t, op.op)}${formatOpDetail(t, op.op, op.detail)}`))
         }
         setText(lines.join('\n'))
       })
@@ -206,6 +233,10 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
   /** 行内展开态：互斥的唯一展开条目（review 或 edit）。 */
   const [expanded, setExpanded] = useState<{ kind: 'review' | 'edit'; record: MemoryRow } | null>(null)
   const [reloadTick, setReloadTick] = useState(0)
+  /** 批量选择：条目 id 集合（scope/过滤/翻页/搜索变更时清空）。 */
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  /** 批量遗忘的两段式确认（3 秒未确认自动复位）。 */
+  const [confirmForget, setConfirmForget] = useState(false)
 
   const reload = useCallback((): void => { setReloadTick(tick => tick + 1) }, [])
 
@@ -240,6 +271,51 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
       : { kind: expandKind, record })
   }
 
+  const pageRecords = list?.records ?? []
+  const selectedRecords = pageRecords.filter(record => selected.has(record.id))
+  const forgetable = selectedRecords.filter(record => record.status === 'active').length
+  const restorable = selectedRecords.length - forgetable
+  const allSelected = pageRecords.length > 0 && pageRecords.every(record => selected.has(record.id))
+
+  const toggleSelect = (id: string): void => {
+    setSelected(current => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const clearSelection = (): void => { setSelected(new Set()); setConfirmForget(false) }
+
+  const toggleAllPage = (): void => {
+    setSelected(current => {
+      const next = new Set(current)
+      if (allSelected) pageRecords.forEach(record => next.delete(record.id))
+      else pageRecords.forEach(record => next.add(record.id))
+      return next
+    })
+  }
+
+  /** 批量执行：逐条调单条 API（回环毫秒级），单条失败不阻塞其余；完成即刷新并清空选择。 */
+  const runBatch = (mode: 'forget' | 'restore'): void => {
+    const targets = mode === 'forget'
+      ? selectedRecords.filter(record => record.status === 'active')
+      : selectedRecords.filter(record => record.status !== 'active')
+    if (targets.length === 0) return
+    void Promise.allSettled(targets.map(target => api(mode, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: target.id, scope: target.scope }),
+    }))).then(() => { clearSelection(); reload() })
+  }
+
+  const armBatchForget = (): void => {
+    // 确认态保持到用户点击确认执行或清空选择，不做自动复位（3 秒窗口曾导致执行落空）。
+    if (confirmForget) { runBatch('forget'); return }
+    setConfirmForget(true)
+  }
+
   const page = Math.floor(offset / PAGE_SIZE) + 1
   const pages = list === null ? 1 : Math.max(1, Math.ceil(list.total / PAGE_SIZE))
 
@@ -250,7 +326,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
           {(['user', 'project'] as const).map(option => (
             <button key={option} type="button"
               className={scope === option ? styles.scopeOn : styles.scopeOff}
-              onClick={() => { setScope(option); setOffset(0); setExpanded(null) }}>
+              onClick={() => { setScope(option); setOffset(0); setExpanded(null); clearSelection() }}>
               {t(SCOPE_KEY[option])}
             </button>
           ))}
@@ -265,7 +341,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
         {(stats ?? []).map(part => (
           <button key={part.scope} type="button" className={styles.card}
             style={part.scope === scope ? { borderColor: 'var(--dsw-alias-brand-primary)' } : undefined}
-            onClick={() => { setScope(part.scope); setOffset(0) }}>
+            onClick={() => { setScope(part.scope); setOffset(0); clearSelection() }}>
             <b>{part.stats.total}</b>
             <span>{`${t(SCOPE_KEY[part.scope])} · ${t('cardActive', { n: part.stats.active })} · ${t('signalRatio', { n: Math.round(part.stats.signalRatio * 100) })}`}</span>
           </button>
@@ -273,27 +349,46 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
       </div>
       <div className={styles.filters}>
         <select className={styles.input} value={status}
-          onChange={event => { setStatus(event.target.value); setOffset(0); setExpanded(null) }}>
+          onChange={event => { setStatus(event.target.value); setOffset(0); setExpanded(null); clearSelection() }}>
           <option value="all">{t('allStatuses')}</option>
           <option value="active">{t('statusActive')}</option>
           <option value="archived">{t('statusArchived')}</option>
           <option value="forgotten">{t('statusForgotten')}</option>
         </select>
         <select className={styles.input} value={kind}
-          onChange={event => { setKind(event.target.value); setOffset(0); setExpanded(null) }}>
+          onChange={event => { setKind(event.target.value); setOffset(0); setExpanded(null); clearSelection() }}>
           <option value="all">{t('allKinds')}</option>
           {KINDS.map(option => <option key={option} value={option}>{kindLabel(t, option)}</option>)}
         </select>
         <input className={styles.input} placeholder={t('searchPlaceholder')} value={q}
-          onChange={event => { setQ(event.target.value.trim()); setOffset(0); setExpanded(null) }} />
+          onChange={event => { setQ(event.target.value.trim()); setOffset(0); setExpanded(null); clearSelection() }} />
       </div>
+      {selected.size > 0 && (
+        <div className={styles.batchBar}>
+          <span>{t('selectedCount', { n: selected.size })}</span>
+          <button type="button" className={styles.button} onClick={toggleAllPage}>
+            {allSelected ? t('deselectAll') : t('selectAll')}
+          </button>
+          <button type="button" className={styles.button} disabled={restorable === 0}
+            onClick={() => runBatch('restore')}>{t('batchRestore', { n: restorable })}</button>
+          <button type="button"
+            className={confirmForget ? `${styles.button} ${styles.danger}` : styles.button}
+            disabled={forgetable === 0}
+            onClick={armBatchForget}>
+            {confirmForget ? t('batchForgetConfirm', { n: forgetable }) : t('batchForget', { n: forgetable })}
+          </button>
+          <button type="button" className={styles.button} onClick={clearSelection}>{t('clearSelection')}</button>
+        </div>
+      )}
       {error !== null && <div className={styles.empty}>{t('loadFailed', { msg: error })}</div>}
       {error === null && list !== null && list.records.length === 0 && (
         <div className={styles.empty}>{t('empty')}</div>
       )}
       {(list?.records ?? []).map(record => (
-        <div key={record.id} className={styles.item}>
+        <div key={record.id} className={selected.has(record.id) ? `${styles.item} ${styles.itemSelected}` : styles.item}>
           <div className={styles.row1}>
+            <input type="checkbox" className={styles.itemCheck} checked={selected.has(record.id)}
+              aria-label={record.content.slice(0, 24)} onChange={() => toggleSelect(record.id)} />
             <span className={`${styles.badge} ${styles[record.status]}`}>{t(STATUS_KEY[record.status])}</span>
             <span className={styles.badge}>{kindLabel(t, record.kind)}</span>
             <span className={styles.badge}>{t(SCOPE_KEY[record.scope])}</span>
@@ -329,11 +424,11 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
       ))}
       <div className={styles.pager}>
         <button type="button" className={styles.button} disabled={offset === 0}
-          onClick={() => { setOffset(Math.max(0, offset - PAGE_SIZE)) }}>{t('prevPage')}</button>
+          onClick={() => { setOffset(Math.max(0, offset - PAGE_SIZE)); setExpanded(null); clearSelection() }}>{t('prevPage')}</button>
         <span>{t('pagerInfo', { page, pages, total: list?.total ?? 0 })}</span>
         <button type="button" className={styles.button}
           disabled={list === null || offset + PAGE_SIZE >= list.total}
-          onClick={() => { setOffset(offset + PAGE_SIZE) }}>{t('nextPage')}</button>
+          onClick={() => { setOffset(offset + PAGE_SIZE); setExpanded(null); clearSelection() }}>{t('nextPage')}</button>
       </div>
     </div>
   )

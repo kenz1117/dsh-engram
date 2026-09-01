@@ -29,6 +29,7 @@ export type EngramKey =
   | 'labelContent'
   | 'labelKind'
   | 'labelStatus'
+  | 'labelScope'
   | 'importance'
   | 'confidence'
   | 'accessCount'
@@ -62,8 +63,16 @@ export type EngramKey =
   | 'opForget'
   | 'opRestore'
   | 'opDecay'
+  | 'opSuperseded'
   | 'opIngestRequest'
   | 'opDistillRequest'
+  | 'selectAll'
+  | 'deselectAll'
+  | 'selectedCount'
+  | 'batchForget'
+  | 'batchForgetConfirm'
+  | 'batchRestore'
+  | 'clearSelection'
 
 /** 中文词典（宿主默认语言）。 */
 export const zh: Record<EngramKey, string> = {
@@ -87,6 +96,7 @@ export const zh: Record<EngramKey, string> = {
   labelContent: '内容',
   labelKind: '种类',
   labelStatus: '状态',
+  labelScope: '作用域',
   importance: '重要性',
   confidence: '置信',
   accessCount: '访问 {n} 次',
@@ -120,8 +130,16 @@ export const zh: Record<EngramKey, string> = {
   opForget: '遗忘',
   opRestore: '恢复',
   opDecay: '衰减归档',
+  opSuperseded: '被取代',
   opIngestRequest: '摄取请求',
   opDistillRequest: '蒸馏请求',
+  selectAll: '全选本页',
+  deselectAll: '取消全选',
+  selectedCount: '已选 {n} 条',
+  batchForget: '批量遗忘（{n}）',
+  batchForgetConfirm: '确认遗忘 {n} 条？',
+  batchRestore: '批量恢复（{n}）',
+  clearSelection: '取消选择',
 }
 
 /** 英文词典。 */
@@ -146,9 +164,10 @@ export const en: Record<EngramKey, string> = {
   labelContent: 'Content',
   labelKind: 'Kind',
   labelStatus: 'Status',
+  labelScope: 'Scope',
   importance: 'Importance',
   confidence: 'Confidence',
-  accessCount: '{n} accesses',
+  accessCount: '{n}× accessed',
   sourceExplicit: 'Explicitly saved',
   sourceSession: 'Source {id}',
   round: 'round {n}',
@@ -179,6 +198,14 @@ export const en: Record<EngramKey, string> = {
   opForget: 'forget',
   opRestore: 'restore',
   opDecay: 'decay',
+  opSuperseded: 'superseded',
   opIngestRequest: 'ingest-request',
   opDistillRequest: 'distill-request',
+  selectAll: 'Select all on page',
+  deselectAll: 'Deselect all',
+  selectedCount: '{n} selected',
+  batchForget: 'Forget selected ({n})',
+  batchForgetConfirm: 'Forget {n} entries?',
+  batchRestore: 'Restore selected ({n})',
+  clearSelection: 'Clear selection',
 }

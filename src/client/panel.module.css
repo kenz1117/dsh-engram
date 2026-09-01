@@ -17,7 +17,8 @@
 .filters { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
 .input { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
 .filters .input { flex: 1; min-width: 160px; }
-.item { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+.item { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; transition: border-color 120ms ease; }
+.itemSelected { border-color: var(--dsw-alias-brand-primary); }
 .row1 { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
 .badge { font-size: 11px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-fill-tsp-secondary); }
 .active { color: var(--dsw-alias-state-success-primary); border-color: var(--dsw-alias-state-success-primary); }
@@ -26,6 +27,10 @@
 .content { white-space: pre-wrap; word-break: break-word; color: var(--dsw-alias-label-primary); }
 .meta { color: var(--dsw-alias-label-secondary); font-size: 12px; margin-top: 6px; display: flex; gap: 14px; flex-wrap: wrap; }
 .ops { margin-top: 8px; display: flex; gap: 8px; }
+.itemCheck { accent-color: var(--dsw-alias-brand-primary); width: 15px; height: 15px; cursor: pointer; flex: none; margin-top: 2px; }
+.batchBar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; padding: 8px 12px; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
+.batchBar span { color: var(--dsw-alias-label-primary); font-size: 13px; margin-right: auto; }
+.danger { background: var(--dsw-alias-state-error-primary); border-color: var(--dsw-alias-state-error-primary); color: var(--dsw-alias-label-primary-foreground); }
 .pager { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 14px; color: var(--dsw-alias-label-secondary); }
 .empty { text-align: center; color: var(--dsw-alias-label-secondary); padding: 40px 0; }
 /* 条目内行内展开区：顶部虚线与操作按钮区分隔，宽度随条目、不再覆盖整页。 */
