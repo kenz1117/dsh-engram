@@ -35,7 +35,8 @@
     "bundle": "tsdown",
     "watch": "tsdown --watch",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "backfill": "node scripts/backfill-embeddings.mjs"
   },
   "license": "MIT",
   "engines": {
