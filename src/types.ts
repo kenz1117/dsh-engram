@@ -57,6 +57,8 @@ export interface WriteInput {
   readonly importance?: number
   readonly confidence?: number
   readonly sourceSessionId?: string | null
+  /** 内容向量（调用方经嵌入器算好）；缺省时该条目不参与向量检索。 */
+  readonly embedding?: Float32Array
 }
 
 /** 检索请求。 */
@@ -99,6 +101,8 @@ export interface UpdateInput {
   readonly kind: EngramKind
   readonly content: string
   readonly importance?: number
+  /** 新内容向量；缺省时继承旧条目向量。 */
+  readonly embedding?: Float32Array
 }
 
 /** dsh-engram 统一错误：加载/使用期的可诊断失败都抛此类型。 */
