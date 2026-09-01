@@ -58,7 +58,7 @@ describe('EngramStore v2 additions', () => {
     raw.close()
     const archived = await store.decay({ importanceBelow: 0.3, olderThanDays: 30 })
     expect(archived).toBe(1)
-    const survivors = await store.topActive(10)
+    const survivors = await store.topActive('user', 10)
     expect(survivors.map(record => record.content)).toEqual(['重要性高保留'])
   })
 

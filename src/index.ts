@@ -50,7 +50,7 @@ async function preStep(
   if (decision.kind === 'reject') return decision
   if (step !== 1) return decision
   const store = await openStore('user')
-  const top = await store.topActive(resolved.profileTopN)
+  const top = await store.topActive('user', resolved.profileTopN)
   if (top.length === 0) return decision
   const text = renderProfile(top)
   return {

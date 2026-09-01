@@ -93,7 +93,7 @@ describe('EngramStore (sqlite)', () => {
   it('topActive 按 importance 倒序', async () => {
     await store.write({ scope: 'user', kind: 'fact', content: '低重要性', importance: 0.2 })
     await store.write({ scope: 'user', kind: 'fact', content: '高重要性', importance: 0.9 })
-    const top = await store.topActive(1)
+    const top = await store.topActive('user', 1)
     expect(top[0]!.content).toBe('高重要性')
   })
 
@@ -112,7 +112,7 @@ describe('EngramStore (sqlite)', () => {
     await store.purge()
     const result = await store.search({ text: '清除', scopes: ['user'] }, undefined)
     expect(result.hits).toHaveLength(0)
-    expect(await store.topActive(10)).toHaveLength(0)
+    expect(await store.topActive('user', 10)).toHaveLength(0)
   })
 
   it('schema 版本不兼容时拒绝打开', async () => {

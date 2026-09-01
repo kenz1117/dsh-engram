@@ -34,7 +34,7 @@ describe('engram tools', () => {
     const result = await tools.get('engram_save')!.execute(
       { content: '用户偏好深色主题', kind: 'preference', importance: 0.7, scope: 'user' }, fakeExec)
     expect((result as { id: string }).id).toBeTruthy()
-    const records = await store.topActive(10)
+    const records = await store.topActive('user', 10)
     const saved = records.find(record => record.content === '用户偏好深色主题')
     expect(saved?.sourceSessionId).toBe('sess-1')
     expect(saved?.kind).toBe('preference')

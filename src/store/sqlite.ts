@@ -178,7 +178,7 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
     confidence = MIN(1, confidence + ${CONFIDENCE_BUMP}) WHERE id = ?`)
   const sqlLog = db.prepare('INSERT INTO op_log (at, op, target_id, detail) VALUES (?, ?, ?, ?)')
   const sqlOpLogById = db.prepare('SELECT at, op, detail FROM op_log WHERE target_id = ? ORDER BY seq DESC LIMIT ?')
-  const sqlTopActive = db.prepare("SELECT * FROM nodes WHERE scope = 'user' AND status = 'active' ORDER BY importance DESC, confidence DESC LIMIT ?")
+  const sqlTopActive = db.prepare("SELECT * FROM nodes WHERE scope = ? AND status = 'active' ORDER BY importance DESC, confidence DESC LIMIT ?")
   const sqlEdgeUpsert = db.prepare('INSERT OR IGNORE INTO edges (from_id, to_id, type, created_at) VALUES (?, ?, ?, ?)')
   const sqlNeighbors = db.prepare(`SELECT * FROM edges WHERE from_id IN (SELECT value FROM json_each(?))
     AND type IN ('supports','refines','related') LIMIT ?`)
@@ -397,8 +397,8 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
     },
 
-    async topActive(n: number) {
-      const rows = sqlTopActive.all(n) as unknown as NodeRow[]
+    async topActive(scope: EngramScope, n: number) {
+      const rows = sqlTopActive.all(scope, n) as unknown as NodeRow[]
       return rows.map(rowToRecord)
     },
 
