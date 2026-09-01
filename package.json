@@ -10,12 +10,12 @@
     "url": "git+https://github.com/kenz1117/dsh-engram.git"
   },
   "type": "module",
-  "main": "lib/index.js",
-  "types": "lib/index.d.ts",
+  "main": "./lib/index.mjs",
+  "types": "./lib/index.d.mts",
   "exports": {
     ".": {
-      "types": "./lib/index.d.ts",
-      "default": "./lib/index.js"
+      "types": "./lib/index.d.mts",
+      "default": "./lib/index.mjs"
     },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
