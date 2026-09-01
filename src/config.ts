@@ -17,6 +17,8 @@ export interface EngramConfig {
   profileTopN?: number
   /** 嵌入模型缓存目录；默认 `<dbDir>/models`。 */
   modelCacheDir?: string
+  /** 嵌入模型下载端点；默认 huggingface.co，网络受限环境配镜像（如 https://hf-mirror.com）。 */
+  hfEndpoint?: string
 }
 
 /** 解析后的完整配置（显式默认值集中在此一步，实现不再 `?? 默认`）。 */
@@ -25,10 +27,11 @@ export interface ResolvedEngramConfig {
   readonly injectProfile: boolean
   readonly profileTopN: number
   readonly modelCacheDir: string
+  readonly hfEndpoint: string | undefined
 }
 
 /** 合法配置键集合（未知键 loud 失败）。 */
-const CONFIG_KEYS: ReadonlySet<string> = new Set(['dbDir', 'injectProfile', 'profileTopN', 'modelCacheDir'])
+const CONFIG_KEYS: ReadonlySet<string> = new Set(['dbDir', 'injectProfile', 'profileTopN', 'modelCacheDir', 'hfEndpoint'])
 
 /** Schemastery 校验面（cordis.yml 读取时校验）。 */
 export const Config: z<EngramConfig> = z.object({
@@ -36,6 +39,7 @@ export const Config: z<EngramConfig> = z.object({
   injectProfile: z.boolean(),
   profileTopN: z.number().step(1).min(1).max(64),
   modelCacheDir: z.string(),
+  hfEndpoint: z.string(),
 })
 
 /**
@@ -57,5 +61,6 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     injectProfile: config.injectProfile ?? true,
     profileTopN: config.profileTopN ?? 8,
     modelCacheDir: config.modelCacheDir ?? join(dbDir, 'models'),
+    hfEndpoint: config.hfEndpoint,
   }
 }
