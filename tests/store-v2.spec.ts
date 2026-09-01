@@ -29,7 +29,7 @@ describe('EngramStore v2 additions', () => {
     expect(oldView?.supersededBy.map(id => String(id))).toEqual([String(next.id)])
     expect(oldView?.record.sourceSeq).toBe(7)
     expect(oldView?.operations.length).toBeGreaterThan(0)
-    expect(oldView?.operations[0]!.op).toBe('update')
+    expect(oldView?.operations[0]!.op).toBe('superseded')
   })
 
   it('stats 统计分布与信噪比', async () => {
