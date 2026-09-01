@@ -45,7 +45,7 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 
 ## Web 管理面板（设置页「记忆库」tab）
 
-宿主带 webServer 的 profile（web 等）会在**设置页**自动出现「记忆库」tab（经 `settings.section` 槽位注册，client 半为 React 组件、随 `lib/client.js` 由宿主模块表装载）：统计卡片、按状态/种类/内容过滤、编辑（走取代链）、遗忘/恢复、导出 Markdown/JSON 下载。数据经回环 API `/api/engram/*`（写操作校验回环 Origin）。headless 等无 webServer 的组合不挂载，其余能力不受影响。
+宿主带 webServer 的 profile（web 等）会在**设置页**自动出现「记忆库」tab（经 `settings.section` 槽位注册，client 半为 React 组件、随 `lib/client.js` 由宿主模块表装载）：统计卡片、按状态/种类/内容过滤、行内详情与编辑（走取代链）、遗忘/恢复、导出 Markdown/JSON 下载。数据经回环 API `/api/engram/*`（写操作校验回环 Origin）。界面文案经宿主 locale 服务注册 zh/en 词典，跟随宿主语言设置实时切换；状态/种类等数据枚举仅在显示层映射为中文/英文，存储值保持英文。headless 等无 webServer 的组合不挂载，其余能力不受影响。
 
 ## 理解实现
 
@@ -86,4 +86,3 @@ pnpm bundle
 - **自动摄取的最后一轮盲区** —— 摄取由下一轮的第一步触发，会话最后一轮不摄取；会话结束事件钩子是后续工作。
 - **矛盾候选无 LLM 判定** —— 写入时仅按向量相似度（≥0.88）报告候选并建边，语义矛盾的确认留给模型/用户裁决与蒸馏。
 - **嵌入器降级期间的记忆无向量** —— 模型未就绪时写入的记忆不参与语义道；语义上线后跑一次 `pnpm backfill` 补算存量向量（`pnpm build` 的模型缓存就绪后执行，可经 `HF_ENDPOINT` 配镜像）。
-- **Web 管理面板未实现** —— 浏览、搜索、编辑、导出记忆库的 client 半在三期。
