@@ -151,11 +151,9 @@ describe('dsh-engram real Loader composition', () => {
     const loaded = await loadComposition()
     const port = loaded.webServer.port
 
-    // 管理页：200 + HTML。
+    // 独立管理页已移除（v0.4.0 起 UI 走设置页 tab）：/engram 不再服务。
     const page = await call(port, 'GET', '/engram')
-    expect(page.status).toBe(200)
-    expect(page.contentType).toContain('text/html')
-    expect(page.text).toContain('dsh-engram 记忆库')
+    expect(page.status).toBe(404)
 
     // 统计：两库 parts，user 库有种子 2 条。
     const stats = await call(port, 'GET', '/api/engram/stats')

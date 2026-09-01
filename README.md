@@ -43,9 +43,9 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 | `engram_export` | 导出 Markdown / JSON 文件（数据可携带） |
 | `engram_distill` | 蒸馏：同主题簇合并为高层规律（LLM） |
 
-## Web 管理面板
+## Web 管理面板（设置页「记忆库」tab）
 
-宿主带 webServer 的 profile（web 等）自动挂载 `http://127.0.0.1:3080/engram` 管理页（仅本机回环可访问）：统计卡片、按状态/种类/内容过滤、编辑（走取代链）、遗忘/恢复、导出 Markdown/JSON 下载。数据接口在 `/api/engram/*`，写操作校验回环 Origin。headless 等无 webServer 的组合不挂载，其余能力不受影响。
+宿主带 webServer 的 profile（web 等）会在**设置页**自动出现「记忆库」tab（经 `settings.section` 槽位注册，client 半为 React 组件、随 `lib/client.js` 由宿主模块表装载）：统计卡片、按状态/种类/内容过滤、编辑（走取代链）、遗忘/恢复、导出 Markdown/JSON 下载。数据经回环 API `/api/engram/*`（写操作校验回环 Origin）。headless 等无 webServer 的组合不挂载，其余能力不受影响。
 
 ## 理解实现
 

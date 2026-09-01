@@ -10,7 +10,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { PAGE_HTML } from './page.ts'
 import type { EngramKind, EngramScope, EngramStatus, ListFilter } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
 
@@ -105,19 +104,6 @@ export interface RouteDeps {
  * @param ctx - 携带 webServer 服务的宿主上下文。
  */
 export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
-  ctx.effect(
-    () => ctx.webServer.register({
-      kind: 'exact',
-      path: '/engram',
-      handler: async (req, res) => {
-        if (!guardLoopback(req, res)) return
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-        res.end(PAGE_HTML)
-      },
-    }),
-    'dsh-engram: page route',
-  )
-
   ctx.effect(
     () => ctx.webServer.register({
       kind: 'prefix',

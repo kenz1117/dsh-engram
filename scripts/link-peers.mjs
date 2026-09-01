@@ -29,6 +29,8 @@ const LINKED_PACKAGES = [
   ['@deepseek-ai/dsh-system-prompt', 'packages/core/system-prompt'],
   ['@deepseek-ai/dsh-session', 'packages/core/session'],
   ['@deepseek-ai/dsh-host-webserver', 'packages/host/webserver'],
+  ['@deepseek-ai/dsh-client-ui-settings', 'packages/client/ui-settings'],
+  ['@deepseek-ai/dsh-client-ui-renderer', 'packages/client/ui-renderer'],
   ['@deepseek-ai/dsh-llm', 'packages/llm/llm'],
   ['@deepseek-ai/dsh-agent', 'packages/core/agent'],
   ['@deepseek-ai/dsh-scope', 'packages/core/scope'],
