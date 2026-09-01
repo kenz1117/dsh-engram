@@ -24,7 +24,7 @@ export type EngramStatus = 'active' | 'archived' | 'forgotten'
 /** 关系边类型。supersedes 语义：from 取代 to。 */
 export type EngramEdgeType = 'supports' | 'contradicts' | 'refines' | 'related' | 'supersedes'
 
-/** 一条记忆。来源链 v0.0.1 记 sourceSessionId；round/seq 由二期自动摄取补全。 */
+/** 一条记忆。来源链：v0.0.1 记 sourceSessionId；v0.2.0 起自动摄取补 sourceRound/sourceSeq。 */
 export interface MemoryRecord {
   readonly id: MemoryId
   readonly scope: EngramScope
@@ -39,6 +39,10 @@ export interface MemoryRecord {
   readonly lastAccessedAt: number
   readonly accessCount: number
   readonly sourceSessionId: string | null
+  /** 来源会话内轮次（自动摄取写入；显式保存为 null）。 */
+  readonly sourceRound: number | null
+  /** 来源事件 seq（自动摄取写入；显式保存为 null）。 */
+  readonly sourceSeq: number | null
 }
 
 /** 记忆关系边。 */
@@ -57,6 +61,8 @@ export interface WriteInput {
   readonly importance?: number
   readonly confidence?: number
   readonly sourceSessionId?: string | null
+  readonly sourceRound?: number
+  readonly sourceSeq?: number
   /** 内容向量（调用方经嵌入器算好）；缺省时该条目不参与向量检索。 */
   readonly embedding?: Float32Array
 }
@@ -103,6 +109,51 @@ export interface UpdateInput {
   readonly importance?: number
   /** 新内容向量；缺省时继承旧条目向量。 */
   readonly embedding?: Float32Array
+}
+
+/** 一条操作日志（审计视图行）。 */
+export interface OperationLogRow {
+  readonly at: number
+  readonly op: string
+  readonly detail: string | null
+}
+
+/** 审计视图：条目 + 来源链 + 关系邻居 + 操作日志。 */
+export interface ReviewView {
+  readonly record: MemoryRecord
+  /** 谁取代了此条目（supersedes 边 from → 此条目）。 */
+  readonly supersededBy: readonly MemoryId[]
+  /** 此条目取代了谁（supersedes 边 此条目 → to）。 */
+  readonly supersedes: readonly MemoryId[]
+  readonly contradicts: readonly MemoryId[]
+  readonly related: readonly MemoryId[]
+  /** 最近 20 条涉及此条目的操作日志（时间倒序）。 */
+  readonly operations: readonly OperationLogRow[]
+}
+
+/** 全库统计（信噪比 = active / max(1, total)）。 */
+export interface StoreStats {
+  readonly total: number
+  readonly active: number
+  readonly archived: number
+  readonly forgotten: number
+  readonly byKind: Readonly<Record<string, number>>
+  readonly edges: number
+  readonly opLogCount: number
+  readonly signalRatio: number
+}
+
+/** 全库导出（数据可携带：任意状态条目 + 全部边）。 */
+export interface ExportData {
+  readonly exportedAt: number
+  readonly records: readonly MemoryRecord[]
+  readonly edges: readonly MemoryEdge[]
+}
+
+/** 衰减参数：低于 importanceBelow 且 lastAccessedAt 超过 olderThanDays 的 active 条目归档。 */
+export interface DecayOptions {
+  readonly importanceBelow: number
+  readonly olderThanDays: number
 }
 
 /** dsh-engram 统一错误：加载/使用期的可诊断失败都抛此类型。 */

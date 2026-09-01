@@ -39,16 +39,18 @@ const scopeDir = join(repoRoot, 'node_modules', '@deepseek-ai')
 mkdirSync(scopeDir, { recursive: true })
 
 let created = 0
+let skipped = 0
 for (const [name, rel] of LINKED_PACKAGES) {
   const target = join(harnessRoot, rel)
   const link = join(scopeDir, name.split('/')[1])
   if (existsSync(link)) continue
+  // 温和跳过：发布形态或 profile 安装环境没有 harness 源码树，peer 由
+  // profile 的 node_modules 提供；链接缺失绝不使安装失败。
   if (!existsSync(target)) {
-    console.error(`[link-peers] 缺少 ${target}：请先在 deepseek-harness 执行 pnpm install && pnpm run build`)
-    process.exitCode = 1
+    skipped += 1
     continue
   }
   symlinkSync(target, link, 'dir')
   created += 1
 }
-console.log(`[link-peers] ok（新建 ${created} 个链接，共 ${LINKED_PACKAGES.length} 个 peer）`)
+console.log(`[link-peers] ok（新建 ${created} 个链接，跳过 ${skipped} 个无源码环境的 peer，共 ${LINKED_PACKAGES.length} 个）`)

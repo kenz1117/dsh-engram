@@ -11,21 +11,28 @@ import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { EngramError, asMemoryId } from '../types.ts'
 import type {
-  MemoryEdge, MemoryId, MemoryRecord, SearchHit, SearchResult,
-  TimelineQuery, UpdateInput, WriteInput, EngramScope,
+  DecayOptions, EngramEdgeType, EngramScope, ExportData, MemoryEdge, MemoryId,
+  MemoryRecord, ReviewView, SearchHit, SearchResult, StoreStats,
+  TimelineQuery, UpdateInput, WriteInput,
 } from '../types.ts'
 import type { EngramStore } from './interface.ts'
 
 /** 当前 schema 版本；结构性变更必须 +1 并拒绝旧库（pre-release 无兼容承诺）。 */
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 /** RRF 融合常数：score = Σ 1/(K + rank)。 */
 const RRF_K = 60
 /** 向量道的语义门槛：低于该余弦的条目不参与排序。 */
 const MIN_COSINE = 0.2
+/** 矛盾候选门槛：近邻余弦达到该值即报告（由模型/用户裁决）。 */
+const CONTRADICTION_COSINE = 0.88
 /** 每道参与融合的候选上限。 */
 const RANK_POOL = 64
 /** 一跳扩展引入的邻居上限。 */
 const EXPANSION_LIMIT = 32
+/** 命中强化：每次检索命中的置信度增量。 */
+const CONFIDENCE_BUMP = 0.05
+/** 审计视图返回的操作日志条数上限。 */
+const REVIEW_LOG_LIMIT = 20
 
 /** 节点表的行结构（snake_case 对应列名）。 */
 interface NodeRow {
@@ -40,6 +47,8 @@ interface NodeRow {
   last_accessed_at: number
   access_count: number
   source_session_id: string | null
+  source_round: number | null
+  source_seq: number | null
   embedding: Uint8Array | null
 }
 
@@ -56,6 +65,8 @@ function rowToRecord(row: NodeRow): MemoryRecord {
     lastAccessedAt: row.last_accessed_at,
     accessCount: row.access_count,
     sourceSessionId: row.source_session_id,
+    sourceRound: row.source_round,
+    sourceSeq: row.source_seq,
   }
 }
 
@@ -138,7 +149,7 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
       id TEXT PRIMARY KEY, scope TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL,
       importance REAL NOT NULL, confidence REAL NOT NULL, status TEXT NOT NULL,
       created_at INTEGER NOT NULL, last_accessed_at INTEGER NOT NULL, access_count INTEGER NOT NULL,
-      source_session_id TEXT, embedding BLOB);
+      source_session_id TEXT, source_round INTEGER, source_seq INTEGER, embedding BLOB);
     CREATE TABLE IF NOT EXISTS edges (
       from_id TEXT NOT NULL, to_id TEXT NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL,
       PRIMARY KEY (from_id, to_id, type));
@@ -158,16 +169,28 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
 
   const sqlGet = db.prepare('SELECT * FROM nodes WHERE id = ?')
   const sqlInsert = db.prepare(`INSERT INTO nodes
-    (id, scope, kind, content, importance, confidence, status, created_at, last_accessed_at, access_count, source_session_id, embedding)
-    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?, ?)`)
+    (id, scope, kind, content, importance, confidence, status, created_at, last_accessed_at, access_count,
+     source_session_id, source_round, source_seq, embedding)
+    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?, ?, ?, ?)`)
   const sqlFtsInsert = db.prepare('INSERT INTO nodes_fts (node_id, content) VALUES (?, ?)')
   const sqlSetStatus = db.prepare('UPDATE nodes SET status = ?, last_accessed_at = ? WHERE id = ?')
-  const sqlTouch = db.prepare('UPDATE nodes SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?')
+  const sqlTouch = db.prepare(`UPDATE nodes SET access_count = access_count + 1, last_accessed_at = ?,
+    confidence = MIN(1, confidence + ${CONFIDENCE_BUMP}) WHERE id = ?`)
   const sqlLog = db.prepare('INSERT INTO op_log (at, op, target_id, detail) VALUES (?, ?, ?, ?)')
+  const sqlOpLogById = db.prepare('SELECT at, op, detail FROM op_log WHERE target_id = ? ORDER BY seq DESC LIMIT ?')
   const sqlTopActive = db.prepare("SELECT * FROM nodes WHERE scope = 'user' AND status = 'active' ORDER BY importance DESC, confidence DESC LIMIT ?")
   const sqlEdgeUpsert = db.prepare('INSERT OR IGNORE INTO edges (from_id, to_id, type, created_at) VALUES (?, ?, ?, ?)')
   const sqlNeighbors = db.prepare(`SELECT * FROM edges WHERE from_id IN (SELECT value FROM json_each(?))
     AND type IN ('supports','refines','related') LIMIT ?`)
+  const sqlEdgesTouching = db.prepare('SELECT from_id, to_id, type FROM edges WHERE from_id = ? OR to_id = ?')
+  const sqlCountBy = db.prepare('SELECT status, COUNT(*) AS n FROM nodes GROUP BY status')
+  const sqlCountKind = db.prepare('SELECT kind, COUNT(*) AS n FROM nodes GROUP BY kind')
+  const sqlCountEdges = db.prepare('SELECT COUNT(*) AS n FROM edges')
+  const sqlCountOpLog = db.prepare('SELECT COUNT(*) AS n FROM op_log')
+  const sqlAllNodes = db.prepare('SELECT * FROM nodes ORDER BY created_at')
+  const sqlAllEdges = db.prepare('SELECT * FROM edges')
+  const sqlDecay = db.prepare(`UPDATE nodes SET status = 'archived'
+    WHERE status = 'active' AND importance < ? AND last_accessed_at < ?`)
   const sqlPurgeNodes = db.prepare('DELETE FROM nodes')
   const sqlPurgeEdges = db.prepare('DELETE FROM edges')
   const sqlPurgeFts = db.prepare('DELETE FROM nodes_fts')
@@ -195,7 +218,7 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
    * 事务由调用方持有（withTransaction）。
    */
   const insertRecord = (
-    id: MemoryId, scope: EngramScope, kind: string, content: string,
+    id: MemoryId, input: WriteInput, content: string,
     importance: number, confidence: number, at: number,
     sourceSessionId: string | null, embedding: Float32Array | Uint8Array | null, op: string,
   ): void => {
@@ -203,9 +226,37 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
     const stored = embedding === null
       ? null
       : embedding instanceof Float32Array ? vecToBlob(embedding) : embedding
-    sqlInsert.run(id, scope, kind, content, importance, confidence, at, at, sourceSessionId, stored)
+    sqlInsert.run(
+      id, input.scope, input.kind, content, importance, confidence, at, at,
+      sourceSessionId, input.sourceRound ?? null, input.sourceSeq ?? null, stored,
+    )
     sqlFtsInsert.run(id, tokenizeForFts(content))
-    sqlLog.run(at, op, id, JSON.stringify({ kind, scope }))
+    sqlLog.run(at, op, id, JSON.stringify({ kind: input.kind, scope: input.scope }))
+  }
+
+  /** 邻居收集：该 id 触及的全部边按类型分组（supersedes 分方向）。 */
+  const edgeGroups = (id: MemoryId): Pick<ReviewView, 'supersededBy' | 'supersedes' | 'contradicts' | 'related'> => {
+    const rows = sqlEdgesTouching.all(id, id) as unknown as { from_id: string; to_id: string; type: string }[]
+    const supersededBy: string[] = []
+    const supersedes: string[] = []
+    const contradicts: string[] = []
+    const related: string[] = []
+    for (const edge of rows) {
+      if (edge.type === 'supersedes') {
+        if (edge.to_id === id) supersededBy.push(edge.from_id)
+        else supersedes.push(edge.to_id)
+      } else if (edge.type === 'contradicts') {
+        contradicts.push(edge.from_id === id ? edge.to_id : edge.from_id)
+      } else if (edge.type === 'related' || edge.type === 'supports' || edge.type === 'refines') {
+        related.push(edge.from_id === id ? edge.to_id : edge.from_id)
+      }
+    }
+    return {
+      supersededBy: supersededBy.map(asMemoryId),
+      supersedes: supersedes.map(asMemoryId),
+      contradicts: contradicts.map(asMemoryId),
+      related: related.map(asMemoryId),
+    }
   }
 
   return {
@@ -215,7 +266,7 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
       const id = asMemoryId(randomUUID())
       const at = Date.now()
       withTransaction(() => {
-        insertRecord(id, input.scope, input.kind, content, input.importance ?? 0.5, input.confidence ?? 0.5, at, input.sourceSessionId ?? null, input.embedding ?? null, 'write')
+        insertRecord(id, input, content, input.importance ?? 0.5, input.confidence ?? 0.5, at, input.sourceSessionId ?? null, input.embedding ?? null, 'write')
       })
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
     },
@@ -275,7 +326,7 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
         }
       }
 
-      // 排序截断 + 命中强化。
+      // 排序截断 + 命中强化（accessCount、confidence）。
       const finalRows = [...scores.entries()].sort((a, b) => b[1].score - a[1].score).slice(0, limit)
       const hits: SearchHit[] = []
       for (const [id, info] of finalRows) {
@@ -313,7 +364,18 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
       const at = Date.now()
       withTransaction(() => {
         sqlSetStatus.run('archived', at, input.id)
-        insertRecord(id, input.scope, input.kind, content, input.importance ?? old.importance, old.confidence, at, old.source_session_id, input.embedding ?? old.embedding, 'update')
+        sqlLog.run(at, 'superseded', input.id, JSON.stringify({ supersededBy: id }))
+        insertRecord(
+          id,
+          { scope: input.scope, kind: input.kind, content },
+          content,
+          input.importance ?? old.importance,
+          old.confidence,
+          at,
+          old.source_session_id,
+          input.embedding ?? old.embedding,
+          'update',
+        )
         sqlEdgeUpsert.run(id, input.id, 'supersedes', at)
       })
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
@@ -338,6 +400,86 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
     async topActive(n: number) {
       const rows = sqlTopActive.all(n) as unknown as NodeRow[]
       return rows.map(rowToRecord)
+    },
+
+    async review(id: MemoryId): Promise<ReviewView | undefined> {
+      const row = getRow(id)
+      if (row === undefined) return undefined
+      const operations = sqlOpLogById.all(id, REVIEW_LOG_LIMIT) as unknown as { at: number; op: string; detail: string | null }[]
+      return { record: rowToRecord(row), ...edgeGroups(id), operations }
+    },
+
+    async stats(): Promise<StoreStats> {
+      const statusRows = sqlCountBy.all() as unknown as { status: string; n: number }[]
+      const kindRows = sqlCountKind.all() as unknown as { kind: string; n: number }[]
+      const edgeCount = (sqlCountEdges.get() as unknown as { n: number }).n
+      const opCount = (sqlCountOpLog.get() as unknown as { n: number }).n
+      const byStatus: Record<string, number> = { active: 0, archived: 0, forgotten: 0 }
+      for (const row of statusRows) byStatus[row.status] = row.n
+      const byKind: Record<string, number> = {}
+      for (const row of kindRows) byKind[row.kind] = row.n
+      const active = byStatus['active'] ?? 0
+      const archived = byStatus['archived'] ?? 0
+      const forgotten = byStatus['forgotten'] ?? 0
+      const total = active + archived + forgotten
+      return {
+        total,
+        active,
+        archived,
+        forgotten,
+        byKind,
+        edges: edgeCount,
+        opLogCount: opCount,
+        signalRatio: total === 0 ? 0 : active / total,
+      }
+    },
+
+    async exportAll(): Promise<ExportData> {
+      const records = (sqlAllNodes.all() as unknown as NodeRow[]).map(rowToRecord)
+      const edgeRows = sqlAllEdges.all() as unknown as { from_id: string; to_id: string; type: string; created_at: number }[]
+      return {
+        exportedAt: Date.now(),
+        records,
+        edges: edgeRows.map(edge => ({ from: asMemoryId(edge.from_id), to: asMemoryId(edge.to_id), type: edge.type as MemoryEdge['type'], createdAt: edge.created_at })),
+      }
+    },
+
+    async decay(options: DecayOptions) {
+      const cutoff = Date.now() - options.olderThanDays * 86_400_000
+      const result = sqlDecay.run(options.importanceBelow, cutoff)
+      const changed = Number(result.changes)
+      if (changed > 0) sqlLog.run(Date.now(), 'decay', 'BATCH', JSON.stringify({ archived: changed }))
+      return changed
+    },
+
+    async findContradictions(embedding: Float32Array, limit = 3) {
+      const pool = db.prepare("SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND scope IN ('user','project')").all() as unknown as NodeRow[]
+      return pool
+        .map(row => ({ row, sim: cosine(embedding, blobToVec(row.embedding!)) }))
+        .filter(entry => entry.sim >= CONTRADICTION_COSINE)
+        .sort((a, b) => b.sim - a.sim)
+        .slice(0, limit)
+        .map(entry => rowToRecord(entry.row))
+    },
+
+    async linkEdge(from: MemoryId, to: MemoryId, type: EngramEdgeType) {
+      sqlEdgeUpsert.run(from, to, type, Date.now())
+    },
+
+    async supersedeMany(input: WriteInput, oldIds: readonly MemoryId[]) {
+      // oldIds 为空时与 write 等价（insertRecord + 0 次归档循环），不走 this 引用。
+      const content = input.content.trim()
+      if (content === '') throw new EngramError('EMPTY_CONTENT', 'content 不能为空')
+      const id = asMemoryId(randomUUID())
+      const at = Date.now()
+      withTransaction(() => {
+        insertRecord(id, input, content, input.importance ?? 0.5, input.confidence ?? 0.5, at, input.sourceSessionId ?? null, input.embedding ?? null, 'distill')
+        for (const oldId of oldIds) {
+          sqlSetStatus.run('archived', at, oldId)
+          sqlEdgeUpsert.run(id, oldId, 'supersedes', at)
+        }
+      })
+      return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
     },
 
     async purge() {
