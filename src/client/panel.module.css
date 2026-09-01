@@ -1,9 +1,11 @@
 /* 全部使用 harness 共享语义令牌（--dsw-alias-*），明暗模式随宿主主题自动切换；零硬编码颜色。 */
 .panel { max-width: 980px; }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
-.scopeTabs { display: flex; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; overflow: hidden; margin-right: auto; }
-.scopeOn, .scopeOff { background: none; border: none; color: var(--dsw-alias-label-secondary); padding: 6px 14px; cursor: pointer; font-size: 13px; }
-.scopeOn { background: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary-invert); }
+/* 顶部 scope 切换对齐宿主设置区标准 tab 语言（下划线式，ui-settings-plugins 同款）。 */
+.scopeTabs { display: flex; gap: 18px; align-items: flex-end; border-bottom: 1px solid var(--dsw-alias-border-l2); margin-right: auto; }
+.scopeOn, .scopeOff { position: relative; background: transparent; border: 0; padding: 7px 1px 9px; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; cursor: pointer; }
+.scopeOn, .scopeOff:hover { color: var(--dsw-alias-label-primary); }
+.scopeOn::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; border-radius: 2px 2px 0 0; background: var(--dsw-alias-brand-primary); content: ''; }
 .button { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 5px 12px; cursor: pointer; font-size: 13px; }
 .button:hover { border-color: var(--dsw-alias-brand-primary); }
 .button:disabled { opacity: 0.45; cursor: default; }
