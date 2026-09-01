@@ -77,7 +77,7 @@ function finishError(finish: FinishReason): Error | undefined {
  * @param params.route - 模型路由（来自日志解析或显式配置）。
  * @param params.system - 系统指令。
  * @param params.userText - 用户侧 JSON 框定输入。
- * @param params.sessionId - 归属会话（Branded SessionId，调用方来自 agent.session.id）。
+ * @param params.sessionId - 归属会话 id 字符串（调用方来自 agent.session.id，内部转 branded）。
  * @param params.maxTokens - 输出上限。
  * @param params.purpose - 用途标记（宿主 purpose 枚举未开放第三方注册，运行时经 cast 传入，
  *   token-meter 归因由 sessionId/provider/model 承载）。
@@ -90,7 +90,7 @@ export async function streamText(
     route: LlmRoute
     system: string
     userText: string
-    sessionId: GenerateOptions['sessionId']
+    sessionId: string
     maxTokens: number
     purpose: string
     signal: AbortSignal
@@ -107,7 +107,7 @@ export async function streamText(
     messages,
     system: params.system,
     maxTokens: params.maxTokens,
-    sessionId: params.sessionId as NonNullable<GenerateOptions['sessionId']>,
+    sessionId: params.sessionId as never as NonNullable<GenerateOptions['sessionId']>,
     purpose: params.purpose as NonNullable<GenerateOptions['purpose']>,
     signal: params.signal,
   }

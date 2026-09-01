@@ -18,8 +18,13 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'engram-tools-'))
   store = await openEngramStore(join(dir, 'user.db'))
   tools = new Map<string, ExecutableTool>(
-    createEngramTools({ openStore: async () => store, embedder: Promise.resolve(undefined) })
-      .map(tool => [tool.name, tool]),
+    createEngramTools({
+      openStore: async () => store,
+      embedder: Promise.resolve(undefined),
+      call: undefined,
+      routeOverride: undefined,
+      exportDir: join(dir, 'exports'),
+    }).map(tool => [tool.name, tool]),
   )
 })
 afterEach(async () => {
@@ -98,8 +103,13 @@ describe('engram tools', () => {
       close: async () => undefined,
     }
     const withEmbedder = new Map<string, ExecutableTool>(
-      createEngramTools({ openStore: async () => store, embedder: Promise.resolve(pseudo) })
-        .map(tool => [tool.name, tool]),
+      createEngramTools({
+        openStore: async () => store,
+        embedder: Promise.resolve(pseudo),
+        call: undefined,
+        routeOverride: undefined,
+        exportDir: join(dir, 'exports'),
+      }).map(tool => [tool.name, tool]),
     )
     await withEmbedder.get('engram_save')!.execute({ content: '记忆甲内容', kind: 'fact', scope: 'user' }, fakeExec)
     const result = await withEmbedder.get('engram_search')!.execute({ query: '记忆甲内容', scope: 'user' }, fakeExec) as { degraded: boolean; text: string }
@@ -107,9 +117,10 @@ describe('engram tools', () => {
     expect(result.text).toContain('记忆甲内容')
   })
 
-  it('工具集恰为 5 个且名字正确', () => {
+  it('工具集恰为 9 个且名字正确', () => {
     expect([...tools.keys()].sort()).toEqual([
-      'engram_forget', 'engram_save', 'engram_search', 'engram_timeline', 'engram_update',
+      'engram_distill', 'engram_export', 'engram_forget', 'engram_review', 'engram_save',
+      'engram_search', 'engram_stats', 'engram_timeline', 'engram_update',
     ])
   })
 })

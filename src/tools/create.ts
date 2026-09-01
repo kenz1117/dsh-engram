@@ -1,21 +1,32 @@
 /**
- * 5 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
+ * 9 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
  * scope 决定读写哪个分库；嵌入缺失时检索结果显式标记降级。
  * @module @kenz1117/dsh-engram/tools/create
  */
 
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { distillMemories } from '../flywheel/distill.ts'
 import type { EngramEmbedder } from '../embedder/interface.ts'
+import { routeFromEvents } from '../llm/client.ts'
+import type { LlmRoute } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
 import type { EngramKind, EngramScope } from '../types.ts'
 
-/** 工具依赖：分库打开器与嵌入器承诺（插件加载时即开始解析，执行时等待）。 */
+/** 工具依赖：分库打开器、嵌入器承诺、辅助 LLM 调用与导出目录。 */
 export interface ToolDeps {
   /** 每次调用解析目标 scope 的分库（user/project 各一）。 */
   readonly openStore: (scope: EngramScope) => Promise<EngramStore>
-  /** 嵌入器承诺；resolve 为 undefined = 嵌入不可用，检索降级纯关键词。 */
+  /** 嵌入器承诺；undefined = 嵌入不可用，检索降级纯关键词、矛盾检测停用。 */
   readonly embedder: Promise<EngramEmbedder | undefined>
+  /** 辅助 LLM 调用（index.ts 用 ctx.llm.stream 构造）；undefined = distill 不可用。sessionId 由调用点补齐。 */
+  readonly call: ((params: { route: LlmRoute; system: string; userText: string; maxTokens: number; purpose: string; signal: AbortSignal; sessionId: string | undefined }) => Promise<string>) | undefined
+  /** 显式路由覆盖（Config provider+model）；缺省从会话日志解析。 */
+  readonly routeOverride: LlmRoute | undefined
+  /** 导出文件目录（engram_export 写入）。 */
+  readonly exportDir: string
 }
 
 const KINDS = ['fact', 'preference', 'decision', 'episode', 'skill'] as const
@@ -41,8 +52,8 @@ async function queryVectorOf(deps: ToolDeps, text: string): Promise<Float32Array
 }
 
 /**
- * 构造 5 个工具定义（engram_save/search/timeline/update/forget）。
- * @param deps - 分库打开器与嵌入器承诺。
+ * 构造 9 个工具定义（engram_save/search/timeline/update/forget/review/stats/export/distill）。
+ * @param deps - 分库打开器、嵌入器、辅助 LLM、导出目录。
  * @returns 可直接 register 的工具定义数组。
  */
 export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
@@ -80,6 +91,22 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
         sourceSessionId: exec.agent?.id ?? null,
         ...(embeddings === undefined ? {} : { embedding: embeddings[0] }),
       })
+      // 写入时矛盾检测：高相似近邻建 contradicts 边并在结果中报告候选，由模型/用户裁决。
+      if (embeddings?.[0] !== undefined) {
+        const candidates = await store.findContradictions(embeddings[0])
+        for (const candidate of candidates) {
+          await store.linkEdge(record.id, candidate.id, 'contradicts')
+        }
+        if (candidates.length > 0) {
+          const listed = candidates.map(candidate => `「${candidate.content}」（id=${candidate.id}）`).join('；')
+          return {
+            id: record.id,
+            kind: record.kind,
+            importance: record.importance,
+            text: `已保存 ${record.id}。注意：与现有记忆高度相似——${listed}。若这是修正而非新事实，请用 engram_update 归并，或 engram_forget 去重。`,
+          }
+        }
+      }
       return { id: record.id, kind: record.kind, importance: record.importance }
     },
   })
@@ -220,5 +247,142 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     },
   })
 
-  return [save, search, timeline, update, forget]
+  const review = defineTool({
+    name: 'engram_review',
+    description: '审计一条记忆：查看内容、来源（会话/轮次/事件）、取代链、矛盾与关联，以及最近操作日志。',
+    parameters: {
+      id: { type: 'string', required: true, description: '条目 id' },
+      scope: { type: 'string', enum: ['user', 'project'], description: '条目作用域，默认 project' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args) {
+      const input = args as { id: string; scope?: unknown }
+      const store = await deps.openStore(scopeOf(input.scope, 'project'))
+      const view = await store.review(input.id as never)
+      if (view === undefined) return { text: `未找到条目 ${input.id}（用 engram_search 确认 id 与 scope）` }
+      const record = view.record
+      const source = record.sourceSessionId === null
+        ? '显式保存（无会话来源）'
+        : `会话 ${record.sourceSessionId}`
+          + (record.sourceRound === null ? '' : ` 第 ${record.sourceRound} 轮`)
+          + (record.sourceSeq === null ? '' : `，事件 seq ${record.sourceSeq}`)
+      const section = (title: string, ids: readonly string[]): string =>
+        ids.length === 0 ? '' : `\n${title}: ${ids.join(', ')}`
+      return {
+        text: [
+          `内容: ${record.content}`,
+          `属性: kind=${record.kind}, scope=${record.scope}, status=${record.status}, importance=${record.importance}, confidence=${record.confidence}, 访问 ${record.accessCount} 次`,
+          `来源: ${source}`,
+          section('被谁取代', view.supersededBy.map(String)),
+          section('取代了谁', view.supersedes.map(String)),
+          section('矛盾候选', view.contradicts.map(String)),
+          section('关联', view.related.map(String)),
+          view.operations.length === 0 ? '' : `\n最近操作:\n${view.operations.map(op => `- ${new Date(op.at).toISOString()} ${op.op}${op.detail === null ? '' : ` ${op.detail}`}`).join('\n')}`,
+        ].filter(part => part !== '').join('\n'),
+      }
+    },
+  })
+
+  const stats = defineTool({
+    name: 'engram_stats',
+    description: '记忆库统计：各状态与种类数量、关系边数、信噪比、操作日志量。scope=all 时合并两库。',
+    parameters: {
+      scope: { type: 'string', enum: ['user', 'project', 'all'], description: '作用域，默认 all' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args) {
+      const input = args as { scope?: unknown }
+      const scopes = scopesOf(input.scope)
+      const all = await Promise.all(scopes.map(async (scope) => ({
+        scope,
+        stats: await (await deps.openStore(scope)).stats(),
+      })))
+      const text = all.map(({ scope, stats }) => [
+        `[${scope}] 总数 ${stats.total}（active ${stats.active} / archived ${stats.archived} / forgotten ${stats.forgotten}）`,
+        `种类分布: ${Object.entries(stats.byKind).map(([kind, count]) => `${kind}=${count}`).join(', ') || '空'}`,
+        `关系边 ${stats.edges} 条 · 信噪比 ${(stats.signalRatio * 100).toFixed(1)}% · 操作日志 ${stats.opLogCount} 条`,
+      ].join('\n')).join('\n\n')
+      return { text }
+    },
+  })
+
+  const exportTool = defineTool({
+    name: 'engram_export',
+    description: '把记忆库导出为文件（Markdown 或 JSON，含全部状态与关系边），返回文件路径。数据可携带。',
+    parameters: {
+      format: { type: 'string', enum: ['markdown', 'json'], description: '导出格式，默认 markdown' },
+      scope: { type: 'string', enum: ['user', 'project', 'all'], description: '作用域，默认 all' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args) {
+      const input = args as { format?: unknown; scope?: unknown }
+      const format = input.format === 'json' ? 'json' : 'markdown'
+      const scopes = scopesOf(input.scope)
+      await mkdir(deps.exportDir, { recursive: true, mode: 0o700 })
+      const written: string[] = []
+      for (const scope of scopes) {
+        const data = await (await deps.openStore(scope)).exportAll()
+        const stamp = new Date().toISOString().replaceAll(':', '-')
+        const path = join(deps.exportDir, `engram-${scope}-${stamp}.${format === 'json' ? 'json' : 'md'}`)
+        const body = format === 'json'
+          ? JSON.stringify(data, null, 2)
+          : [
+              `# dsh-engram 导出（${scope}）`,
+              '',
+              ...data.records.map(record =>
+                `- [${record.status}/${record.kind}] ${record.content}（id=${record.id}，importance ${record.importance}）`),
+              '',
+              '## 关系边',
+              ...data.edges.map(edge => `- ${edge.from} --${edge.type}--> ${edge.to}`),
+              '',
+            ].join('\n')
+        await writeFile(path, body, { mode: 0o600 })
+        written.push(`${path}（${data.records.length} 条记忆，${data.edges.length} 条边）`)
+      }
+      return { text: `已导出:\n${written.join('\n')}` }
+    },
+  })
+
+  const distill = defineTool({
+    name: 'engram_distill',
+    description: '蒸馏整理：把同主题的记忆簇合并提炼为更高层的规律（旧条目归档、supersedes 链保留）。建议记忆较多时周期性执行。',
+    parameters: {
+      scope: { type: 'string', enum: ['user', 'project'], description: '作用域，默认 user' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args, exec) {
+      const input = args as { scope?: unknown }
+      const scope = scopeOf(input.scope, 'user')
+      if (deps.call === undefined) throw new Error('engram_distill: 辅助 LLM 不可用（宿主未提供 llm 服务），无法蒸馏')
+      const call = deps.call
+      const events = (exec.agent?.session?.events ?? []) as unknown as Parameters<typeof routeFromEvents>[0]
+      const route = deps.routeOverride ?? routeFromEvents(events)
+      if (route === undefined) throw new Error('engram_distill: 无法确定模型路由（会话尚无模型请求），请在 cordis.yml 配置 provider/model')
+      const embedder = await deps.embedder
+      const outcome = await distillMemories({
+        store: await deps.openStore(scope),
+        embedder,
+        scope,
+        call: params => call({ ...params, sessionId: exec.agent === undefined ? undefined : String(exec.agent.session.id) }),
+        logRequest: (data) => { exec.agent?.session?.append('engram/distill-request', data) },
+        route,
+        signal: exec.signal,
+      })
+      return { text: `蒸馏完成：取材 ${outcome.input} 条，产出 ${outcome.distilled} 条高层规律，归档 ${outcome.superseded} 条旧记忆（supersedes 链已建立，可 engram_review 审计）。` }
+    },
+  })
+
+  return [save, search, timeline, update, forget, review, stats, exportTool, distill]
 }

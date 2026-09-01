@@ -1,6 +1,6 @@
 # @kenz1117/dsh-engram
 
-DeepSeek Harness 的跨会话长期记忆插件：Agent 在会话与项目之间记住用户偏好、项目约定与经历事实，并随使用持续演化。纯 TypeScript，零外部进程、零 Python 依赖。
+DeepSeek Harness 的跨会话长期记忆插件：Agent 在会话与项目之间记住用户偏好、项目约定与经历事实，并随使用持续演化（摄取 → 强化 → 蒸馏 → 衰减）。纯 TypeScript，零外部进程、零 Python 依赖。
 
 [English](README.md) | 中文
 
@@ -10,7 +10,7 @@ DeepSeek Harness 的跨会话长期记忆插件：Agent 在会话与项目之间
 dsh plugin --profile web add @kenz1117/dsh-engram
 ```
 
-安装后无需配置即可使用（默认分库与模型缓存在 `~/.dsh/engram`，画像注入开启）。可选配置（cordis.yml）：
+安装后无需配置即可使用（默认分库与模型缓存在 `~/.dsh/engram`，画像注入开启，自动摄取关闭）。可选配置（cordis.yml）：
 
 ```yaml
 - id: dsh-engram
@@ -21,17 +21,36 @@ dsh plugin --profile web add @kenz1117/dsh-engram
     profileTopN: 8                  # 注入条数上限（1-64）
     modelCacheDir: '~/.dsh/engram/models'  # 嵌入模型缓存目录
     hfEndpoint: 'https://huggingface.co'   # 模型下载端点，网络受限可配镜像
+    ingest: 'off'                   # 自动摄取：off | light（仅用户消息，每轮≤2条）| eager（含助手消息，每轮≤5条）
+    # provider 与 model 必须成对提供：摄取/蒸馏的辅助 LLM 路由覆盖（缺省从会话日志解析）
+    # provider: 'deepseek'
+    # model: 'deepseek-v4-flash'
+    decayAfterDays: 30              # 衰减：最近访问超过该天数
+    decayImportanceBelow: 0.3       # 衰减：且 importance 低于该值 → 归档（可恢复）
 ```
 
-工具（5 个，窄参数）：`engram_save` 保存 / `engram_search` 语义+关键词混合检索 / `engram_timeline` 时间线 / `engram_update` 修正（取代链）/ `engram_forget` 遗忘（软删可恢复）。
+工具（9 个，窄参数）：
+
+| 工具 | 作用 |
+|---|---|
+| `engram_save` | 保存（嵌入可用时自动做矛盾候选检测） |
+| `engram_search` | 语义 + 关键词混合检索（命中强化置信度） |
+| `engram_timeline` | 时间线浏览 |
+| `engram_update` | 修正（supersedes 取代链） |
+| `engram_forget` | 遗忘（软删可恢复） |
+| `engram_review` | 审计单条：来源链、取代链、矛盾、操作日志 |
+| `engram_stats` | 全库统计与信噪比 |
+| `engram_export` | 导出 Markdown/JSON 文件（数据可携带） |
+| `engram_distill` | 蒸馏：同主题簇合并为高层规律（LLM） |
 
 ## 理解实现
 
-- **双层分库**：`user.db` 全局共享（偏好、通用事实）；`project-<cwd>.db` 按工作目录隔离（项目约定、决策）。
-- **混合检索**：FTS5（unicode61 分词 + 中文 2-gram 预切词）与本地向量（`Xenova/bge-small-zh-v1.5`，512 维，q8 量化）RRF 融合排序，再沿关系边一跳扩展（supports/refines/related）。
-- **修正走取代链**：`engram_update` 归档旧条目、写入新条目并建立 `supersedes` 边，链条完整可审计；操作日志表（op_log）记录全部写入/修改/遗忘。
-- **嵌入离线**：模型首次使用需联网下载（q8 约 50MB，端点可配镜像），此后完全离线；下载失败时插件照常加载，检索自动降级为纯关键词并在结果中标记。
-- **画像注入**：每轮第一步把用户级 top-N 高重要性记忆作为带 plugin 来源的动态上下文追加，不写入 system prompt，不影响 KV cache 前缀稳定性。
+- **双层分库**：`user.db` 全局共享；`project-<cwd>.db` 按工作目录隔离。
+- **混合检索**：FTS5（unicode61 + 中文 2-gram 预切词）与本地向量（`Xenova/bge-small-zh-v1.5`，512 维，q8）RRF 融合 + 关系边一跳扩展。
+- **知识飞轮**：摄取/保存 → 矛盾候选（写入时高相似近邻建 `contradicts` 边并报告，模型/用户裁决）→ 命中强化（confidence +0.05）→ 蒸馏（簇合并、supersedes 链、置信度继承）→ 衰减（低重要性且长期未访问归档，可恢复）。
+- **自动摄取**（`ingest` 开启时）：新一轮第一步从会话日志提取上一轮的候选事实（读取源是日志，辅助调用请求本身也 append 到日志）。候选以低 confidence 写入并按嵌入去重。
+- **来源链**：每条记忆记录来源会话、轮次与事件 seq，`engram_review` 可完整回查；操作日志表记录全部写入/修改/遗忘/蒸馏/衰减。
+- **嵌入离线**：模型首次使用需联网下载（q8 约 50MB，端点可配镜像），此后完全离线；失败时插件照常工作，检索降级纯关键词并显式标记。
 
 ## 开发
 
@@ -48,11 +67,11 @@ pnpm bundle
 
 #### What the model sees
 
-会话每轮第一步追加一条 plugin 来源的 user 快照：`User memory profile (dsh-engram, cross-session):` 加用户级记忆列表（默认至多 8 条，`injectProfile: false` 关闭）。工具调用结果为纯文本行列表（含 `id=`、scope/kind 标注与降级说明）。
+会话每轮第一步追加一条 plugin 来源的 user 快照：`User memory profile (dsh-engram, cross-session):` 加用户级记忆列表（默认至多 8 条，`injectProfile: false` 关闭）。工具调用结果为纯文本行列表（含 `id=`、scope/kind 标注、矛盾候选提示与降级说明）。自动摄取的辅助 LLM 请求以 `engram/ingest-request`、蒸馏以 `engram/distill-request` 事件记入会话日志。
 
 #### Token effect
 
-画像注入为条件性固定成本（条数 × 内容长度）；工具 schema 为常驻成本（5 个窄参数工具）。
+画像注入为条件性固定成本（条数 × 内容长度）；工具 schema 为常驻成本（9 个窄参数工具）；自动摄取与蒸馏各产生一次辅助 LLM 调用（独立于主对话计费路径，带 purpose 归因）。
 
 #### KV Cache effect
 
@@ -60,7 +79,6 @@ pnpm bundle
 
 ## Known Limitations and Deferred Work
 
-- **自动摄取未实现** —— 会话结束不从日志提取候选记忆，依赖模型显式调用 `engram_save`；二期在 session 事件流上加摄取钩子（`ingest: off | light | eager`）。
-- **飞轮未实现** —— 矛盾检测、蒸馏、衰减调度与 `engram_review/stats/export/distill` 四个审计工具在二期。
-- **来源链只有 sessionId** —— 轮次与事件 seq 归属随自动摄取补全。
+- **自动摄取的最后一轮盲区** —— 摄取由下一轮的第一步触发，会话最后一轮不摄取；会话结束事件钩子是后续工作。
+- **矛盾候选无 LLM 判定** —— 写入时仅按向量相似度（≥0.88）报告候选并建边，语义矛盾的确认留给模型/用户裁决与蒸馏。
 - **Web 管理面板未实现** —— 浏览、搜索、编辑、导出记忆库的 client 半在三期。

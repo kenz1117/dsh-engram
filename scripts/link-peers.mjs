@@ -27,6 +27,7 @@ const LINKED_PACKAGES = [
   ['@deepseek-ai/cordis-plugin-include', 'vendor/include'],
   ['@deepseek-ai/dsh-tools', 'packages/core/tools'],
   ['@deepseek-ai/dsh-system-prompt', 'packages/core/system-prompt'],
+  ['@deepseek-ai/dsh-session', 'packages/core/session'],
   ['@deepseek-ai/dsh-llm', 'packages/llm/llm'],
   ['@deepseek-ai/dsh-agent', 'packages/core/agent'],
   ['@deepseek-ai/dsh-scope', 'packages/core/scope'],

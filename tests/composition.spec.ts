@@ -1,8 +1,8 @@
 /**
  * REAL-composition coverage：测试用 cordis.yml 经真实 Loader 装载
- * system-prompt + tools + dsh-engram，断言 5 个 engram_ 工具可见、
- * fiber 卸载后消失（HMR 安全）。替身只用于外部网络（fetch 一律拒绝，
- * 嵌入器立即降级——降级路径本身是被测行为的一部分）。
+ * system-prompt + tools + llm 替身 + dsh-engram，断言 9 个 engram_ 工具可见、
+ * fiber 卸载后消失（HMR 安全）。替身只用于外部网络（fetch 一律拒绝，嵌入器
+ * 立即降级——降级路径本身是被测行为的一部分）与 llm 辅助调用端点。
  */
 
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -35,13 +35,31 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-/** 三行 cordis.yml（system-prompt + tools + engram）经真实 Loader 启动。 */
+/** llm 服务替身：辅助调用端点存在但不可用（摄取/蒸馏运行时失败路径不属于本测试）。 */
+const llmDouble = {
+  name: 'test-engram-llm',
+  apply(ctx: Context): void {
+    ctx.provide('llm', {
+      stream: async function* () {
+        throw new Error('llm offline in test')
+      },
+    } as never)
+  },
+}
+
+const EXPECTED_TOOLS = [
+  'engram_distill', 'engram_export', 'engram_forget', 'engram_review', 'engram_save',
+  'engram_search', 'engram_stats', 'engram_timeline', 'engram_update',
+]
+
+/** 四行 cordis.yml（system-prompt + tools + llm 替身 + engram）经真实 Loader 启动。 */
 async function loadComposition(): Promise<Context> {
   root = await mkdtemp(join(tmpdir(), 'dsh-engram-'))
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
     "- name: '@deepseek-ai/dsh-system-prompt'",
     "- name: '@deepseek-ai/dsh-tools'",
+    "- name: 'virtual:engram-llm'",
     "- name: '@kenz1117/dsh-engram'",
     '  config:',
     `    dbDir: '${join(root, 'engram')}'`,
@@ -55,6 +73,7 @@ async function loadComposition(): Promise<Context> {
   const modules = new Map<string, unknown>([
     ['@deepseek-ai/dsh-system-prompt', SystemPrompt],
     ['@deepseek-ai/dsh-tools', ToolRuntime],
+    ['virtual:engram-llm', llmDouble],
     ['@kenz1117/dsh-engram', Engram],
   ])
   context.loader.internal = {
@@ -73,19 +92,19 @@ async function loadComposition(): Promise<Context> {
 }
 
 describe('dsh-engram real Loader composition', () => {
-  it('装载后 5 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
+  it('装载后 9 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
     const names = () => loaded.tools.schemas().map(schema => schema.name)
-    for (const expected of ['engram_save', 'engram_search', 'engram_timeline', 'engram_update', 'engram_forget']) {
+    for (const expected of EXPECTED_TOOLS) {
       expect(names()).toContain(expected)
     }
 
-    // HMR 安全：卸载 engram 行后 5 个工具全部释放（tools 服务仍在，其余工具不受影响）。
+    // HMR 安全：卸载 engram 行后 9 个工具全部释放（tools 服务仍在，其余工具不受影响）。
     const entry = [...loaded.loader.entries()]
       .find(candidate => candidate.options.name === '@kenz1117/dsh-engram')
     expect(entry).toBeDefined()
     await entry!.fiber?.dispose()
-    for (const expected of ['engram_save', 'engram_search', 'engram_timeline', 'engram_update', 'engram_forget']) {
+    for (const expected of EXPECTED_TOOLS) {
       expect(names()).not.toContain(expected)
     }
   })
@@ -96,6 +115,7 @@ describe('dsh-engram real Loader composition', () => {
     await writeFile(configPath, [
       "- name: '@deepseek-ai/dsh-system-prompt'",
       "- name: '@deepseek-ai/dsh-tools'",
+      "- name: 'virtual:engram-llm'",
       "- name: '@kenz1117/dsh-engram'",
       '  config:',
       '    noSuchField: 1',
@@ -108,6 +128,7 @@ describe('dsh-engram real Loader composition', () => {
     const modules = new Map<string, unknown>([
       ['@deepseek-ai/dsh-system-prompt', SystemPrompt],
       ['@deepseek-ai/dsh-tools', ToolRuntime],
+      ['virtual:engram-llm', llmDouble],
       ['@kenz1117/dsh-engram', Engram],
     ])
     bad.loader.internal = {
