@@ -1,0 +1,66 @@
+{
+  "name": "@kenz1117/dsh-engram",
+  "description": "Cross-session long-term memory for DeepSeek Harness: dual-scope SQLite memory graph, hybrid retrieval, provenance audit, and a knowledge flywheel.",
+  "version": "0.0.1",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kenz1117/dsh-engram.git"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "postinstall": "node scripts/link-peers.mjs",
+    "bundle": "tsdown",
+    "watch": "tsdown --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "tsdown": "^0.22.14",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "onnxruntime-node",
+      "sharp",
+      "protobufjs"
+    ]
+  }
+}
