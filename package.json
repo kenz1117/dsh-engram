@@ -46,6 +46,16 @@
     "backfill": "node scripts/backfill-embeddings.mjs"
   },
   "license": "MIT",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "memory",
+    "cross-session",
+    "sqlite",
+    "embeddings",
+    "agent"
+  ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
