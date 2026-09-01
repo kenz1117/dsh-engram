@@ -189,7 +189,7 @@ export function EngramSection(): React.ReactElement {
       <div className={styles.cards}>
         {(stats ?? []).map(part => (
           <button key={part.scope} type="button" className={styles.card}
-            style={part.scope === scope ? { borderColor: 'var(--accent)' } : undefined}
+            style={part.scope === scope ? { borderColor: 'var(--dsw-alias-brand-primary)' } : undefined}
             onClick={() => { setScope(part.scope); setOffset(0) }}>
             <b>{part.stats.total}</b>
             <span>{part.scope} · active {part.stats.active} · 信噪比 {Math.round(part.stats.signalRatio * 100)}%</span>
