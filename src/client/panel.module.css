@@ -9,7 +9,7 @@
 .button { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 5px 12px; cursor: pointer; font-size: 13px; }
 .button:hover { border-color: var(--dsw-alias-brand-primary); }
 .button:disabled { opacity: 0.45; cursor: default; }
-.primary { background: var(--dsw-alias-button-primary-fill); border-color: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-brand-primary-invert); }
+.primary { background: var(--dsw-alias-button-primary-fill); border-color: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); }
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .card { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; padding: 10px 14px; text-align: left; cursor: pointer; color: var(--dsw-alias-label-primary); font: inherit; }
 .card b { display: block; font-size: 20px; }
@@ -28,9 +28,11 @@
 .ops { margin-top: 8px; display: flex; gap: 8px; }
 .pager { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 14px; color: var(--dsw-alias-label-secondary); }
 .empty { text-align: center; color: var(--dsw-alias-label-secondary); padding: 40px 0; }
-.backdrop { position: fixed; inset: 0; background: var(--dsw-alias-bg-overlay); display: flex; align-items: center; justify-content: center; z-index: 30; }
-.dialog { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; max-width: 640px; width: 92vw; padding: 18px; max-height: 80vh; overflow: auto; }
-.dialog h3 { margin: 0 0 10px; font-size: 15px; }
+/* 条目内行内展开区：顶部虚线与操作按钮区分隔，宽度随条目、不再覆盖整页。 */
+.expand { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--dsw-alias-border-l2); }
+.expandLoading { color: var(--dsw-alias-label-secondary); font-size: 13px; }
+.editForm { display: flex; flex-direction: column; }
+.editForm .input { width: 100%; box-sizing: border-box; }
 .fieldLabel { display: block; color: var(--dsw-alias-label-secondary); font-size: 12px; margin: 10px 0 4px; }
 .modalFoot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
-.review { background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 10px; overflow: auto; font-size: 12px; max-height: 320px; white-space: pre-wrap; color: var(--dsw-alias-label-primary); }
+.review { background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 10px; overflow: auto; font-size: 12px; max-height: 320px; white-space: pre-wrap; color: var(--dsw-alias-label-primary); margin: 0; }

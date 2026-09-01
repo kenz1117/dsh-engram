@@ -1,6 +1,7 @@
 /**
  * 记忆库设置面板：统计卡片、过滤列表、编辑（取代链）、遗忘/恢复、导出。
- * 数据经回环 API（/api/engram/*）读写；内容节点一律 DOM API 构建（防 XSS）。
+ * 数据经回环 API（/api/engram/*）读写；详情与编辑为条目下方行内展开
+ * （不嵌套弹窗）；内容节点一律 DOM/JSX 构建（防 XSS）。
  * @module @kenz1117/dsh-engram/client/EngramPanel
  */
 
@@ -52,8 +53,8 @@ function fmtTime(ms: number): string {
   return new Date(ms).toLocaleString('zh-CN', { hour12: false })
 }
 
-/** 审计弹层视图。 */
-function ReviewBody({ recordId, scope }: { recordId: string; scope: 'user' | 'project' }): React.ReactElement | null {
+/** 行内审计区：来源链、关系与最近操作日志（review API）。 */
+function ReviewBody({ recordId, scope }: { recordId: string; scope: 'user' | 'project' }): React.ReactElement {
   const [text, setText] = useState<string | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -63,7 +64,7 @@ function ReviewBody({ recordId, scope }: { recordId: string; scope: 'user' | 'pr
         const record = view.record as MemoryRow
         const lines = [
           `内容: ${record.content}`,
-          `属性: kind=${record.kind}, status=${record.status}, importance=${record.importance}, confidence=${record.confidence}, 访问 ${record.accessCount} 次`,
+          `属性: kind=${record.kind}, status=${record.status}, importance=${record.importance.toFixed(2)}, confidence=${record.confidence.toFixed(2)}, 访问 ${record.accessCount} 次`,
           `来源: ${record.sourceSessionId ?? '显式保存'}${record.sourceRound === null ? '' : ` 第${String(record.sourceRound)}轮`}`,
         ]
         for (const key of ['supersededBy', 'supersedes', 'contradicts', 'related'] as const) {
@@ -80,12 +81,12 @@ function ReviewBody({ recordId, scope }: { recordId: string; scope: 'user' | 'pr
       .catch((error: Error) => { if (!cancelled) setText(`加载失败：${error.message}`) })
     return () => { cancelled = true }
   }, [recordId, scope])
-  if (text === null) return null
+  if (text === null) return <div className={styles.expandLoading}>加载中…</div>
   return <pre className={styles.review}>{text}</pre>
 }
 
-/** 编辑弹层：内容/种类/重要性 → POST update（旧条目归档，取代链保留）。 */
-function EditDialog({ record, onClose, onSaved }: {
+/** 行内编辑表单：内容/种类/重要性 → POST update（旧条目归档，取代链保留）。 */
+function EditForm({ record, onClose, onSaved }: {
   record: MemoryRow
   onClose: () => void
   onSaved: () => void
@@ -103,22 +104,19 @@ function EditDialog({ record, onClose, onSaved }: {
       .catch((error: Error) => { alert(error.message) })
   }
   return (
-    <div className={styles.backdrop} onClick={onClose}>
-      <div className={styles.dialog} onClick={event => event.stopPropagation()}>
-        <h3>编辑记忆（写入取代链）</h3>
-        <label className={styles.fieldLabel}>内容</label>
-        <textarea className={styles.input} rows={3} value={content} onChange={event => setContent(event.target.value)} />
-        <label className={styles.fieldLabel}>种类</label>
-        <select className={styles.input} value={kind} onChange={event => setKind(event.target.value)}>
-          {KINDS.map(option => <option key={option} value={option}>{option}</option>)}
-        </select>
-        <label className={styles.fieldLabel}>重要性 {importance.toFixed(2)}</label>
-        <input type="range" min={0} max={1} step={0.05} value={importance}
-          onChange={event => setImportance(Number(event.target.value))} />
-        <div className={styles.modalFoot}>
-          <button type="button" className={styles.button} onClick={onClose}>取消</button>
-          <button type="button" className={`${styles.button} ${styles.primary}`} onClick={save}>保存（旧条目归档）</button>
-        </div>
+    <div className={styles.editForm}>
+      <label className={styles.fieldLabel}>内容</label>
+      <textarea className={styles.input} rows={3} value={content} onChange={event => setContent(event.target.value)} />
+      <label className={styles.fieldLabel}>种类</label>
+      <select className={styles.input} value={kind} onChange={event => setKind(event.target.value)}>
+        {KINDS.map(option => <option key={option} value={option}>{option}</option>)}
+      </select>
+      <label className={styles.fieldLabel}>重要性 {importance.toFixed(2)}</label>
+      <input type="range" min={0} max={1} step={0.05} value={importance}
+        onChange={event => setImportance(Number(event.target.value))} />
+      <div className={styles.modalFoot}>
+        <button type="button" className={styles.button} onClick={onClose}>取消</button>
+        <button type="button" className={`${styles.button} ${styles.primary}`} onClick={save}>保存（旧条目归档）</button>
       </div>
     </div>
   )
@@ -134,8 +132,8 @@ export function EngramSection(): React.ReactElement {
   const [list, setList] = useState<ListResult | null>(null)
   const [stats, setStats] = useState<StatsPart[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [editing, setEditing] = useState<MemoryRow | null>(null)
-  const [reviewId, setReviewId] = useState<MemoryRow | null>(null)
+  /** 行内展开态：互斥的唯一展开条目（review 或 edit）。 */
+  const [expanded, setExpanded] = useState<{ kind: 'review' | 'edit'; record: MemoryRow } | null>(null)
   const [reloadTick, setReloadTick] = useState(0)
 
   const reload = useCallback((): void => { setReloadTick(tick => tick + 1) }, [])
@@ -165,6 +163,12 @@ export function EngramSection(): React.ReactElement {
       .catch((actError: Error) => { alert(actError.message) })
   }
 
+  const toggle = (kind: 'review' | 'edit', record: MemoryRow): void => {
+    setExpanded(current => (current !== null && current.kind === kind && current.record.id === record.id)
+      ? null
+      : { kind, record })
+  }
+
   const page = Math.floor(offset / PAGE_SIZE) + 1
   const pages = list === null ? 1 : Math.max(1, Math.ceil(list.total / PAGE_SIZE))
 
@@ -175,7 +179,7 @@ export function EngramSection(): React.ReactElement {
           {(['user', 'project'] as const).map(option => (
             <button key={option} type="button"
               className={scope === option ? styles.scopeOn : styles.scopeOff}
-              onClick={() => { setScope(option); setOffset(0) }}>
+              onClick={() => { setScope(option); setOffset(0); setExpanded(null) }}>
               {option === 'user' ? '用户级' : '项目级'}
             </button>
           ))}
@@ -198,19 +202,19 @@ export function EngramSection(): React.ReactElement {
       </div>
       <div className={styles.filters}>
         <select className={styles.input} value={status}
-          onChange={event => { setStatus(event.target.value); setOffset(0) }}>
+          onChange={event => { setStatus(event.target.value); setOffset(0); setExpanded(null) }}>
           <option value="all">全部状态</option>
           <option value="active">active</option>
           <option value="archived">archived</option>
           <option value="forgotten">forgotten</option>
         </select>
         <select className={styles.input} value={kind}
-          onChange={event => { setKind(event.target.value); setOffset(0) }}>
+          onChange={event => { setKind(event.target.value); setOffset(0); setExpanded(null) }}>
           <option value="all">全部种类</option>
           {KINDS.map(option => <option key={option} value={option}>{option}</option>)}
         </select>
         <input className={styles.input} placeholder="按内容搜索…" value={q}
-          onChange={event => { setQ(event.target.value.trim()); setOffset(0) }} />
+          onChange={event => { setQ(event.target.value.trim()); setOffset(0); setExpanded(null) }} />
       </div>
       {error !== null && <div className={styles.empty}>{`加载失败：${error}`}</div>}
       {error === null && list !== null && list.records.length === 0 && (
@@ -235,15 +239,23 @@ export function EngramSection(): React.ReactElement {
           </div>
           <div className={styles.ops}>
             <button type="button" className={styles.button}
-              onClick={() => { setReviewId(record) }}>详情</button>
+              onClick={() => { toggle('review', record) }}>详情</button>
             <button type="button" className={styles.button}
-              onClick={() => { setEditing(record) }}>编辑</button>
+              onClick={() => { toggle('edit', record) }}>编辑</button>
             {record.status === 'active'
               ? <button type="button" className={styles.button}
                   onClick={() => { act('forget', record) }}>遗忘</button>
               : <button type="button" className={styles.button}
                   onClick={() => { act('restore', record) }}>恢复</button>}
           </div>
+          {expanded !== null && expanded.record.id === record.id && (
+            <div className={styles.expand}>
+              {expanded.kind === 'review'
+                ? <ReviewBody recordId={record.id} scope={record.scope} />
+                : <EditForm record={record} onClose={() => { setExpanded(null) }}
+                    onSaved={() => { setExpanded(null); reload() }} />}
+            </div>
+          )}
         </div>
       ))}
       <div className={styles.pager}>
@@ -254,21 +266,6 @@ export function EngramSection(): React.ReactElement {
           disabled={list === null || offset + PAGE_SIZE >= list.total}
           onClick={() => { setOffset(offset + PAGE_SIZE) }}>下一页</button>
       </div>
-      {editing !== null && (
-        <EditDialog record={editing} onClose={() => { setEditing(null) }} onSaved={() => { setEditing(null); reload() }} />
-      )}
-      {reviewId !== null && (
-        <div className={styles.backdrop} onClick={() => { setReviewId(null) }}>
-          <div className={styles.dialog} onClick={event => event.stopPropagation()}>
-            <h3>记忆审计</h3>
-            <ReviewBody recordId={reviewId.id} scope={reviewId.scope} />
-            <div className={styles.modalFoot}>
-              <button type="button" className={styles.button}
-                onClick={() => { setReviewId(null) }}>关闭</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
