@@ -49,6 +49,12 @@ export interface EngramStore {
   supersedeMany(input: WriteInput, oldIds: readonly MemoryId[]): Promise<MemoryRecord>
   /** 写入一条结构化审计记录（辅助 LLM 请求等，不进会话日志——下游插件禁止写未知事件类型）。 */
   audit(op: string, targetId: string, detail: string | null): Promise<void>
+  /** 幂等键查重：op_log 中是否已存在指定 op+detail 的记录。 */
+  hasAudit(op: string, detail: string): Promise<boolean>
+  /** 列出指定 op 的全部 detail（按写入顺序；pending 队列枚举用）。 */
+  listAuditDetails(op: string): Promise<string[]>
+  /** 清除指定 op+detail 的全部记录（pending 队列出队）。 */
+  clearAudit(op: string, detail: string): Promise<void>
   /** 物理清除本库全部数据（节点、边、FTS、操作日志）。 */
   purge(): Promise<void>
   /** 关闭数据库句柄。 */

@@ -30,11 +30,11 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 
 ## 特性
 
-- **跨会话记忆**：会话开始注入用户画像摘要（至多 8 条，可配），Agent 天然"记得"你是谁、在做什么；工具检索跨会话召回历史事实。
-- **双层分库**：`user.db` 全局共享；`project-<cwd>.db` 按工作目录隔离——个人偏好跟人走，项目约定跟仓库走。
-- **混合检索**：FTS5（unicode61 + 中文 2-gram 预切词）与本地向量（`Xenova/bge-small-zh-v1.5`，512 维，q8）RRF 融合 + 关系边一跳扩展；嵌入模型离线运行，下载失败自动降级纯关键词并显式标记。
+- **跨会话记忆**：会话开始注入用户画像摘要（条数 + token 预算双重上限，可配），Agent 天然"记得"你是谁、在做什么；工具检索跨会话召回历史事实。
+- **双层分库**：`user.db` 全局共享；`project-<hash>.db` 按 git origin 标识隔离（无 git 时回退工作目录编码，旧库自动迁移）——个人偏好跟人走，项目约定跟仓库走。
+- **混合检索**：FTS5（unicode61 + 中文 2-gram 预切词）与本地向量（`Xenova/bge-small-zh-v1.5`，512 维，q8）RRF 融合 + 关系边一跳扩展 + 新鲜度/命中次数乘性排序 boost；嵌入模型离线运行，下载失败自动降级纯关键词并显式标记。
 - **知识飞轮**：摄取/保存 → 矛盾候选（写入时高相似近邻建 `contradicts` 边并报告，模型/用户裁决）→ 命中强化（confidence +0.05）→ 蒸馏（同主题簇合并为高层规律、supersedes 取代链、置信度继承）→ 衰减（低重要性且长期未访问归档，可恢复）。
-- **自动摄取**（`ingest` 配置开启时）：新一轮第一步从会话日志提取上一轮的候选事实，低 confidence 写入并按嵌入去重——不说"记住"也能攒记忆。
+- **自动摄取**（`ingest` 配置开启时）：新一轮第一步从会话日志提取上一轮的候选事实，会话结束时补摄取最后一轮（失败留 pending 键，下次会话自动补做，幂等不重复），低 confidence 写入并按嵌入去重——不说"记住"也能攒记忆。
 - **来源审计**：每条记忆记录来源会话、轮次与事件 seq，`engram_review` 完整回查来源链、取代链、矛盾与操作日志；全部写入/修改/遗忘/蒸馏/衰减入操作日志表。
 - **Web 管理面板**：设置页「记忆库」tab——统计卡片、按状态/种类/内容过滤、行内详情与编辑（走取代链）、遗忘/恢复、导出 Markdown/JSON。界面文案中英双语，跟随宿主语言设置实时切换。
 - **数据可携带**：`engram_export` 一键导出 Markdown / JSON 文件。
@@ -64,14 +64,17 @@ dsh plugin --profile web add @kenz1117/dsh-engram
     dbDir: '~/.dsh/engram'          # 分库与模型缓存根目录
     injectProfile: true             # 会话开始注入用户画像摘要
     profileTopN: 8                  # 注入条数上限（1-64）
+    injectTokenBudget: 1024         # 注入 token 预算（128-8192，估算 ceil(len/4)，超预算条目降级为索引行）
     modelCacheDir: '~/.dsh/engram/models'  # 嵌入模型缓存目录
     hfEndpoint: 'https://huggingface.co'   # 模型下载端点，网络受限可配镜像
     ingest: 'off'                   # 自动摄取：off | light（仅用户消息，每轮≤2条）| eager（含助手消息，每轮≤5条）
     # provider 与 model 必须成对提供：摄取/蒸馏的辅助 LLM 路由覆盖（缺省从会话日志解析）
     # provider: 'deepseek'
     # model: 'deepseek-v4-flash'
-    decayAfterDays: 30              # 衰减：最近访问超过该天数
+    decayAfterDays: 30              # 衰减：最近访问超过该天数（同时是检索 recency boost 的衰减窗口）
     decayImportanceBelow: 0.3       # 衰减：且 importance 低于该值 → 归档（可恢复）
+    rankRecencyWeight: 0.2          # 检索排序新鲜度因子权重（0-2，0 关闭）
+    rankProofWeight: 0.1            # 检索排序命中次数因子权重（0-2，0 关闭）
 ```
 
 ## 工作原理
@@ -82,15 +85,15 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 会话 Agent                                 宿主半（Node）
   │                                          │
   ├─ 每轮第一步 ◀─────────────────────────── ├─ 用户画像快照注入（plugin 来源 user 快照）
-  ├─ engram_save / search / review … ──────▶ ├─ SQLite 双库（user.db / project-<cwd>.db）
-  │                                          ├─ FTS5 关键词道 + 本地向量道 RRF 融合
+  ├─ engram_save / search / review … ──────▶ ├─ SQLite 双库（user.db / project-<origin hash>.db）
+  │                                          ├─ FTS5 关键词道 + 本地向量道 RRF 融合 + 排序 boost
   ├─ engram_distill ───────────────────────▶ ├─ 辅助 LLM 蒸馏（簇合并 → supersedes 链）
-  │                                          └─ 自动摄取：会话日志 → 候选事实（ingest 开启时）
+  │                                          └─ 自动摄取：会话日志 → 候选事实（含会话结束的末轮，ingest 开启时）
   └─ 设置页「记忆库」tab ◀────────────────── ─── 回环 API /api/engram/*（写操作校验回环 Origin）
 ```
 
-- **双层分库**：`user.db` 全局共享；`project-<cwd>.db` 按工作目录隔离。
-- **自动摄取**（`ingest` 开启时）：新一轮第一步从会话日志提取上一轮的候选事实（读取源是会话日志；辅助调用的请求审计走插件自身操作日志，不向会话日志 append 未知事件）。候选以低 confidence 写入并按嵌入去重。
+- **双层分库**：`user.db` 全局共享；`project-<hash>.db` 按 git origin URL 归一化哈希命名（`git@github.com:a/b.git` 与 `https://github.com/a/b` 同库；worktree 沿指针解析到主仓库 origin）；无 git 或无 origin 时回退工作目录编码命名，旧的 cwd 命名库在启动时自动 rename 迁移（新旧并存则不动并告警）。
+- **自动摄取**（`ingest` 开启时）：新一轮第一步从会话日志提取上一轮的候选事实；会话结束（session/disposed）补摄取最后一轮，5 秒超时，失败/超时把 pending 键写入操作日志，下次会话首步自动重放补做；已摄取的 (会话, 轮次) 幂等去重。读取源是会话日志；辅助调用的请求审计走插件自身操作日志，不向会话日志 append 未知事件。候选以低 confidence 写入并按嵌入去重。
 - **来源链**：每条记忆记录来源会话、轮次与事件 seq，`engram_review` 可完整回查；操作日志表记录全部写入/修改/遗忘/蒸馏/衰减。
 - **嵌入离线**：模型首次使用需联网下载（q8 约 50MB，端点可配镜像），此后完全离线；失败时插件照常工作，检索降级纯关键词并显式标记。
 - **界面本地化**：client 半经宿主 locale 服务注册 zh/en 词典，跟随宿主语言设置实时切换；状态/种类等数据枚举仅在显示层映射，存储值保持英文。
@@ -114,11 +117,11 @@ pnpm bundle
 
 #### What the model sees
 
-会话每轮第一步追加一条 plugin 来源的 user 快照：`User memory profile (dsh-engram, cross-session):` 加用户级记忆列表（默认至多 8 条，`injectProfile: false` 关闭）。工具调用结果为纯文本行列表（含 `id=`、scope/kind 标注、矛盾候选提示与降级说明）。自动摄取与蒸馏各产生一次辅助 LLM 调用（独立于主对话计费路径，带 purpose 归因）。
+会话每轮第一步追加一条 plugin 来源的 user 快照：`User memory profile (dsh-engram, cross-session):` 加用户级记忆列表（默认至多 8 条且整段不超过 1024 token 预算，超预算条目降级为 `#id` 索引行，`injectProfile: false` 关闭）。工具调用结果为纯文本行列表（含 `id=`、scope/kind 标注、矛盾候选提示与降级说明）。自动摄取与蒸馏各产生一次辅助 LLM 调用（独立于主对话计费路径，带 purpose 归因）。
 
 #### Token effect
 
-画像注入为条件性固定成本（条数 × 内容长度）；工具 schema 为常驻成本（9 个窄参数工具）。
+画像注入为条件性固定成本（受条数上限与 token 预算双重约束）；工具 schema 为常驻成本（9 个窄参数工具）。
 
 #### KV Cache effect
 
@@ -126,7 +129,6 @@ pnpm bundle
 
 ## Known Limitations and Deferred Work
 
-- **自动摄取的最后一轮盲区** —— 摄取由下一轮的第一步触发，会话最后一轮不摄取；会话结束事件钩子是后续工作。
 - **矛盾候选无 LLM 判定** —— 写入时仅按向量相似度（≥0.88）报告候选并建边，语义矛盾的确认留给模型/用户裁决与蒸馏。
 - **嵌入器降级期间的记忆无向量** —— 模型未就绪时写入的记忆不参与语义道；语义上线后跑一次 `pnpm backfill` 补算存量向量（`pnpm build` 的模型缓存就绪后执行，可经 `HF_ENDPOINT` 配镜像）。
 

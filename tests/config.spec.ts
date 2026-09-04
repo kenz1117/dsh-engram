@@ -14,6 +14,9 @@ describe('resolveConfig', () => {
     expect(resolved.routeOverride).toBeUndefined()
     expect(resolved.decayAfterDays).toBe(30)
     expect(resolved.decayImportanceBelow).toBe(0.3)
+    expect(resolved.injectTokenBudget).toBe(1024)
+    expect(resolved.rankRecencyWeight).toBe(0.2)
+    expect(resolved.rankProofWeight).toBe(0.1)
   })
 
   it('显式值全部透传', () => {
@@ -22,6 +25,7 @@ describe('resolveConfig', () => {
       hfEndpoint: 'https://hf-mirror.com', ingest: 'eager',
       provider: 'deepseek', model: 'deepseek-v4-flash',
       decayAfterDays: 7, decayImportanceBelow: 0.5,
+      injectTokenBudget: 2048, rankRecencyWeight: 0, rankProofWeight: 1.5,
     })
     expect(resolved.dbDir).toBe('/tmp/e')
     expect(resolved.injectProfile).toBe(false)
@@ -32,6 +36,9 @@ describe('resolveConfig', () => {
     expect(resolved.routeOverride).toEqual({ provider: 'deepseek', model: 'deepseek-v4-flash' })
     expect(resolved.decayAfterDays).toBe(7)
     expect(resolved.decayImportanceBelow).toBe(0.5)
+    expect(resolved.injectTokenBudget).toBe(2048)
+    expect(resolved.rankRecencyWeight).toBe(0)
+    expect(resolved.rankProofWeight).toBe(1.5)
   })
 
   it('未知键 loud 失败', () => {
@@ -55,5 +62,17 @@ describe('resolveConfig', () => {
   it('decay 参数越界 loud 失败', () => {
     expect(() => resolveConfig({ decayAfterDays: 0 })).toThrow(/decayAfterDays/)
     expect(() => resolveConfig({ decayImportanceBelow: 2 })).toThrow(/decayImportanceBelow/)
+  })
+
+  it('injectTokenBudget 越界 loud 失败', () => {
+    expect(() => resolveConfig({ injectTokenBudget: 127 })).toThrow(/injectTokenBudget/)
+    expect(() => resolveConfig({ injectTokenBudget: 8193 })).toThrow(/injectTokenBudget/)
+    expect(() => resolveConfig({ injectTokenBudget: 1024.5 })).toThrow(/injectTokenBudget/)
+  })
+
+  it('排序 boost 权重越界 loud 失败', () => {
+    expect(() => resolveConfig({ rankRecencyWeight: -0.1 })).toThrow(/rankRecencyWeight/)
+    expect(() => resolveConfig({ rankRecencyWeight: 2.1 })).toThrow(/rankRecencyWeight/)
+    expect(() => resolveConfig({ rankProofWeight: 3 })).toThrow(/rankProofWeight/)
   })
 })

@@ -2,7 +2,10 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { ingestPreviousTurn, previousTurnSlice } from '../src/ingest/hook.ts'
+import {
+  INGEST_DONE_OP, INGEST_PENDING_OP, encodeTurnKey, ingestFinalTurn, ingestPreviousTurn,
+  lastTurnSlice, markPendingIngest, previousTurnSlice, replayPendingIngests, turnSlice,
+} from '../src/ingest/hook.ts'
 import type { IngestRequestEventData } from '../src/ingest/hook.ts'
 import { openEngramStore } from '../src/store/sqlite.ts'
 import type { EngramStore } from '../src/store/interface.ts'
@@ -193,5 +196,153 @@ describe('ingestPreviousTurn', () => {
       ]),
     }))
     expect(outcome.written).toBe(2)
+  })
+
+  it('幂等：同一 (sessionId, turn) 重复摄取直接跳过', async () => {
+    const first = await ingestPreviousTurn(baseDeps())
+    expect(first.written).toBe(2)
+    const second = await ingestPreviousTurn(baseDeps())
+    expect(second.skipped).toBe('already-ingested')
+    expect(second.written).toBe(0)
+    expect(await store.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-ingest-1', 1))).toBe(true)
+    // 库里仍只有第一批（无重复写入）。
+    expect((await store.topActive('user', 10)).length).toBe(2)
+  })
+
+  it('normal 与 disposed 路径互不重复：末轮已摄取后，恢复会话的上一轮摄取跳过', async () => {
+    const events = [
+      turnStart(1),
+      userMsg('第一轮内容', 2),
+      routeHeader(3),
+      turnStart(2),
+      userMsg('末轮内容', 200),
+    ]
+    // disposed 路径摄取末轮（turn 2）。
+    const finalOutcome = await ingestPreviousTurn(baseDeps({ events, turn: 2, slice: 'last' }))
+    expect(finalOutcome.written).toBe(2)
+    // 会话恢复继续 turn 3，normal 路径要摄取的上一轮正是 turn 2 → 幂等跳过。
+    const resumed = [...events, turnStart(3), userMsg('新一轮', 300)]
+    const outcome = await ingestPreviousTurn(baseDeps({ events: resumed, turn: 3 }))
+    expect(outcome.skipped).toBe('already-ingested')
+    expect(outcome.written).toBe(0)
+  })
+})
+
+describe('末轮切片', () => {
+  it('lastTurnSlice 切最后一个 turn/start 到日志末尾', () => {
+    const slice = lastTurnSlice([
+      turnStart(1),
+      userMsg('第一轮', 2),
+      turnStart(2),
+      userMsg('末轮', 200),
+      assistantMsg('末轮回答', 201),
+    ])
+    expect(slice).toHaveLength(3)
+    expect(slice[0]!.type).toBe('turn/start')
+    expect(lastTurnSlice([userMsg('无轮次', 1)])).toHaveLength(0)
+  })
+
+  it('turnSlice 切指定轮次到下一轮边界', () => {
+    const events = [
+      turnStart(1),
+      userMsg('第一轮', 2),
+      turnStart(2),
+      userMsg('第二轮', 200),
+      turnStart(3),
+      userMsg('第三轮', 300),
+    ]
+    expect(turnSlice(events, 2)).toHaveLength(2)
+    expect(turnSlice(events, 3)).toHaveLength(2)
+    expect(turnSlice(events, 9)).toHaveLength(0)
+  })
+})
+
+describe('ingestFinalTurn', () => {
+  const finalEvents = [
+    turnStart(1),
+    userMsg('第一轮', 2),
+    routeHeader(3),
+    turnStart(2),
+    userMsg('末轮用户输入', 200),
+  ]
+
+  it('摄取末轮并写 done 键', async () => {
+    const outcome = await ingestFinalTurn(baseDeps({ events: finalEvents, turn: 2 }))
+    expect(outcome?.written).toBe(2)
+    expect(await store.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-ingest-1', 2))).toBe(true)
+  })
+
+  it('超时/失败落 pending 键，不抛出', async () => {
+    const outcome = await ingestFinalTurn(baseDeps({
+      events: finalEvents,
+      turn: 2,
+      call: ({ signal }) => new Promise<string>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('aborted')))
+      }),
+      signal: AbortSignal.timeout(50),
+    }))
+    expect(outcome).toBeNull()
+    expect(await store.hasAudit(INGEST_PENDING_OP, encodeTurnKey('sess-ingest-1', 2))).toBe(true)
+    // 重复失败不重复落 pending。
+    await markPendingIngest(store, 'sess-ingest-1', 2)
+    expect((await store.listAuditDetails(INGEST_PENDING_OP)).length).toBe(1)
+  })
+
+  it('无 turn/start 时不摄取也不落 pending', async () => {
+    const outcome = await ingestFinalTurn(baseDeps({ events: [userMsg('孤儿消息', 1)] }))
+    expect(outcome).toBeNull()
+    expect((await store.listAuditDetails(INGEST_PENDING_OP)).length).toBe(0)
+  })
+})
+
+describe('replayPendingIngests', () => {
+  const replayDeps = (overrides?: Partial<Parameters<typeof replayPendingIngests>[0]>) => ({
+    openStore: async () => store,
+    resolveEvents: async () => undefined,
+    embedder: Promise.resolve(undefined),
+    mode: 'light' as const,
+    routeOverride: undefined,
+    call: async () => VALID_LLM_OUTPUT,
+    logRequest: (_data: IngestRequestEventData) => undefined,
+    signal: new AbortController().signal,
+    ...overrides,
+  })
+
+  const pendingEvents = [
+    turnStart(1),
+    userMsg('旧会话第一轮', 2),
+    routeHeader(3),
+    turnStart(2),
+    userMsg('旧会话末轮输入', 200),
+  ]
+
+  it('重放补做：摄取写入、pending 出队、done 落键', async () => {
+    await markPendingIngest(store, 'sess-old', 2)
+    const outcome = await replayPendingIngests(replayDeps({
+      resolveEvents: async sessionId => sessionId === 'sess-old' ? pendingEvents : undefined,
+    }))
+    expect(outcome).toEqual({ replayed: 1, kept: 0 })
+    expect((await store.listAuditDetails(INGEST_PENDING_OP)).length).toBe(0)
+    expect(await store.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-old', 2))).toBe(true)
+    const rows = await store.topActive('user', 10)
+    expect(rows.some(record => record.sourceSessionId === 'sess-old' && record.sourceRound === 2)).toBe(true)
+    // 再次重放：pending 已出队，无动作。
+    expect(await replayPendingIngests(replayDeps())).toEqual({ replayed: 0, kept: 0 })
+  })
+
+  it('事件源不可得的 pending 保留到下次', async () => {
+    await markPendingIngest(store, 'sess-gone', 3)
+    const outcome = await replayPendingIngests(replayDeps())
+    expect(outcome).toEqual({ replayed: 0, kept: 1 })
+    expect((await store.listAuditDetails(INGEST_PENDING_OP)).length).toBe(1)
+  })
+
+  it('已有 done 标记或键损坏的 pending 直接出队', async () => {
+    await markPendingIngest(store, 'sess-done', 1)
+    await store.audit(INGEST_DONE_OP, 'sess-done', encodeTurnKey('sess-done', 1))
+    await store.audit(INGEST_PENDING_OP, 'BROKEN', '没有分隔符的坏键')
+    const outcome = await replayPendingIngests(replayDeps())
+    expect(outcome).toEqual({ replayed: 0, kept: 0 })
+    expect((await store.listAuditDetails(INGEST_PENDING_OP)).length).toBe(0)
   })
 })

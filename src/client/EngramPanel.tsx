@@ -43,6 +43,16 @@ interface StatsPart {
   }
 }
 
+/** review API 的返回结构（详情行内展开区的数据源）。 */
+interface ReviewView {
+  readonly record: MemoryRow
+  readonly supersededBy?: readonly string[]
+  readonly supersedes?: readonly string[]
+  readonly contradicts?: readonly string[]
+  readonly related?: readonly string[]
+  readonly operations?: readonly { at: number; op: string; detail: string | null }[]
+}
+
 /** 面板内部传递的翻译函数（渲染器按注册的 locale 声明合成的 t 的窄化签名）。 */
 type T = (key: EngramKey, params?: Record<string, unknown>) => string
 
@@ -139,46 +149,103 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return body
 }
 
+/** 绝对时间（审计时间线等需要精确时刻的位置）。 */
 function fmtTime(ms: number): string {
   // 时间格式跟随浏览器环境语言（宿主界面语言通常与浏览器一致）。
   return new Date(ms).toLocaleString(navigator.language || 'zh-CN', { hour12: false })
 }
 
-/** 行内审计区：来源链、关系与最近操作日志（review API）。 */
+/** 列表用的相对时间：1 分钟内「刚刚」，其后按分钟/小时/天取整。 */
+function relTime(t: T, ms: number): string {
+  const diff = Math.max(0, Date.now() - ms)
+  const minutes = Math.floor(diff / 60_000)
+  if (minutes < 1) return t('timeJustNow')
+  if (minutes < 60) return t('timeMinutesAgo', { n: minutes })
+  const hours = Math.floor(minutes / 60)
+  if (hours < 48) return t('timeHoursAgo', { n: hours })
+  return t('timeDaysAgo', { n: Math.floor(hours / 24) })
+}
+
+/** 细仪表条：重要性（品牌色）与置信（成功色）共用，conf 变体换色。 */
+function Meter({ value, conf }: { value: number; conf?: boolean }): React.ReactElement {
+  return (
+    <span className={conf === true ? `${styles.meter} ${styles.conf}` : styles.meter}>
+      <i style={{ width: `${String(Math.round(Math.min(1, Math.max(0, value)) * 100))}%` }} />
+    </span>
+  )
+}
+
+/** 关系 id 列表 → 等宽字体 chips（完整 id 放 title）。 */
+function RelChips({ ids }: { ids: readonly string[] }): React.ReactElement {
+  return (
+    <div className={styles.relChips}>
+      {ids.map(id => <span key={id} className={styles.relChip} title={id}>{id.slice(0, 18)}</span>)}
+    </div>
+  )
+}
+
+/** 行内审计区：属性网格 + 关系 chips + 操作时间线（review API）。 */
 function ReviewBody({ t, recordId, scope }: {
   t: T
   recordId: string
   scope: 'user' | 'project'
 }): React.ReactElement {
-  const [text, setText] = useState<string | null>(null)
+  const [view, setView] = useState<ReviewView | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
   useEffect(() => {
     let cancelled = false
-    api<Record<string, unknown>>(`review?scope=${scope}&id=${encodeURIComponent(recordId)}`)
-      .then((view) => {
-        if (cancelled) return
-        const record = view.record as MemoryRow
-        const lines = [
-          `${t('labelContent')}: ${record.content}`,
-          `${t('detailAttributes')}: ${t('labelKind')}=${kindLabel(t, record.kind)}, ${t('labelStatus')}=${t(STATUS_KEY[record.status])}, ${t('importance')}=${record.importance.toFixed(2)}, ${t('confidence')}=${record.confidence.toFixed(2)}, ${t('accessCount', { n: record.accessCount })}`,
-          `${t('detailSource')}: ${sourceLabel(t, record)}`,
-        ]
-        for (const key of ['supersededBy', 'supersedes', 'contradicts', 'related'] as const) {
-          const ids = view[key] as string[] | undefined
-          const relKey = REL_KEY[key]
-          if (ids !== undefined && ids.length > 0) lines.push(`${relKey === undefined ? key : t(relKey)}: ${ids.join(', ')}`)
-        }
-        const operations = view.operations as { at: number; op: string; detail: string | null }[] | undefined
-        if (operations !== undefined && operations.length > 0) {
-          lines.push(`${t('detailOperations')}:`)
-          operations.forEach(op => lines.push(`  ${fmtTime(op.at)} ${opLabel(t, op.op)}${formatOpDetail(t, op.op, op.detail)}`))
-        }
-        setText(lines.join('\n'))
-      })
-      .catch((error: Error) => { if (!cancelled) setText(t('loadFailed', { msg: error.message })) })
+    api<ReviewView>(`review?scope=${scope}&id=${encodeURIComponent(recordId)}`)
+      .then((data) => { if (!cancelled) setView(data) })
+      .catch((error: Error) => { if (!cancelled) setFailed(error.message) })
     return () => { cancelled = true }
   }, [recordId, scope, t])
-  if (text === null) return <div className={styles.expandLoading}>{t('loading')}</div>
-  return <pre className={styles.review}>{text}</pre>
+  if (failed !== null) return <div className={styles.expandLoading}>{t('loadFailed', { msg: failed })}</div>
+  if (view === null) return <div className={styles.expandLoading}>{t('loading')}</div>
+  const { record } = view
+  const relations = (['supersededBy', 'supersedes', 'contradicts', 'related'] as const)
+    .map(key => ({ key, label: REL_KEY[key], ids: view[key] ?? [] }))
+    .filter(entry => entry.ids.length > 0)
+  const operations = view.operations ?? []
+  return (
+    <div>
+      <dl className={styles.attrGrid}>
+        <dt>{t('labelContent')}</dt>
+        <dd>{record.content}</dd>
+        <dt>{t('labelKind')}</dt>
+        <dd><span className={styles.chip}>{kindLabel(t, record.kind)}</span></dd>
+        <dt>{t('labelStatus')}</dt>
+        <dd><span className={`${styles.statusWrap} ${styles[record.status]}`}>{t(STATUS_KEY[record.status])}</span></dd>
+        <dt>{t('importance')}</dt>
+        <dd>{record.importance.toFixed(2)}<Meter value={record.importance} /></dd>
+        <dt>{t('confidence')}</dt>
+        <dd>{record.confidence.toFixed(2)}<Meter value={record.confidence} conf /></dd>
+        <dt>{t('detailSource')}</dt>
+        <dd>{sourceLabel(t, record)}</dd>
+        <dt>{t('labelCreated')}</dt>
+        <dd>{fmtTime(record.createdAt)}</dd>
+      </dl>
+      {relations.map(({ key, label, ids }) => (
+        <div key={key} className={styles.relBlock}>
+          <h5>{label === undefined ? key : t(label)}</h5>
+          <RelChips ids={ids} />
+        </div>
+      ))}
+      {operations.length > 0 && (
+        <div className={styles.relBlock}>
+          <h5>{t('detailOperations')}</h5>
+          <ul className={styles.timeline}>
+            {operations.map((op, index) => (
+              <li key={index}>
+                <time>{fmtTime(op.at)}</time>
+                <b>{opLabel(t, op.op)}</b>
+                {formatOpDetail(t, op.op, op.detail)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
 }
 
 /** 行内编辑表单：内容/种类/重要性 → POST update（旧条目归档，取代链保留）。 */
@@ -235,7 +302,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
   const [reloadTick, setReloadTick] = useState(0)
   /** 批量选择：条目 id 集合（scope/过滤/翻页/搜索变更时清空）。 */
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
-  /** 批量遗忘的两段式确认（3 秒未确认自动复位）。 */
+  /** 批量遗忘的两段式确认。 */
   const [confirmForget, setConfirmForget] = useState(false)
 
   const reload = useCallback((): void => { setReloadTick(tick => tick + 1) }, [])
@@ -339,11 +406,14 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
       </div>
       <div className={styles.cards}>
         {(stats ?? []).map(part => (
-          <button key={part.scope} type="button" className={styles.card}
-            style={part.scope === scope ? { borderColor: 'var(--dsw-alias-brand-primary)' } : undefined}
+          <button key={part.scope} type="button"
+            className={part.scope === scope ? `${styles.card} ${styles.cardOn}` : styles.card}
             onClick={() => { setScope(part.scope); setOffset(0); clearSelection() }}>
             <b>{part.stats.total}</b>
             <span>{`${t(SCOPE_KEY[part.scope])} · ${t('cardActive', { n: part.stats.active })} · ${t('signalRatio', { n: Math.round(part.stats.signalRatio * 100) })}`}</span>
+            <span className={styles.cardMeter}>
+              <i style={{ width: `${String(Math.round(part.stats.signalRatio * 100))}%` }} />
+            </span>
           </button>
         ))}
       </div>
@@ -381,25 +451,30 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
         </div>
       )}
       {error !== null && <div className={styles.empty}>{t('loadFailed', { msg: error })}</div>}
+      {error === null && list === null && [0, 1, 2].map(index => (
+        <div key={index} className={styles.skeleton}><i /><i /><i /></div>
+      ))}
       {error === null && list !== null && list.records.length === 0 && (
         <div className={styles.empty}>{t('empty')}</div>
       )}
-      {(list?.records ?? []).map(record => (
-        <div key={record.id} className={selected.has(record.id) ? `${styles.item} ${styles.itemSelected}` : styles.item}>
+      {(list?.records ?? []).map((record, index) => (
+        <div key={record.id}
+          className={selected.has(record.id) ? `${styles.item} ${styles.itemSelected}` : styles.item}
+          style={{ animationDelay: `${String(Math.min(index, 12) * 28)}ms` }}>
           <div className={styles.row1}>
             <input type="checkbox" className={styles.itemCheck} checked={selected.has(record.id)}
               aria-label={record.content.slice(0, 24)} onChange={() => toggleSelect(record.id)} />
-            <span className={`${styles.badge} ${styles[record.status]}`}>{t(STATUS_KEY[record.status])}</span>
-            <span className={styles.badge}>{kindLabel(t, record.kind)}</span>
-            <span className={styles.badge}>{t(SCOPE_KEY[record.scope])}</span>
+            <span className={`${styles.statusWrap} ${styles[record.status]}`}>{t(STATUS_KEY[record.status])}</span>
+            <span className={styles.chip}>{kindLabel(t, record.kind)}</span>
+            <span className={styles.scopeTag}>{t(SCOPE_KEY[record.scope])}</span>
+            <span className={styles.timeTag} title={fmtTime(record.createdAt)}>{relTime(t, record.createdAt)}</span>
           </div>
           <div className={styles.content}>{record.content}</div>
           <div className={styles.meta}>
-            <span>{`${t('importance')} ${record.importance.toFixed(2)}`}</span>
-            <span>{`${t('confidence')} ${record.confidence.toFixed(2)}`}</span>
+            <span className={styles.meterField}>{t('importance')}<Meter value={record.importance} />{record.importance.toFixed(2)}</span>
+            <span className={styles.meterField}>{t('confidence')}<Meter value={record.confidence} conf />{record.confidence.toFixed(2)}</span>
             <span>{t('accessCount', { n: record.accessCount })}</span>
             <span>{sourceLabel(t, record)}</span>
-            <span>{fmtTime(record.createdAt)}</span>
           </div>
           <div className={styles.ops}>
             <button type="button" className={styles.button}

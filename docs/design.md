@@ -21,9 +21,11 @@ dsh-engram/
   tsdown.config.ts        打包 lib/index.js（host 半）、lib/invariant.js
   tsconfig.json / tsconfig.host.json
   src/
-    index.ts              插件入口：Config、apply，注册 store/embedder/工具/摄取钩子
+    index.ts              插件入口：Config、apply，注册 store/embedder/工具/摄取钩子（含 session/disposed 末轮摄取）
     types.ts              纯类型：MemoryRecord、MemoryEdge、Query、Hit、EngramError
-    config.ts             Config 字段：dbDir、scope 开关、ingest 档位、注入条数、模型缓存目录
+    config.ts             Config 字段：dbDir、scope 开关、ingest 档位、注入条数与 token 预算、排序 boost 权重、模型缓存目录
+    project/
+      identity.ts         项目标识：git origin URL 归一化 → sha256 分库名，worktree 指针解析，cwd 兜底与旧库迁移
     store/
       interface.ts        EngramStore 接口（可替换抽象，capability seam 的 Provider 角色）
       sqlite.ts           node:sqlite 实现：节点表 + 边表 + FTS5 + 向量列，单调 SCHEMA_VERSION
@@ -52,14 +54,14 @@ dsh-engram/
 
 关系边字段：`from`、`to`、`type`（`supports` | `contradicts` | `refines` | `related` | `supersedes`）、`createdAt`。图能力用于两处：写入时矛盾检测、检索时一跳邻域扩展。
 
-存储：用户级与项目级物理分库，两个 SQLite 文件，位于 Config `dbDir`（默认 harness home 的 engram 目录）。schema 打开时校验单调 `SCHEMA_VERSION`，不兼容拒绝加载，不写兼容 shim。
+存储：用户级与项目级物理分库，两个 SQLite 文件，位于 Config `dbDir`（默认 harness home 的 engram 目录）。项目库命名 `project-<sha256 前 24 hex>.db`，哈希输入是 git origin URL 归一化（去协议/凭证、host 小写、去尾部 `.git` 与 `/`；worktree 沿 `gitdir:` + `commondir` 指针解析到主仓库 config，纯文件读不起子进程）；无 git 或无 origin 回退 cwd 编码命名，启动时旧 cwd 命名库自动 rename 迁移（新旧并存则不动并告警）。schema 打开时校验单调 `SCHEMA_VERSION`，不兼容拒绝加载，不写兼容 shim。
 
 ## 工具集（9 个）
 
 | 工具 | 作用 |
 |---|---|
 | `engram_save` | 显式保存，指定 kind 与 importance |
-| `engram_search` | 向量 + FTS5 融合排序检索，关系一跳扩展，scope 筛选 |
+| `engram_search` | 向量 + FTS5 融合排序检索（RRF 之上乘 recency/proof boost，权重入 Config），关系一跳扩展，scope 筛选 |
 | `engram_timeline` | 时间窗 / 主题查询 |
 | `engram_update` | 修正：旧条目建立 supersedes 链，链条保留 |
 | `engram_forget` | 软删，可恢复 |
@@ -72,11 +74,11 @@ dsh-engram/
 
 ## 注入机制
 
-记忆不写入 system prompt。注入走 system-prompt 的 ordered dynamic context（带来源的 user 角色快照），不破坏前缀稳定性与 KV cache 复用。会话开始注入用户级画像摘要（top N 高重要性记忆），Config 可关闭并控制条数。详细内容由模型调用 `engram_search` 获取。
+记忆不写入 system prompt。注入走 system-prompt 的 ordered dynamic context（带来源的 user 角色快照），不破坏前缀稳定性与 KV cache 复用。会话开始注入用户级画像摘要（top N 高重要性记忆），Config 可关闭并控制条数；另有 token 预算上限（`injectTokenBudget`，估算 ceil(len/4)，整行超预算跳过不截断，装不下的条目降级为 `#id` 索引行与末尾计数行）。详细内容由模型调用 `engram_search` 获取。
 
 ## 自动摄取
 
-挂在 session 事件流：一轮结束后从会话日志提取候选事实（读取源是日志，遵守 model-visible ⟺ logged）。候选以低 confidence 写入，检索命中时提升。Config 档位 `ingest: off | light | eager`；配置错误在插件加载时 loud 失败；单轮摄取 LLM 失败跳过并计数，不影响主对话。
+挂在 session 事件流：一轮结束后从会话日志提取候选事实（读取源是日志，遵守 model-visible ⟺ logged）；会话结束（`session/disposed` 观察器，fire-and-forget，5 秒超时）补摄取最后一轮，失败/超时把 pending 键写入操作日志，下次会话首次 pre-step 重放补做；已摄取的 (会话, 轮次) 键幂等去重。候选以低 confidence 写入，检索命中时提升。Config 档位 `ingest: off | light | eager`；配置错误在插件加载时 loud 失败；单轮摄取 LLM 失败跳过并计数，不影响主对话。
 
 ## 写入时矛盾检测
 

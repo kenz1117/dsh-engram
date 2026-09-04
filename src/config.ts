@@ -32,6 +32,12 @@ export interface EngramConfig {
   decayAfterDays?: number
   /** 衰减：importance 低于该值才可能被归档；默认 0.3。 */
   decayImportanceBelow?: number
+  /** 画像注入的 token 预算（估算 ceil(len/4)，超预算条目降级为索引行）；默认 1024。 */
+  injectTokenBudget?: number
+  /** 检索排序 recency 因子权重（0 关闭）；默认 0.2。 */
+  rankRecencyWeight?: number
+  /** 检索排序 proof 因子权重（0 关闭）；默认 0.1。 */
+  rankProofWeight?: number
 }
 
 /** 解析后的完整配置（显式默认值集中在此一步，实现不再 `?? 默认`）。 */
@@ -46,12 +52,16 @@ export interface ResolvedEngramConfig {
   readonly routeOverride: { readonly provider: string; readonly model: string } | undefined
   readonly decayAfterDays: number
   readonly decayImportanceBelow: number
+  readonly injectTokenBudget: number
+  readonly rankRecencyWeight: number
+  readonly rankProofWeight: number
 }
 
 /** 合法配置键集合（未知键 loud 失败）。 */
 const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'dbDir', 'injectProfile', 'profileTopN', 'modelCacheDir', 'hfEndpoint',
   'ingest', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
+  'injectTokenBudget', 'rankRecencyWeight', 'rankProofWeight',
 ])
 
 const INGEST_MODES: ReadonlySet<string> = new Set(['off', 'light', 'eager'])
@@ -68,13 +78,16 @@ export const Config: z<EngramConfig> = z.object({
   model: z.string(),
   decayAfterDays: z.number().step(1).min(1).max(3650),
   decayImportanceBelow: z.number().min(0).max(1),
+  injectTokenBudget: z.number().step(1).min(128).max(8192),
+  rankRecencyWeight: z.number().min(0).max(2),
+  rankProofWeight: z.number().min(0).max(2),
 })
 
 /**
  * 显式 resolve 步骤：默认值只在唯一的此处落地，非法值 loud 失败。
  * @param config - cordis.yml 传入的未校验配置。
  * @returns 完整解析配置。
- * @throws 未知键、ingest 档位非法、provider/model 只给其一、decay 参数越界时抛错。
+ * @throws 未知键、ingest 档位非法、provider/model 只给其一、decay/预算/排序权重越界时抛错。
  */
 export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   for (const key of Object.keys(config)) {
@@ -97,6 +110,15 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   if (config.decayImportanceBelow !== undefined && (config.decayImportanceBelow < 0 || config.decayImportanceBelow > 1)) {
     throw new Error('dsh-engram: decayImportanceBelow must be in [0, 1]')
   }
+  if (config.injectTokenBudget !== undefined && (!Number.isInteger(config.injectTokenBudget) || config.injectTokenBudget < 128 || config.injectTokenBudget > 8192)) {
+    throw new Error('dsh-engram: injectTokenBudget must be an integer in [128, 8192]')
+  }
+  if (config.rankRecencyWeight !== undefined && (config.rankRecencyWeight < 0 || config.rankRecencyWeight > 2)) {
+    throw new Error('dsh-engram: rankRecencyWeight must be in [0, 2]')
+  }
+  if (config.rankProofWeight !== undefined && (config.rankProofWeight < 0 || config.rankProofWeight > 2)) {
+    throw new Error('dsh-engram: rankProofWeight must be in [0, 2]')
+  }
   const dbDir = config.dbDir ?? join(homedir(), '.dsh', 'engram')
   return {
     dbDir,
@@ -108,5 +130,8 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     routeOverride: hasProvider && hasModel ? { provider: config.provider!, model: config.model! } : undefined,
     decayAfterDays: config.decayAfterDays ?? 30,
     decayImportanceBelow: config.decayImportanceBelow ?? 0.3,
+    injectTokenBudget: config.injectTokenBudget ?? 1024,
+    rankRecencyWeight: config.rankRecencyWeight ?? 0.2,
+    rankProofWeight: config.rankProofWeight ?? 0.1,
   }
 }

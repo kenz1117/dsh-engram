@@ -123,13 +123,27 @@ export function ftsMatchExpression(text: string): string | undefined {
   return tokens.map(token => `"${token.replaceAll('"', '""')}"`).join(' OR ')
 }
 
+/** 检索排序乘性 boost 参数（RRF 融合分之上逐条乘因子；权重 0 即该因子恒 1）。 */
+export interface RankBoostOptions {
+  /** recency 因子权重：`1 + w * max(0, 1 - daysSince(lastAccessedAt) / decayAfterDays)`。 */
+  readonly recencyWeight: number
+  /** proof 因子权重：`1 + w * log2(1 + accessCount)`。 */
+  readonly proofWeight: number
+  /** recency 因子的衰减窗口天数（与衰减调度共用同一配置值）。 */
+  readonly decayAfterDays: number
+}
+
+/** 缺省不加 boost（测试与脚本直开库时保持旧排序行为）。 */
+const NO_BOOST: RankBoostOptions = { recencyWeight: 0, proofWeight: 0, decayAfterDays: 30 }
+
 /**
  * 打开（必要时创建）一个 scope 分库。
  * @param path - SQLite 文件路径；目录不存在会自动创建（0o700）。
+ * @param rankBoost - 排序 boost 参数；缺省不乘任何因子。
  * @returns 就绪的 EngramStore。
  * @throws EngramError(code=SCHEMA_INCOMPATIBLE) 当库的 schema 版本高于当前实现。
  */
-export async function openEngramStore(path: string): Promise<EngramStore> {
+export async function openEngramStore(path: string, rankBoost: RankBoostOptions = NO_BOOST): Promise<EngramStore> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(path)
@@ -180,6 +194,9 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
   const sqlTouch = db.prepare(`UPDATE nodes SET access_count = access_count + 1, last_accessed_at = ?,
     confidence = MIN(1, confidence + ${CONFIDENCE_BUMP}) WHERE id = ?`)
   const sqlLog = db.prepare('INSERT INTO op_log (at, op, target_id, detail) VALUES (?, ?, ?, ?)')
+  const sqlHasAudit = db.prepare('SELECT 1 AS x FROM op_log WHERE op = ? AND detail = ? LIMIT 1')
+  const sqlListAudit = db.prepare('SELECT detail FROM op_log WHERE op = ? AND detail IS NOT NULL ORDER BY seq')
+  const sqlClearAudit = db.prepare('DELETE FROM op_log WHERE op = ? AND detail = ?')
   const sqlOpLogById = db.prepare('SELECT at, op, detail FROM op_log WHERE target_id = ? ORDER BY seq DESC LIMIT ?')
   const sqlTopActive = db.prepare("SELECT * FROM nodes WHERE scope = ? AND status = 'active' ORDER BY importance DESC, confidence DESC LIMIT ?")
   const sqlEdgeUpsert = db.prepare('INSERT OR IGNORE INTO edges (from_id, to_id, type, created_at) VALUES (?, ?, ?, ?)')
@@ -311,6 +328,19 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
             scores.set(entry.row.id, { score: existing.score + add, via: 'both' })
           }
         })
+      }
+
+      // 排序 boost：RRF 融合分之上乘 recency 与 proof 因子（权重 0 时因子恒 1，退化为纯 RRF）。
+      if (rankBoost.recencyWeight !== 0 || rankBoost.proofWeight !== 0) {
+        const now = Date.now()
+        for (const [id, info] of scores) {
+          const row = getRow(id)
+          if (row === undefined) continue
+          const daysSince = Math.max(0, (now - row.last_accessed_at) / 86_400_000)
+          const recency = 1 + rankBoost.recencyWeight * Math.max(0, 1 - daysSince / rankBoost.decayAfterDays)
+          const proof = 1 + rankBoost.proofWeight * Math.log2(1 + row.access_count)
+          info.score *= recency * proof
+        }
       }
 
       // 关系一跳扩展：top 结果的 supports/refines/related 邻居，若 active 且未入结果则低权重引入。
@@ -500,6 +530,18 @@ export async function openEngramStore(path: string): Promise<EngramStore> {
 
     async audit(op: string, targetId: string, detail: string | null) {
       sqlLog.run(Date.now(), op, targetId, detail)
+    },
+
+    async hasAudit(op: string, detail: string) {
+      return sqlHasAudit.get(op, detail) !== undefined
+    },
+
+    async listAuditDetails(op: string) {
+      return (sqlListAudit.all(op) as unknown as { detail: string }[]).map(row => row.detail)
+    },
+
+    async clearAudit(op: string, detail: string) {
+      sqlClearAudit.run(op, detail)
     },
 
     async purge() {

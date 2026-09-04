@@ -33,6 +33,11 @@ export type EngramKey =
   | 'importance'
   | 'confidence'
   | 'accessCount'
+  | 'labelCreated'
+  | 'timeJustNow'
+  | 'timeMinutesAgo'
+  | 'timeHoursAgo'
+  | 'timeDaysAgo'
   | 'sourceExplicit'
   | 'sourceSession'
   | 'round'
@@ -100,6 +105,11 @@ export const zh: Record<EngramKey, string> = {
   importance: '重要性',
   confidence: '置信',
   accessCount: '访问 {n} 次',
+  labelCreated: '创建时间',
+  timeJustNow: '刚刚',
+  timeMinutesAgo: '{n} 分钟前',
+  timeHoursAgo: '{n} 小时前',
+  timeDaysAgo: '{n} 天前',
   sourceExplicit: '显式保存',
   sourceSession: '来源 {id}',
   round: '第 {n} 轮',
@@ -168,6 +178,11 @@ export const en: Record<EngramKey, string> = {
   importance: 'Importance',
   confidence: 'Confidence',
   accessCount: '{n}× accessed',
+  labelCreated: 'Created',
+  timeJustNow: 'just now',
+  timeMinutesAgo: '{n} min ago',
+  timeHoursAgo: '{n} hr ago',
+  timeDaysAgo: '{n} d ago',
   sourceExplicit: 'Explicitly saved',
   sourceSession: 'Source {id}',
   round: 'round {n}',

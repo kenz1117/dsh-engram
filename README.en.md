@@ -30,11 +30,11 @@ Zero configuration after install (stores and model cache default to `~/.dsh/engr
 
 ## Features
 
-- **Cross-session memory**: a user memory profile is injected at session start (up to 8 entries, configurable), so the agent naturally knows who you are and what you are building; tools recall facts across sessions.
-- **Dual-scope stores**: `user.db` shared globally; `project-<cwd>.db` isolated per working directory — personal preferences follow the person, project conventions follow the repo.
-- **Hybrid retrieval**: FTS5 (unicode61 + Chinese 2-gram pre-tokenization) fused with local vectors (`Xenova/bge-small-zh-v1.5`, 512-dim, q8) via RRF, plus one-hop expansion over relation edges; the embedding model runs offline, and a failed download degrades to keyword-only retrieval with an explicit marker.
+- **Cross-session memory**: a user memory profile is injected at session start (entry cap plus token budget, both configurable), so the agent naturally knows who you are and what you are building; tools recall facts across sessions.
+- **Dual-scope stores**: `user.db` shared globally; `project-<hash>.db` isolated per git origin identity (falls back to a working-directory encoding without git; legacy stores migrate automatically) — personal preferences follow the person, project conventions follow the repo.
+- **Hybrid retrieval**: FTS5 (unicode61 + Chinese 2-gram pre-tokenization) fused with local vectors (`Xenova/bge-small-zh-v1.5`, 512-dim, q8) via RRF, plus one-hop expansion over relation edges and a multiplicative recency/proof ranking boost; the embedding model runs offline, and a failed download degrades to keyword-only retrieval with an explicit marker.
 - **Knowledge flywheel**: capture/save → contradiction candidates (high-similarity neighbors create `contradicts` edges on write, for the model/user to adjudicate) → hit reinforcement (confidence +0.05) → distillation (topic clusters merge into higher-level rules, supersedes chains, confidence inheritance) → decay (low-importance, long-unaccessed entries archive; restorable).
-- **Automatic capture** (when `ingest` is enabled): each new turn's first step extracts candidate facts from the previous turn out of the session log, written with low confidence and deduplicated by embedding — memories accumulate without you saying "remember this".
+- **Automatic capture** (when `ingest` is enabled): each new turn's first step extracts candidate facts from the previous turn out of the session log, and session end captures the final turn too (failures leave a pending key that the next session replays; capture is idempotent per session+turn), written with low confidence and deduplicated by embedding — memories accumulate without you saying "remember this".
 - **Provenance audit**: every memory records its source session, turn, and event seq; `engram_review` traces the full source chain, supersede chain, contradictions, and operation log; all writes/edits/forgets/distills/decays land in the operation log table.
 - **Web management panel**: a "Memory Library" tab in Settings — stat cards, filter by status/kind/content, inline detail and edit (through the supersede chain), forget/restore, Markdown/JSON export. UI copy is bilingual zh/en and follows the host language setting live.
 - **Portable data**: `engram_export` exports Markdown / JSON files in one step.
@@ -63,15 +63,18 @@ Optional configuration (cordis.yml):
   config:
     dbDir: '~/.dsh/engram'          # store and model-cache root directory
     injectProfile: true             # inject the user memory profile at session start
-    profileTopN: 8                  # injection cap (1-64)
+    profileTopN: 8                  # injection entry cap (1-64)
+    injectTokenBudget: 1024         # injection token budget (128-8192, estimated ceil(len/4); over-budget entries degrade to index lines)
     modelCacheDir: '~/.dsh/engram/models'  # embedding model cache directory
     hfEndpoint: 'https://huggingface.co'   # model download endpoint; set a mirror behind restricted networks
     ingest: 'off'                   # automatic capture: off | light (user messages only, ≤2/turn) | eager (assistant messages too, ≤5/turn)
     # provider and model must be given as a pair: aux-LLM route override for capture/distill (parsed from the session log by default)
     # provider: 'deepseek'
     # model: 'deepseek-v4-flash'
-    decayAfterDays: 30              # decay: last access older than this many days
+    decayAfterDays: 30              # decay: last access older than this many days (also the recency-boost decay window)
     decayImportanceBelow: 0.3       # decay: and importance below this → archive (restorable)
+    rankRecencyWeight: 0.2          # retrieval recency boost weight (0-2, 0 disables)
+    rankProofWeight: 0.1            # retrieval hit-count boost weight (0-2, 0 disables)
 ```
 
 ## How It Works
@@ -82,15 +85,15 @@ The plugin has a host half (Node) and a browser half (React):
 Session agent                              Host half (Node)
   │                                          │
   ├─ every turn, first step ◀─────────────── ├─ user memory profile injection (plugin-source user snapshot)
-  ├─ engram_save / search / review … ──────▶ ├─ SQLite dual stores (user.db / project-<cwd>.db)
-  │                                          ├─ FTS5 keyword track + local vector track, RRF fusion
+  ├─ engram_save / search / review … ──────▶ ├─ SQLite dual stores (user.db / project-<origin hash>.db)
+  │                                          ├─ FTS5 keyword track + local vector track, RRF fusion + ranking boost
   ├─ engram_distill ───────────────────────▶ ├─ aux-LLM distillation (cluster merge → supersedes chain)
-  │                                          └─ automatic capture: session log → candidate facts (ingest on)
+  │                                          └─ automatic capture: session log → candidate facts (incl. the final turn at session end; ingest on)
   └─ Settings "Memory Library" tab ◀──────── ─── loopback API /api/engram/* (writes verify loopback Origin)
 ```
 
-- **Dual-scope stores**: `user.db` shared globally; `project-<cwd>.db` isolated per working directory.
-- **Automatic capture** (when `ingest` is on): each new turn's first step extracts candidate facts from the previous turn out of the session log (the read source is the session log; aux-call request auditing goes to the plugin's own operation log — unknown events are never appended to the session log). Candidates are written with low confidence and deduplicated by embedding.
+- **Dual-scope stores**: `user.db` shared globally; `project-<hash>.db` named by the normalized git origin URL hash (`git@github.com:a/b.git` and `https://github.com/a/b` share one store; worktrees resolve through the pointer to the main repo's origin); without git or an origin it falls back to a working-directory encoding, and legacy cwd-named stores are renamed in place at startup (if both exist, nothing moves and a warning is logged).
+- **Automatic capture** (when `ingest` is on): each new turn's first step extracts candidate facts from the previous turn out of the session log; session end (`session/disposed`) captures the final turn with a 5-second timeout, and on failure/timeout a pending key lands in the operation log for the next session's first step to replay; captured (session, turn) pairs are idempotent. The read source is the session log; aux-call request auditing goes to the plugin's own operation log — unknown events are never appended to the session log. Candidates are written with low confidence and deduplicated by embedding.
 - **Provenance chain**: every memory records its source session, turn, and event seq, fully traceable via `engram_review`; the operation log table records every write/edit/forget/distill/decay.
 - **Offline embeddings**: the model downloads once (q8, ~50MB; mirror endpoint configurable), then runs fully offline; on failure the plugin keeps working and retrieval degrades to keyword-only with an explicit marker.
 - **UI localization**: the client half registers zh/en dictionaries through the host locale service and follows the host language setting live; data-level enums (status/kind) are mapped only in the display layer and stay English in storage.
@@ -114,11 +117,11 @@ pnpm bundle
 
 #### What the model sees
 
-Each turn's first step appends a plugin-source user snapshot: `User memory profile (dsh-engram, cross-session):` followed by the user-scope memory list (up to 8 by default; `injectProfile: false` disables). Tool results are plain text lines (with `id=`, scope/kind annotations, contradiction-candidate hints, and degradation notes). Automatic capture and distillation each make one aux-LLM call (billed independently of the main conversation path, with purpose attribution).
+Each turn's first step appends a plugin-source user snapshot: `User memory profile (dsh-engram, cross-session):` followed by the user-scope memory list (up to 8 entries within a 1024-token budget by default; over-budget entries degrade to `#id` index lines; `injectProfile: false` disables). Tool results are plain text lines (with `id=`, scope/kind annotations, contradiction-candidate hints, and degradation notes). Automatic capture and distillation each make one aux-LLM call (billed independently of the main conversation path, with purpose attribution).
 
 #### Token effect
 
-Profile injection is a conditional fixed cost (entries × content length); the tool schemas are a standing cost (9 narrow-parameter tools).
+Profile injection is a conditional fixed cost (bounded by both the entry cap and the token budget); the tool schemas are a standing cost (9 narrow-parameter tools).
 
 #### KV Cache effect
 
@@ -126,7 +129,6 @@ Profile text changes as the memory store changes — changes only land at turn b
 
 ## Known Limitations and Deferred Work
 
-- **Last-turn blind spot in automatic capture** — capture is triggered by the next turn's first step, so a session's final turn is never captured; a session-end event hook is future work.
 - **No LLM adjudication of contradiction candidates** — writes only report candidates by vector similarity (≥0.88) and create edges; semantic-contradiction confirmation is left to model/user adjudication and distillation.
 - **Memories written during embedder degradation have no vectors** — memories written before the model is ready do not participate in the semantic track; after semantics come online run `pnpm backfill` once to backfill existing vectors (after `pnpm build` has warmed the model cache; `HF_ENDPOINT` configurable).
 
