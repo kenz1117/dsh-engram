@@ -27,6 +27,20 @@ describe('EngramStore (sqlite)', () => {
     expect(fetched?.sourceSessionId).toBeNull()
   })
 
+  it('list 按 redacted 标记过滤（三态）', async () => {
+    await store.write({ scope: 'user', kind: 'fact', content: '密钥 [REDACTED:api-key] 已脱敏' })
+    await store.write({ scope: 'user', kind: 'fact', content: '部署在 4000 端口' })
+    await store.write({ scope: 'user', kind: 'fact', content: '普通条目' })
+    const all = await store.list({ scope: 'user', limit: 10, offset: 0 })
+    expect(all.total).toBe(3)
+    const only = await store.list({ scope: 'user', redacted: true, limit: 10, offset: 0 })
+    expect(only.total).toBe(1)
+    expect(only.records[0]?.content).toContain('[REDACTED:api-key]')
+    const none = await store.list({ scope: 'user', redacted: false, limit: 10, offset: 0 })
+    expect(none.total).toBe(2)
+    expect(none.records.some(record => record.content.includes('[REDACTED:'))).toBe(false)
+  })
+
   it('空 content loud 失败', async () => {
     await expect(store.write({ scope: 'user', kind: 'fact', content: '   ' })).rejects.toThrow(/content/)
   })

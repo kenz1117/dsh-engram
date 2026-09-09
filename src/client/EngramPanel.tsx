@@ -292,6 +292,8 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
   const [scope, setScope] = useState<'user' | 'project'>('user')
   const [status, setStatus] = useState('all')
   const [kind, setKind] = useState('all')
+  /** 脱敏筛选：all 全部 / true 仅含 [REDACTED: 标记 / false 仅不含（审计脱敏命中）。 */
+  const [redacted, setRedacted] = useState('all')
   const [q, setQ] = useState('')
   const [offset, setOffset] = useState(0)
   const [list, setList] = useState<ListResult | null>(null)
@@ -310,7 +312,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
   useEffect(() => {
     let cancelled = false
     const qs = new URLSearchParams({
-      scope, status, kind, limit: String(PAGE_SIZE), offset: String(offset),
+      scope, status, kind, redacted, limit: String(PAGE_SIZE), offset: String(offset),
     })
     if (q !== '') qs.set('q', q)
     api<ListResult>(`list?${qs.toString()}`)
@@ -320,7 +322,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
       .then((data) => { if (!cancelled) setStats(data.parts) })
       .catch(() => { /* 统计失败不影响列表 */ })
     return () => { cancelled = true }
-  }, [scope, status, kind, q, offset, reloadTick])
+  }, [scope, status, kind, redacted, q, offset, reloadTick])
 
   const act = (route: string, record: MemoryRow): void => {
     api(route, {
@@ -430,6 +432,12 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
           <option value="all">{t('allKinds')}</option>
           {KINDS.map(option => <option key={option} value={option}>{kindLabel(t, option)}</option>)}
         </select>
+        <select className={styles.input} value={redacted}
+          onChange={event => { setRedacted(event.target.value); setOffset(0); setExpanded(null); clearSelection() }}>
+          <option value="all">{t('redactedAll')}</option>
+          <option value="true">{t('redactedOnly')}</option>
+          <option value="false">{t('redactedNone')}</option>
+        </select>
         <input className={styles.input} placeholder={t('searchPlaceholder')} value={q}
           onChange={event => { setQ(event.target.value.trim()); setOffset(0); setExpanded(null); clearSelection() }} />
       </div>
@@ -466,6 +474,9 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
               aria-label={record.content.slice(0, 24)} onChange={() => toggleSelect(record.id)} />
             <span className={`${styles.statusWrap} ${styles[record.status]}`}>{t(STATUS_KEY[record.status])}</span>
             <span className={styles.chip}>{kindLabel(t, record.kind)}</span>
+            {record.content.includes('[REDACTED:') && (
+              <span className={`${styles.chip} ${styles.redactedChip}`}>{t('tagRedacted')}</span>
+            )}
             <span className={styles.scopeTag}>{t(SCOPE_KEY[record.scope])}</span>
             <span className={styles.timeTag} title={fmtTime(record.createdAt)}>{relTime(t, record.createdAt)}</span>
           </div>

@@ -163,6 +163,8 @@ export interface ListFilter {
   readonly kind?: EngramKind
   /** content 子串匹配。 */
   readonly q?: string
+  /** 脱敏标记过滤：true 只看含 `[REDACTED:` 的条目，false 只看不含的；缺省不过滤。 */
+  readonly redacted?: boolean
   readonly limit: number
   readonly offset: number
 }

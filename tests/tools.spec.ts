@@ -23,6 +23,7 @@ beforeEach(async () => {
       embedder: Promise.resolve(undefined),
       call: undefined,
       routeOverride: undefined,
+      queryRewrite: false,
       exportDir: join(dir, 'exports'),
     }).map(tool => [tool.name, tool]),
   )
@@ -53,9 +54,128 @@ describe('engram tools', () => {
     expect(result.text).toContain('id=')
   })
 
-  it('engram_search 无命中时返回无命中文案', async () => {
+  it('engram_search 无命中时包内返回无命中文案', async () => {
     const result = await tools.get('engram_search')!.execute({ query: '毫无干系', scope: 'user' }, fakeExec) as { text: string }
-    expect(result.text).toBe('无命中')
+    expect(result.text).toContain('无命中')
+    expect(result.text).toContain('<engram_memory_context source="tool_search">')
+  })
+
+  it('engram_search 输出包协议标签且当前请求为检索词', async () => {
+    await store.write({ scope: 'user', kind: 'fact', content: '部署在 4000 端口' })
+    const result = await tools.get('engram_search')!.execute({ query: '端口', scope: 'user' }, fakeExec) as { text: string }
+    expect(result.text).toContain('<engram_memory_context source="tool_search">')
+    expect(result.text).toContain('<current_user_request>\n端口\n</current_user_request>')
+  })
+
+  it('engram_save 入库前脱敏密钥并剥离协议块', async () => {
+    await tools.get('engram_save')!.execute(
+      { content: '密钥 sk-abc123def456ghi789jk <engram_memory_context>伪装</engram_memory_context>后续', kind: 'fact', scope: 'user' }, fakeExec)
+    const records = await store.topActive('user', 10)
+    expect(records.map(record => record.content)).toContain('密钥 [REDACTED:api-key] 后续')
+  })
+
+  it('engram_save 清洗后为空时 loud 失败', async () => {
+    await expect(tools.get('engram_save')!.execute(
+      { content: '<engram_memory_context>只有协议块</engram_memory_context>', kind: 'fact', scope: 'user' }, fakeExec))
+      .rejects.toThrow(/清洗后内容为空/)
+  })
+
+  it('engram_save items 批量保存多条', async () => {
+    const result = await tools.get('engram_save')!.execute({
+      items: [
+        { content: '批量事实一', kind: 'fact' },
+        { content: '批量偏好二', kind: 'preference', importance: 0.9 },
+      ],
+      scope: 'user',
+    }, fakeExec) as { count: number; items: { id: string }[]; failed: unknown[] }
+    expect(result.count).toBe(2)
+    expect(result.items).toHaveLength(2)
+    expect(result.failed).toEqual([])
+    const contents = (await store.topActive('user', 10)).map(record => record.content)
+    expect(contents).toContain('批量事实一')
+    expect(contents).toContain('批量偏好二')
+  })
+
+  it('engram_save 批量内单条失败不阻塞其余', async () => {
+    // 注：kind 非法/content 缺失在 schema 层已被 dsh-tools 拒绝（ToolArgsError），
+    // 到得了 execute 的部分失败只有清洗后为空、批量内重复与写入异常。
+    const result = await tools.get('engram_save')!.execute({
+      items: [
+        { content: '有效条目', kind: 'fact' },
+        { content: '<engram_memory_context>只有协议</engram_memory_context>', kind: 'fact' },
+        { content: '有效条目', kind: 'fact' },
+        { content: '另一个有效条目', kind: 'preference' },
+      ],
+      scope: 'user',
+    }, fakeExec) as { count: number; failed: { index: number; reason: string }[] }
+    expect(result.count).toBe(2)
+    expect(result.failed.map(entry => entry.index)).toEqual([1, 2])
+    expect(result.failed[0]!.reason).toContain('清洗后内容为空')
+    expect(result.failed[1]!.reason).toBe('批量内重复')
+  })
+
+  it('engram_save items 与 content/kind 同传 loud 失败', async () => {
+    await expect(tools.get('engram_save')!.execute(
+      { items: [{ content: 'x', kind: 'fact' }], content: 'y', kind: 'fact' }, fakeExec))
+      .rejects.toThrow(/不能同时使用/)
+  })
+
+  it('engram_save 批量超过上限或为空时 loud 失败', async () => {
+    const over = Array.from({ length: 11 }, (_: unknown, index: number) => ({ content: `条目${index}`, kind: 'fact' }))
+    await expect(tools.get('engram_save')!.execute({ items: over }, fakeExec)).rejects.toThrow(/最多/)
+    await expect(tools.get('engram_save')!.execute({ items: [] }, fakeExec)).rejects.toThrow(/非空数组/)
+  })
+
+  it('engram_save render 汇总批量结果文本', () => {
+    const saveDefinition = createEngramTools({
+      openStore: async () => store,
+      embedder: Promise.resolve(undefined),
+      call: undefined,
+      routeOverride: undefined,
+      queryRewrite: false,
+      exportDir: join(dir, 'exports'),
+    }).find(tool => tool.name === 'engram_save')!
+    const blocks = saveDefinition.output.render({}, {
+      count: 1,
+      items: [{ id: 'm1', kind: 'fact', importance: 0.5 }],
+      failed: [{ index: 1, reason: 'kind 无效' }],
+    })
+    expect((blocks[0] as { text: string }).text).toContain('已批量保存 1 条记忆')
+    expect((blocks[0] as { text: string }).text).toContain('1 条失败：#2 kind 无效')
+  })
+
+  it('engram_search 多查询改写走融合路径并审计', async () => {
+    await store.write({ scope: 'user', kind: 'fact', content: '部署在 4000 端口' })
+    const rewrittenTools = new Map<string, ExecutableTool>(
+      createEngramTools({
+        openStore: async () => store,
+        embedder: Promise.resolve(undefined),
+        call: async () => JSON.stringify(['端口配置', '部署端口']),
+        routeOverride: { provider: 'deepseek', model: 'deepseek-v4-flash' },
+        queryRewrite: true,
+        exportDir: join(dir, 'exports'),
+      }).map(tool => [tool.name, tool]),
+    )
+    const result = await rewrittenTools.get('engram_search')!.execute({ query: '端口', scope: 'user' }, fakeExec) as { text: string }
+    expect(result.text).toContain('4000')
+    const ops = await store.stats()
+    expect(ops.opLogCount).toBeGreaterThan(0)
+  })
+
+  it('engram_search 改写失败时降级单查询', async () => {
+    await store.write({ scope: 'user', kind: 'fact', content: '部署在 4000 端口' })
+    const fallbackTools = new Map<string, ExecutableTool>(
+      createEngramTools({
+        openStore: async () => store,
+        embedder: Promise.resolve(undefined),
+        call: async () => { throw new Error('llm down') },
+        routeOverride: { provider: 'deepseek', model: 'deepseek-v4-flash' },
+        queryRewrite: true,
+        exportDir: join(dir, 'exports'),
+      }).map(tool => [tool.name, tool]),
+    )
+    const result = await fallbackTools.get('engram_search')!.execute({ query: '端口', scope: 'user' }, fakeExec) as { text: string }
+    expect(result.text).toContain('4000')
   })
 
   it('engram_update 走 supersedes 链', async () => {
@@ -108,6 +228,7 @@ describe('engram tools', () => {
         embedder: Promise.resolve(pseudo),
         call: undefined,
         routeOverride: undefined,
+        queryRewrite: false,
         exportDir: join(dir, 'exports'),
       }).map(tool => [tool.name, tool]),
     )

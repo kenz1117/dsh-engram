@@ -124,6 +124,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const status = url.searchParams.get('status')
             const kind = url.searchParams.get('kind')
             const q = url.searchParams.get('q')
+            const redacted = url.searchParams.get('redacted')
             const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
             const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0)
             const filter: ListFilter = {
@@ -131,6 +132,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               ...(status !== null && status !== '' && status !== 'all' ? { status: status as EngramStatus } : {}),
               ...(kind !== null && kind !== '' && kind !== 'all' ? { kind: kind as EngramKind } : {}),
               ...(q !== null && q !== '' ? { q } : {}),
+              ...(redacted === 'true' || redacted === 'false' ? { redacted: redacted === 'true' } : {}),
               limit,
               offset,
             }

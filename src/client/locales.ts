@@ -17,6 +17,10 @@ export type EngramKey =
   | 'exportJson'
   | 'allStatuses'
   | 'allKinds'
+  | 'redactedAll'
+  | 'redactedOnly'
+  | 'redactedNone'
+  | 'tagRedacted'
   | 'searchPlaceholder'
   | 'statusActive'
   | 'statusArchived'
@@ -89,6 +93,10 @@ export const zh: Record<EngramKey, string> = {
   exportJson: '导出 JSON',
   allStatuses: '全部状态',
   allKinds: '全部种类',
+  redactedAll: '全部脱敏',
+  redactedOnly: '含脱敏标记',
+  redactedNone: '无脱敏标记',
+  tagRedacted: '已脱敏',
   searchPlaceholder: '按内容搜索…',
   statusActive: '生效中',
   statusArchived: '已归档',
@@ -162,6 +170,10 @@ export const en: Record<EngramKey, string> = {
   exportJson: 'Export JSON',
   allStatuses: 'All statuses',
   allKinds: 'All kinds',
+  redactedAll: 'All redaction',
+  redactedOnly: 'Redacted only',
+  redactedNone: 'Not redacted',
+  tagRedacted: 'redacted',
   searchPlaceholder: 'Search content…',
   statusActive: 'active',
   statusArchived: 'archived',

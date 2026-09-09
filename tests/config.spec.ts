@@ -17,6 +17,7 @@ describe('resolveConfig', () => {
     expect(resolved.injectTokenBudget).toBe(1024)
     expect(resolved.rankRecencyWeight).toBe(0.2)
     expect(resolved.rankProofWeight).toBe(0.1)
+    expect(resolved.queryRewrite).toBe(true)
   })
 
   it('显式值全部透传', () => {
@@ -26,6 +27,7 @@ describe('resolveConfig', () => {
       provider: 'deepseek', model: 'deepseek-v4-flash',
       decayAfterDays: 7, decayImportanceBelow: 0.5,
       injectTokenBudget: 2048, rankRecencyWeight: 0, rankProofWeight: 1.5,
+      queryRewrite: false,
     })
     expect(resolved.dbDir).toBe('/tmp/e')
     expect(resolved.injectProfile).toBe(false)
@@ -39,6 +41,7 @@ describe('resolveConfig', () => {
     expect(resolved.injectTokenBudget).toBe(2048)
     expect(resolved.rankRecencyWeight).toBe(0)
     expect(resolved.rankProofWeight).toBe(1.5)
+    expect(resolved.queryRewrite).toBe(false)
   })
 
   it('未知键 loud 失败', () => {

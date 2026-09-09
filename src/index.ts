@@ -23,6 +23,7 @@ import { migrateProjectDb, resolveProjectIdentity } from './project/identity.ts'
 import { openEngramStore } from './store/sqlite.ts'
 import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
+import { currentUserRequestText, renderMemoryPacket } from './security/sanitize.ts'
 import type { EngramScope } from './types.ts'
 
 /** Cordis 插件名（loader 诊断与注入 source 使用）。 */
@@ -136,13 +137,15 @@ async function preStep(
   const top = await store.topActive('user', resolved.profileTopN)
   if (top.length === 0) return decision
   const text = renderProfile(top, resolved.injectTokenBudget)
+  // 画像包协议标签：记忆条目是不可信历史上下文；当前请求取本轮 admitted 消息的最后一个文本块。
+  const packet = renderMemoryPacket(text, 'turn_start', currentUserRequestText(decision.messages))
   return {
     ...decision,
     messages: [
       ...decision.messages,
       createUserMessage({
-        content: [{ type: 'text', text }],
-        source: { kind: 'plugin', plugin: name, form: 'snapshot', sections: [{ name, text }] },
+        content: [{ type: 'text', text: packet }],
+        source: { kind: 'plugin', plugin: name, form: 'snapshot', sections: [{ name, text: packet }] },
       }),
     ],
   }
@@ -220,6 +223,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     embedder,
     call: callParams => streamText(ctx, { ...callParams, sessionId: callParams.sessionId ?? '' }),
     routeOverride: resolved.routeOverride,
+    queryRewrite: resolved.queryRewrite,
     exportDir: `${resolved.dbDir}/exports`,
   })) {
     ctx.tools.register(tool)

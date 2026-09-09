@@ -441,6 +441,10 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       if (filter.status !== undefined) { conds.push('status = ?'); params.push(filter.status) }
       if (filter.kind !== undefined) { conds.push('kind = ?'); params.push(filter.kind) }
       if (filter.q !== undefined && filter.q !== '') { conds.push('instr(content, ?) > 0'); params.push(filter.q) }
+      // 脱敏标记过滤：标记格式由 redact.ts 固定（[REDACTED:<类型>]），LIKE 字面匹配。
+      if (filter.redacted !== undefined) {
+        conds.push(filter.redacted ? "content LIKE '%[REDACTED:%'" : "content NOT LIKE '%[REDACTED:%'")
+      }
       const where = conds.join(' AND ')
       const total = (db.prepare(`SELECT COUNT(*) AS n FROM nodes WHERE ${where}`).get(...params) as unknown as { n: number }).n
       const rows = db.prepare(`SELECT * FROM nodes WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)

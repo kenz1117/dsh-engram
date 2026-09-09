@@ -11,6 +11,9 @@ import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
 import type { EngramEmbedder } from '../embedder/interface.ts'
 import type { EngramStore } from '../store/interface.ts'
 import type { EngramKind } from '../types.ts'
+import { sanitizeProtocolText } from '../security/sanitize.ts'
+import { redactSecrets } from '../security/redact.ts'
+import { hasRecallToolCalls, omitRecallToolResults } from '../security/recall.ts'
 
 /** 摄取档位：off 关闭；light 只读用户消息、每轮上限 2 条；eager 用户+助手消息、上限 5 条。 */
 export type IngestMode = 'off' | 'light' | 'eager'
@@ -203,13 +206,23 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: 'already-ingested' }
   }
 
-  const { texts, minSeq } = collectTexts(slice, limits.includeAssistant)
-  if (texts.length === 0) return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: 'no-user-content' }
+  // 召回占位先行：切片内召回工具的输出替换为占位文本，阻断记忆内容回流成新记忆。
+  const scoped = omitRecallToolResults(slice)
+  const { texts, minSeq } = collectTexts(scoped, limits.includeAssistant)
+  // 入库前协议剥离 + 密钥脱敏；交给提取模型的 userText 同样脱敏。
+  const cleaned = texts.map(text => redactSecrets(sanitizeProtocolText(text)))
+  if (cleaned.every(text => text === '')) {
+    return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: 'no-user-content' }
+  }
 
   const route = deps.routeOverride ?? routeFromEvents(deps.events)
   if (route === undefined) return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: 'no-route-in-log' }
 
-  const userText = `从下面这轮对话（JSON 数组）提取值得长期记住的信息：\n${JSON.stringify(texts)}`
+  // 防回声室附注：上一轮调用过召回工具时，提示提取模型既有记忆的复述不是新信息。
+  const recallNote = hasRecallToolCalls(scoped)
+    ? '（注意：上一轮调用过记忆召回工具（engram_search 等），其返回已省略；助手回答中复述的既有记忆不是新信息，不要提取。）'
+    : ''
+  const userText = `从下面这轮对话（JSON 数组）提取值得长期记住的信息：\n${JSON.stringify(cleaned)}${recallNote === '' ? '' : `\n${recallNote}`}`
   deps.logRequest({ route, round, userText, maxTokens: INGEST_MAX_TOKENS, mode: deps.mode })
   const raw = await deps.call({
     route,
@@ -228,7 +241,9 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   for (const item of parsed.slice(0, limits.maxCandidates)) {
     const candidate = item as { content?: unknown; kind?: unknown; importance?: unknown }
     if (typeof candidate.content !== 'string' || candidate.content.trim() === '') continue
-    const content = candidate.content.trim()
+    // 模型输出候选入库前同样剥离协议块并脱敏（可能复述会话中的密钥或伪造协议标签）。
+    const content = redactSecrets(sanitizeProtocolText(candidate.content.trim()))
+    if (content === '') continue
     const kind = (typeof candidate.kind === 'string' && ['fact', 'preference', 'decision', 'episode', 'skill'].includes(candidate.kind))
       ? candidate.kind as EngramKind
       : 'fact'

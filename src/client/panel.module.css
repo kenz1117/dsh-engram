@@ -60,6 +60,7 @@
 
 /* 种类：品牌色淡底小片。 */
 .chip { font-size: 11px; line-height: 18px; padding: 0 8px; border-radius: 6px; color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent); }
+.redactedChip { color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent); }
 .scopeTag { font-size: 11px; color: var(--dsw-alias-label-tertiary); }
 .timeTag { margin-left: auto; font-size: 12px; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
 

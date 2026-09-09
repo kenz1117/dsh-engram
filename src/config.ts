@@ -38,6 +38,8 @@ export interface EngramConfig {
   rankRecencyWeight?: number
   /** 检索排序 proof 因子权重（0 关闭）；默认 0.1。 */
   rankProofWeight?: number
+  /** engram_search 是否用辅助 LLM 把查询改写为 ≤3 个互补查询再做 RRF 融合；默认 true。改写失败自动降级单查询。 */
+  queryRewrite?: boolean
 }
 
 /** 解析后的完整配置（显式默认值集中在此一步，实现不再 `?? 默认`）。 */
@@ -55,13 +57,14 @@ export interface ResolvedEngramConfig {
   readonly injectTokenBudget: number
   readonly rankRecencyWeight: number
   readonly rankProofWeight: number
+  readonly queryRewrite: boolean
 }
 
 /** 合法配置键集合（未知键 loud 失败）。 */
 const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'dbDir', 'injectProfile', 'profileTopN', 'modelCacheDir', 'hfEndpoint',
   'ingest', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
-  'injectTokenBudget', 'rankRecencyWeight', 'rankProofWeight',
+  'injectTokenBudget', 'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
 ])
 
 const INGEST_MODES: ReadonlySet<string> = new Set(['off', 'light', 'eager'])
@@ -81,6 +84,7 @@ export const Config: z<EngramConfig> = z.object({
   injectTokenBudget: z.number().step(1).min(128).max(8192),
   rankRecencyWeight: z.number().min(0).max(2),
   rankProofWeight: z.number().min(0).max(2),
+  queryRewrite: z.boolean(),
 })
 
 /**
@@ -133,5 +137,6 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     injectTokenBudget: config.injectTokenBudget ?? 1024,
     rankRecencyWeight: config.rankRecencyWeight ?? 0.2,
     rankProofWeight: config.rankProofWeight ?? 0.1,
+    queryRewrite: config.queryRewrite ?? true,
   }
 }
