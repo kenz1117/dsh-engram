@@ -526,41 +526,52 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
 
   const exportTool = defineTool({
     name: 'engram_export',
-    description: '把记忆库导出为文件（Markdown 或 JSON，含全部状态与关系边），返回文件路径。数据可携带。',
+    description: '把记忆库导出为文件（Markdown 或 JSON，含全部状态与关系边），返回文件路径。redactedView=true 时输出脱敏视图（内容二次清洗并截断为 40 字预览，可安全分享）。',
     parameters: {
       format: { type: 'string', enum: ['markdown', 'json'], description: '导出格式，默认 markdown' },
       scope: { type: 'string', enum: ['user', 'project', 'all'], description: '作用域，默认 all' },
+      redactedView: { type: 'boolean', description: '脱敏视图：内容二次脱敏并截断为预览（默认 false 完整导出）' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
       render: (_args, value) => [{ type: 'text', text: value.text }],
     },
     async execute(args) {
-      const input = args as { format?: unknown; scope?: unknown }
+      const input = args as { format?: unknown; scope?: unknown; redactedView?: unknown }
       const format = input.format === 'json' ? 'json' : 'markdown'
+      const redactedView = input.redactedView === true
       const scopes = scopesOf(input.scope)
+      // 脱敏视图：入库清洗可能晚于旧数据，导出前幂等重洗一遍并截断为预览。
+      const preview = (content: string): string => {
+        const cleaned = redactSecrets(content)
+        return cleaned.length > 40 ? `${cleaned.slice(0, 40)}…` : cleaned
+      }
       await mkdir(deps.exportDir, { recursive: true, mode: 0o700 })
       const written: string[] = []
       for (const scope of scopes) {
         const data = await (await deps.openStore(scope)).exportAll()
+        const payload = redactedView
+          ? { ...data, records: data.records.map(record => ({ ...record, content: preview(record.content) })) }
+          : data
         const stamp = new Date().toISOString().replaceAll(':', '-')
-        const path = join(deps.exportDir, `engram-${scope}-${stamp}.${format === 'json' ? 'json' : 'md'}`)
+        const suffix = redactedView ? '-redacted' : ''
+        const path = join(deps.exportDir, `engram-${scope}${suffix}-${stamp}.${format === 'json' ? 'json' : 'md'}`)
         const body = format === 'json'
-          ? JSON.stringify(data, null, 2)
+          ? JSON.stringify(payload, null, 2)
           : [
-              `# dsh-engram 导出（${scope}）`,
+              `# dsh-engram 导出（${scope}${redactedView ? '，脱敏视图' : ''}）`,
               '',
-              ...data.records.map(record =>
+              ...payload.records.map(record =>
                 `- [${record.status}/${record.kind}] ${record.content}（id=${record.id}，importance ${record.importance}）`),
               '',
               '## 关系边',
-              ...data.edges.map(edge => `- ${edge.from} --${edge.type}--> ${edge.to}`),
+              ...payload.edges.map(edge => `- ${edge.from} --${edge.type}--> ${edge.to}`),
               '',
             ].join('\n')
         await writeFile(path, body, { mode: 0o600 })
-        written.push(`${path}（${data.records.length} 条记忆，${data.edges.length} 条边）`)
+        written.push(`${path}（${payload.records.length} 条记忆，${payload.edges.length} 条边${redactedView ? '，脱敏视图' : ''}）`)
       }
-      return { text: `已导出:\n${written.join('\n')}` }
+      return { text: `已导出${redactedView ? '（脱敏视图）' : ''}:\n${written.join('\n')}` }
     },
   })
 

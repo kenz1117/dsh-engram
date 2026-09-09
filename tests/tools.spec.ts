@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -142,6 +142,35 @@ describe('engram tools', () => {
     })
     expect((blocks[0] as { text: string }).text).toContain('已批量保存 1 条记忆')
     expect((blocks[0] as { text: string }).text).toContain('1 条失败：#2 kind 无效')
+  })
+
+  it('engram_export 脱敏视图二次清洗并截断预览', async () => {
+    await tools.get('engram_save')!.execute(
+      { content: 'sk-abc123def456ghi789jklmn 用于生产部署，完整路径 /srv/app/config/settings.yaml/extra/long/path', kind: 'fact', scope: 'user' },
+      fakeExec)
+    const result = await tools.get('engram_export')!.execute(
+      { scope: 'user', redactedView: true }, fakeExec) as { text: string }
+    expect(result.text).toContain('脱敏视图')
+    const mdFile = result.text.match(/engram-user-redacted-[^\s（)]+\.md/)
+    expect(mdFile).not.toBeNull()
+    const body = await readFile(join(dir, 'exports', mdFile![0]), 'utf8')
+    // 前 40 字预览保留脱敏标记，长路径被截断不外泄
+    expect(body).toContain('[REDACTED:api-key]')
+    expect(body).toContain('…')
+    expect(body).not.toContain('/srv/app/config/settings.yaml')
+  })
+
+  it('engram_export 完整导出保留原文', async () => {
+    await tools.get('engram_save')!.execute(
+      { content: '部署在 /srv/app/config/settings.yaml 的长路径配置目录', kind: 'fact', scope: 'user' },
+      fakeExec)
+    const result = await tools.get('engram_export')!.execute(
+      { scope: 'user' }, fakeExec) as { text: string }
+    expect(result.text).not.toContain('脱敏视图')
+    const mdFile = result.text.match(/engram-user-[^\s（)]+\.md/)
+    expect(mdFile).not.toBeNull()
+    const body = await readFile(join(dir, 'exports', mdFile![0]), 'utf8')
+    expect(body).toContain('/srv/app/config/settings.yaml')
   })
 
   it('engram_search 多查询改写走融合路径并审计', async () => {

@@ -137,6 +137,8 @@ export interface StoreStats {
   readonly active: number
   readonly archived: number
   readonly forgotten: number
+  /** 含 `[REDACTED:` 脱敏标记的条目数（管理面板脱敏覆盖指标）。 */
+  readonly redacted: number
   readonly byKind: Readonly<Record<string, number>>
   readonly edges: number
   readonly opLogCount: number

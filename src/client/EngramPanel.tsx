@@ -39,6 +39,7 @@ interface StatsPart {
     readonly active: number
     readonly archived: number
     readonly forgotten: number
+    readonly redacted: number
     readonly signalRatio: number
   }
 }
@@ -412,7 +413,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
             className={part.scope === scope ? `${styles.card} ${styles.cardOn}` : styles.card}
             onClick={() => { setScope(part.scope); setOffset(0); clearSelection() }}>
             <b>{part.stats.total}</b>
-            <span>{`${t(SCOPE_KEY[part.scope])} · ${t('cardActive', { n: part.stats.active })} · ${t('signalRatio', { n: Math.round(part.stats.signalRatio * 100) })}`}</span>
+            <span>{`${t(SCOPE_KEY[part.scope])} · ${t('cardActive', { n: part.stats.active })} · ${t('cardRedacted', { n: part.stats.redacted })} · ${t('signalRatio', { n: Math.round(part.stats.signalRatio * 100) })}`}</span>
             <span className={styles.cardMeter}>
               <i style={{ width: `${String(Math.round(part.stats.signalRatio * 100))}%` }} />
             </span>

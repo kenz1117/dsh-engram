@@ -41,6 +41,14 @@ describe('EngramStore (sqlite)', () => {
     expect(none.records.some(record => record.content.includes('[REDACTED:'))).toBe(false)
   })
 
+  it('stats 统计含脱敏标记条目数', async () => {
+    await store.write({ scope: 'user', kind: 'fact', content: '密钥 [REDACTED:api-key] 已脱敏' })
+    await store.write({ scope: 'user', kind: 'fact', content: '普通条目' })
+    const stats = await store.stats()
+    expect(stats.total).toBe(2)
+    expect(stats.redacted).toBe(1)
+  })
+
   it('空 content loud 失败', async () => {
     await expect(store.write({ scope: 'user', kind: 'fact', content: '   ' })).rejects.toThrow(/content/)
   })

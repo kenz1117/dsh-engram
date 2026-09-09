@@ -46,6 +46,7 @@ export type EngramKey =
   | 'sourceSession'
   | 'round'
   | 'cardActive'
+  | 'cardRedacted'
   | 'signalRatio'
   | 'detail'
   | 'edit'
@@ -122,6 +123,7 @@ export const zh: Record<EngramKey, string> = {
   sourceSession: '来源 {id}',
   round: '第 {n} 轮',
   cardActive: '生效 {n}',
+  cardRedacted: '已脱敏 {n}',
   signalRatio: '信噪比 {n}%',
   detail: '详情',
   edit: '编辑',
@@ -199,6 +201,7 @@ export const en: Record<EngramKey, string> = {
   sourceSession: 'Source {id}',
   round: 'round {n}',
   cardActive: '{n} active',
+  cardRedacted: '{n} redacted',
   signalRatio: 'signal {n}%',
   detail: 'Details',
   edit: 'Edit',

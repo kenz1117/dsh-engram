@@ -207,6 +207,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlCountKind = db.prepare('SELECT kind, COUNT(*) AS n FROM nodes GROUP BY kind')
   const sqlCountEdges = db.prepare('SELECT COUNT(*) AS n FROM edges')
   const sqlCountOpLog = db.prepare('SELECT COUNT(*) AS n FROM op_log')
+  const sqlCountRedacted = db.prepare("SELECT COUNT(*) AS n FROM nodes WHERE content LIKE '%[REDACTED:%'")
   const sqlAllNodes = db.prepare('SELECT * FROM nodes ORDER BY created_at')
   const sqlAllEdges = db.prepare('SELECT * FROM edges')
   const sqlDecay = db.prepare(`UPDATE nodes SET status = 'archived'
@@ -477,6 +478,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         active,
         archived,
         forgotten,
+        redacted: (sqlCountRedacted.get() as unknown as { n: number }).n,
         byKind,
         edges: edgeCount,
         opLogCount: opCount,
