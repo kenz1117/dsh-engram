@@ -1,6 +1,6 @@
 <div align="center">
 
-# dsh-engram
+# dsh-engram记忆宫殿
 
 <p align="center">DeepSeek Harness 跨会话长期记忆插件 — 以「记忆宫殿」隐喻重构 agent 长期记忆的认知架构：意象标签、走廊拓扑、闭环提问、巩固合并与衰减遗忘。Agent 在会话与项目之间记住用户偏好、项目约定与经历事实，并随使用持续演化（摄取 → 强化 → 蒸馏 → 衰减）。纯 TypeScript，零外部进程、零 Python 依赖。</p>
 
