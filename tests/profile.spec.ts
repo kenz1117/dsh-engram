@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { renderProfile, renderProfileDetailed } from '../src/index.ts'
 
-const HEADER = 'User memory profile (dsh-engram, cross-session):'
-const FOOTER = 'Use engram_search to recall details; use engram_save to persist new facts.'
+const HEADER = 'User memory profile (dsh-engram, cross-session) — Grand Hall (always present):'
+const FOOTER = 'Use engram_search to recall details (pass room to search inside one room); use engram_save to persist new facts.'
 const est = (text: string): number => Math.ceil(text.length / 4)
 const OVERHEAD = est(HEADER) + est(FOOTER)
 

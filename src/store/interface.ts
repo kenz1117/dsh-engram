@@ -8,8 +8,28 @@ import type {
   DecayOptions, EngramEdgeType, EngramScope, ExportData, ForgettingTombstone,
   ForgottenAuditRow, ListFilter, ListResult,
   MemoryId, MemoryOutcome, MemoryRecord, OperationLogRow,
-  ReviewView, SearchQuery, SearchResult, StoreStats, TimelineQuery, UpdateInput, WriteInput,
+  ReviewGrade, ReviewView, SearchQuery, SearchResult, Slot, StoreStats, TimelineQuery, UpdateInput, WriteInput,
 } from '../types.ts'
+
+/** 一个房间的占用状态（slotCountsByRoom 的行）。 */
+export interface RoomState {
+  /** 已占用桩位数（forgotten 除外——软删即刻腾位）。 */
+  readonly count: number
+  /** 当前最大桩位序号（含空桩，决定下一个分配的序号）。 */
+  readonly maxIndex: number
+}
+
+/** 门牌快照行：房间名 + caption（门牌评分的唯一性/差异化上下文）。 */
+export interface PlacardRow {
+  readonly room: string | null
+  readonly caption: string
+}
+
+/** 固定巡游路线的一站。 */
+export interface RouteStop {
+  readonly position: number
+  readonly id: MemoryId
+}
 
 /** 存储接口。所有方法在库不可用时抛 EngramError。 */
 export interface EngramStore {
@@ -47,6 +67,28 @@ export interface EngramStore {
   listForgottenWithTombs(limit: number): Promise<readonly ForgottenAuditRow[]>
   /** 回报使用效果（奖励信号）：success 提权 confidence+0.05，failure 降权 confidence-0.1（夹逼 0-1）；返回更新后条目，id 不存在返回 undefined。 */
   reportOutcome(id: MemoryId, outcome: MemoryOutcome): Promise<MemoryRecord | undefined>
+  /** SM-2 复习答题：按回忆质量推进调度（间隔/ease/reps），返回更新后条目，id 不存在返回 undefined。 */
+  scheduleReview(id: MemoryId, grade: ReviewGrade): Promise<MemoryRecord | undefined>
+  /** 今日待回忆队列：active 且已到期的条目，按到期时间升序（最逾期在前）。 */
+  dueReviews(now: number, limit: number): Promise<MemoryRecord[]>
+  /** 各房间占用状态快照（排桩分配的输入）。 */
+  slotCountsByRoom(): Promise<Record<string, RoomState>>
+  /** 给条目钉桩位（房间 + 序号），记 op_log。 */
+  assignSlot(id: MemoryId, slot: Slot): Promise<void>
+  /**
+   * 存量排桩：为全部 active 且未排桩的条目按 kind 分房、created_at 定序钉桩，
+   * 并补登记巡游路线；幂等（只处理 slot_room 为空的行），返回排桩条数。
+   * @param capacityNote - 开新房时的回调（调用方记 op_log 提醒人工命名）。
+   */
+  backfillSlots(capacityNote: (room: string) => void): Promise<number>
+  /** 把条目追加到固定巡游路线末尾（位置只增，骨架长期复用）。 */
+  routeAppend(id: MemoryId): Promise<void>
+  /** 条目是否已在巡游路线上。 */
+  routeHas(id: MemoryId): Promise<boolean>
+  /** 固定巡游路线全程（按位置升序；已归档/遗忘的站点由渲染层跳过）。 */
+  routeList(): Promise<RouteStop[]>
+  /** 门牌快照：全库 active 条目的 (房间, caption) 列表（门牌评分上下文）。 */
+  listPlacards(): Promise<PlacardRow[]>
   /** 从 archived/forgotten 恢复为 active。 */
   restore(id: MemoryId): Promise<MemoryRecord>
   /** 画像注入/蒸馏取材：指定 scope 的 active 条目按 importance、confidence 倒序取前 n。 */

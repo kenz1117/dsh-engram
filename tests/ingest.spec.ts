@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   ACTIVITY_THRESHOLD, INGEST_DONE_OP, INGEST_PENDING_OP, activityScore, encodeTurnKey, ingestFinalTurn,
-  ingestPreviousTurn, isChitchat, forbidsCapture, lastTurnSlice, markPendingIngest, previousTurnSlice,
+  ingestPreviousTurn, isChitchat, forbidsCapture, lastTurnNumber, lastTurnSlice, markPendingIngest, previousTurnSlice,
   replayPendingIngests, throttleDecision, turnSlice, turnSignals,
 } from '../src/ingest/hook.ts'
 import type { IngestRequestEventData } from '../src/ingest/hook.ts'
@@ -370,6 +370,15 @@ describe('末轮切片', () => {
     expect(turnSlice(events, 3)).toHaveLength(2)
     expect(turnSlice(events, 9)).toHaveLength(0)
   })
+
+  it('事件源不可用（undefined）时按空日志处理，不抛 TypeError', () => {
+    // 会话 dispose 后事件源已 detach，宿主可能给不出日志：此处曾抛 TypeError，
+    // 从 fire-and-forget 的 disposed 观察器逃逸成未处理 rejection，被宿主 fail-loud 当致命错误退出进程。
+    expect(lastTurnSlice(undefined as never)).toHaveLength(0)
+    expect(previousTurnSlice(undefined as never)).toHaveLength(0)
+    expect(lastTurnNumber(undefined as never)).toBeUndefined()
+    expect(turnSlice(undefined as never, 1)).toHaveLength(0)
+  })
 })
 
 describe('ingestFinalTurn', () => {
@@ -405,6 +414,14 @@ describe('ingestFinalTurn', () => {
 
   it('无 turn/start 时不摄取也不落 pending', async () => {
     const outcome = await ingestFinalTurn(baseDeps({ events: [userMsg('孤儿消息', 1)] }))
+    expect(outcome).toBeNull()
+    expect((await store.listAuditDetails(INGEST_PENDING_OP)).length).toBe(0)
+  })
+
+  it('事件源不可用（undefined）时静默返回 null：不抛、不落 pending', async () => {
+    // dispose 后事件源已 detach：既拿不到末轮内容也拿不到轮次号，无法建 pending 键，只跳过。
+    // 关键契约是「不 reject」——逃逸的 rejection 会让宿主 fail-loud 直接退出进程。
+    const outcome = await ingestFinalTurn(baseDeps({ events: undefined as never }))
     expect(outcome).toBeNull()
     expect((await store.listAuditDetails(INGEST_PENDING_OP)).length).toBe(0)
   })

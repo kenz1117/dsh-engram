@@ -40,6 +40,8 @@ describe('engram tools', () => {
     const result = await tools.get('engram_save')!.execute(
       { content: '用户偏好深色主题', kind: 'preference', importance: 0.7, scope: 'user' }, fakeExec)
     expect((result as { id: string }).id).toBeTruthy()
+    // 单条保存（未挂门牌）也回带桩位的提示文本——模型据此建立位置感。
+    expect((result as { text: string }).text).toContain('偏好阁#1')
     const records = await store.topActive('user', 10)
     const saved = records.find(record => record.content === '用户偏好深色主题')
     expect(saved?.sourceSessionId).toBe('sess-1')
@@ -87,10 +89,13 @@ describe('engram tools', () => {
         { content: '批量偏好二', kind: 'preference', importance: 0.9 },
       ],
       scope: 'user',
-    }, fakeExec) as { count: number; items: { id: string }[]; failed: unknown[] }
+    }, fakeExec) as { count: number; items: { id: string; slot?: { room: string; index: number } }[]; failed: unknown[] }
     expect(result.count).toBe(2)
     expect(result.items).toHaveLength(2)
     expect(result.failed).toEqual([])
+    // 批量写入同样自动排桩：每条带宫殿坐标（事实厅先写先占 1 号位）。
+    expect(result.items[0]?.slot).toEqual({ room: '事实厅', index: 1 })
+    expect(result.items[1]?.slot).toEqual({ room: '偏好阁', index: 1 })
     const contents = (await store.topActive('user', 10)).map(record => record.content)
     expect(contents).toContain('批量事实一')
     expect(contents).toContain('批量偏好二')
@@ -136,11 +141,17 @@ describe('engram tools', () => {
       exportDir: join(dir, 'exports'),
     }).find(tool => tool.name === 'engram_save')!
     const blocks = saveDefinition.output.render({}, {
-      count: 1,
-      items: [{ id: 'm1', kind: 'fact', importance: 0.5 }],
+      count: 2,
+      items: [
+        { id: 'm1', kind: 'fact', importance: 0.5, slot: { room: '事实厅', index: 1 } },
+        { id: 'm2', kind: 'preference', importance: 0.9 },
+      ],
       failed: [{ index: 1, reason: 'kind 无效' }],
     })
-    expect((blocks[0] as { text: string }).text).toContain('已批量保存 1 条记忆')
+    expect((blocks[0] as { text: string }).text).toContain('已批量保存 2 条记忆')
+    // 有桩位的条目在汇总文本里带坐标，无桩位的保持原样。
+    expect((blocks[0] as { text: string }).text).toContain('m1（kind=fact, importance=0.5, 事实厅#1）')
+    expect((blocks[0] as { text: string }).text).toContain('m2（kind=preference, importance=0.9）')
     expect((blocks[0] as { text: string }).text).toContain('1 条失败：#2 kind 无效')
   })
 
@@ -287,11 +298,11 @@ describe('engram tools', () => {
     expect(result.text).toContain('记忆甲内容')
   })
 
-  it('工具集恰为 14 个且名字正确', () => {
+  it('工具集恰为 15 个且名字正确', () => {
     expect([...tools.keys()].sort()).toEqual([
       'engram_audit_forgotten', 'engram_distill', 'engram_examine', 'engram_export', 'engram_forget',
-      'engram_neighbors', 'engram_report', 'engram_review', 'engram_save', 'engram_search',
-      'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
+      'engram_neighbors', 'engram_report', 'engram_review', 'engram_review_queue', 'engram_save',
+      'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
     ])
   })
 })

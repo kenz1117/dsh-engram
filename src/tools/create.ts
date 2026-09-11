@@ -1,5 +1,5 @@
 /**
- * 9 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
+ * 15 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
  * scope 决定读写哪个分库；嵌入缺失时检索结果显式标记降级。
  * @module @kenz1117/dsh-engram/tools/create
  */
@@ -14,7 +14,7 @@ import type { EngramEmbedder } from '../embedder/interface.ts'
 import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
 import type { LlmRoute } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
-import type { EngramKind, EngramScope } from '../types.ts'
+import type { EngramKind, EngramScope, ImageryLabel } from '../types.ts'
 import type { MemoryRecord, SearchHit } from '../types.ts'
 import { asMemoryId } from '../types.ts'
 import { renderMemoryPacket, sanitizeProtocolText } from '../security/sanitize.ts'
@@ -24,6 +24,7 @@ import {
   mergeQueryResults, normalizeRewriteQueries,
 } from '../retrieve/rewrite.ts'
 import { enforceBudget, truncateItem } from '../retrieve/budget.ts'
+import { placardImprovementHint } from '../imagery/score.ts'
 
 /** 工具依赖：分库打开器、嵌入器承诺、辅助 LLM 调用与导出目录。 */
 export interface ToolDeps {
@@ -96,7 +97,8 @@ async function rewriteQueries(deps: ToolDeps, exec: ToolRunContext, query: strin
 }
 
 /**
- * 构造 10 个工具定义（engram_save/search/timeline/update/forget/report/review/stats/export/distill）。
+ * 构造 15 个工具定义（engram_save/search/timeline/update/forget/report/review/review_queue/
+ * stats/export/distill/examine/neighbors/audit_forgotten/tour）。
  * @param deps - 分库打开器、嵌入器、辅助 LLM、导出目录。
  * @returns 可直接 register 的工具定义数组。
  */
@@ -113,8 +115,8 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     readonly text?: string
     /** 批量模式：成功条数。 */
     readonly count?: number
-    /** 批量模式：成功条目。 */
-    readonly items?: readonly { id: string; kind: string; importance: number }[]
+    /** 批量模式：成功条目（带宫殿坐标，让批量写入也有位置感）。 */
+    readonly items?: readonly { id: string; kind: string; importance: number; slot?: { room: string; index: number } }[]
     /** 批量模式：失败条目（index 为 items 数组下标）。 */
     readonly failed?: readonly { index: number; reason: string }[]
   }
@@ -124,7 +126,8 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     if (value.count !== undefined) {
       const parts = [`已批量保存 ${value.count} 条记忆`]
       for (const item of value.items ?? []) {
-        parts.push(`${item.id}（kind=${item.kind}, importance=${item.importance}）`)
+        const slot = item.slot === undefined ? '' : `, ${item.slot.room}#${item.slot.index}`
+        parts.push(`${item.id}（kind=${item.kind}, importance=${item.importance}${slot}）`)
       }
       const failures = value.failed ?? []
       if (failures.length > 0) {
@@ -147,6 +150,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       importance?: number
       sourceSessionId: string | null
       embedding?: Float32Array
+      imagery?: ImageryLabel
     },
   ): Promise<{ record: Awaited<ReturnType<EngramStore['write']>>; candidates: Awaited<ReturnType<EngramStore['findContradictions']>> }> {
     const { embedding } = item
@@ -157,12 +161,21 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       ...(item.importance === undefined ? {} : { importance: item.importance }),
       sourceSessionId: item.sourceSessionId,
       ...(embedding === undefined ? {} : { embedding }),
+      ...(item.imagery === undefined ? {} : { imagery: item.imagery }),
     })
     const candidates = embedding === undefined ? [] : await store.findContradictions(embedding)
     for (const candidate of candidates) {
       await store.linkEdge(record.id, candidate.id, 'contradicts')
     }
     return { record, candidates }
+  }
+
+  /** 门牌参数收敛：非空字符串转 ImageryLabel（感官/情绪维度留空——AI 不需要人脑补丁），非法返回 undefined。 */
+  function placardOf(raw: unknown): ImageryLabel | undefined {
+    if (typeof raw !== 'string') return undefined
+    const caption = raw.trim()
+    if (caption === '') return undefined
+    return { caption, sensoryTags: [], emotionalValence: 0, provisional: false }
   }
 
   /** 批量保存结果（输出 schema 的运行时形状）。 */
@@ -210,7 +223,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       ? undefined
       : await embedder.embed(prepared.map(item => item.content.trim()))
     // 第三步：逐条写入；单条失败记入 failed 不阻塞其余（矛盾边照建，可经 engram_review 查看）。
-    const saved: { id: string; kind: string; importance: number }[] = []
+    const saved: { id: string; kind: string; importance: number; slot?: { room: string; index: number } }[] = []
     for (const [position, item] of prepared.entries()) {
       try {
         const embedding = vectors?.[position]
@@ -222,7 +235,12 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
           sourceSessionId,
           ...(embedding === undefined ? {} : { embedding }),
         })
-        saved.push({ id: record.id, kind: record.kind, importance: record.importance })
+        saved.push({
+          id: record.id,
+          kind: record.kind,
+          importance: record.importance,
+          ...(record.slot === undefined ? {} : { slot: record.slot }),
+        })
       } catch (error) {
         failed.push({ index: item.index, reason: error instanceof Error ? error.message : String(error) })
       }
@@ -247,6 +265,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       },
       scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '作用域，默认 project' },
       importance: { type: 'number', description: '重要性 0-1，默认 0.5（仅单条模式）' },
+      placard: { type: 'string', description: '门牌（可选，仅单条模式）：4-30 字铭牌。宫殿纪律：唯一 · 差异化 · 带日期锚点（如「2026-09 向量检索选型」），禁止与既有门牌近似到无法区分' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: {
@@ -259,6 +278,10 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
           id: { type: 'string', required: true },
           kind: { type: 'string', required: true },
           importance: { type: 'number', required: true },
+          slot: { type: 'object', additionalProperties: false, properties: {
+            room: { type: 'string', required: true },
+            index: { type: 'number', required: true },
+          } },
         } } },
         failed: { type: 'array', items: { type: 'object', additionalProperties: false, properties: {
           index: { type: 'number', required: true },
@@ -268,7 +291,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       render: (_args, value) => [{ type: 'text', text: renderSaveResultText(value as SaveResultView) }],
     },
     async execute(args, exec) {
-      const input = args as { content?: unknown; kind?: unknown; items?: unknown; scope?: unknown; importance?: unknown }
+      const input = args as { content?: unknown; kind?: unknown; items?: unknown; scope?: unknown; importance?: unknown; placard?: unknown }
       const sourceSessionId = exec.agent?.id ?? null
       // 批量模式：items 与 content/kind 互斥，同传 loud 失败。
       if (input.items !== undefined) {
@@ -290,6 +313,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       const store = await deps.openStore(scope)
       const embedder = await deps.embedder
       const embeddings = embedder === undefined ? undefined : await embedder.embed([content.trim()])
+      const imagery = placardOf(input.placard)
       const { record, candidates } = await writeWithContradictions(store, {
         scope,
         kind: input.kind as EngramKind,
@@ -297,7 +321,12 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
         ...(typeof input.importance === 'number' ? { importance: input.importance } : {}),
         sourceSessionId,
         ...(embeddings?.[0] === undefined ? {} : { embedding: embeddings[0] }),
+        ...(imagery === undefined ? {} : { imagery }),
       })
+      // 门牌质量提示：低分（不合「唯一·差异化·带日期」纪律）附增强建议。
+      const placardHint = imagery === undefined || record.imageryScore === undefined
+        ? ''
+        : `\n${placardImprovementHint(record.imageryScore) ?? ''}`
       // 写入时矛盾检测：高相似近邻建 contradicts 边并在结果中报告候选，由模型/用户裁决。
       if (candidates.length > 0) {
         const listed = candidates.map(candidate => `「${candidate.content}」（id=${candidate.id}）`).join('；')
@@ -305,19 +334,21 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
           id: record.id,
           kind: record.kind,
           importance: record.importance,
-          text: `已保存 ${record.id}。注意：与现有记忆高度相似——${listed}。若这是修正而非新事实，请用 engram_update 归并，或 engram_forget 去重。`,
+          text: `已保存 ${record.id}。注意：与现有记忆高度相似——${listed}。若这是修正而非新事实，请用 engram_update 归并，或 engram_forget 去重。${placardHint}`,
         }
       }
-      return { id: record.id, kind: record.kind, importance: record.importance }
+      const base = `已保存记忆 ${record.id}（kind=${record.kind}, importance=${record.importance}${record.slot === undefined ? '' : `, ${record.slot.room}#${record.slot.index}`}）。后续会话可用 engram_search 召回。`
+      return { id: record.id, kind: record.kind, importance: record.importance, text: `${base}${placardHint}` }
     },
   })
 
   const search = defineTool({
     name: 'engram_search',
-    description: '语义 + 关键词混合检索长期记忆。user 作用域存偏好与通用事实，project 作用域存项目约定与决策。结果行尾给出 id，供 engram_update/engram_forget 引用。',
+    description: '语义 + 关键词混合检索长期记忆。宫殿纪律：先想进哪个房间——事实厅（fact）/偏好阁（preference）/决策堂（decision）/往事廊（episode）/技法坊（skill），带上 room 参数只查该房间，更快更准；不确定房间时缺省全库检索。user 作用域存偏好与通用事实，project 作用域存项目约定与决策。结果行尾给出 id，供 engram_update/engram_forget 引用。',
     parameters: {
       query: { type: 'string', required: true, description: '检索文本' },
       scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
+      room: { type: 'string', description: '房间路由：只在指定房间内检索（如「决策堂」）。房间目录见 engram_stats 输出' },
       limit: { type: 'number', description: '返回条数上限，默认 8' },
     },
     output: {
@@ -328,8 +359,9 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       render: (_args, value) => [{ type: 'text', text: value.text }],
     },
     async execute(args, exec) {
-      const input = args as { query: string; scope?: unknown; limit?: number }
+      const input = args as { query: string; scope?: unknown; room?: unknown; limit?: number }
       const scopes = scopesOf(input.scope)
+      const rooms = typeof input.room === 'string' && input.room.trim() !== '' ? [input.room.trim()] : undefined
       const limit = input.limit ?? 8
       // 多查询改写：辅助 LLM 可用时生成 ≤3 个互补查询分别检索后 RRF 融合；
       // 失败/不可用降级原查询单查。多查询会对同一 id 重复命中强化（accessCount、
@@ -339,7 +371,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
         const vector = await queryVectorOf(deps, queryText)
         const results = await Promise.all(scopes.map(async (scope) => {
           const store = await deps.openStore(scope)
-          return store.search({ text: queryText, scopes: [scope], limit }, vector)
+          return store.search({ text: queryText, scopes: [scope], limit, ...(rooms === undefined ? {} : { rooms }) }, vector)
         }))
         return {
           hits: results.flatMap(result => result.hits).sort((a, b) => b.score - a.score).slice(0, limit),
@@ -354,13 +386,18 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
         Math.floor(Math.max(0, limit) / Math.max(1, rewrite.queries.length)),
       )
       // 字符预算：单条 1200、总量 4800（超预算行丢弃并提示，防止长记忆淹没上下文）。
+      // 行格式带宫殿坐标（房间 #桩位 + 刻入日期）与编码线索（相邻桩位 id）——提取时重建编码情境。
       const lines = enforceBudget(merged.map((hit, index) => {
         const edge = hit.viaEdge === undefined ? '' : `（经 ${hit.viaEdge.type} 关联自 ${hit.viaEdge.from}）`
-        return `${index + 1}. [${hit.record.scope}/${hit.record.kind}] ${truncateItem(hit.record.content)}（id=${hit.record.id}）${edge}`
+        const slot = hit.record.slot === undefined ? '' : ` ${hit.record.slot.room}#${hit.record.slot.index}`
+        const date = ` 刻于 ${new Date(hit.record.createdAt).toISOString().slice(0, 10)}`
+        const cues = hit.cues === undefined ? '' : ` 相邻桩位: ${hit.cues.neighbors.join(', ')}`
+        return `${index + 1}. [${hit.record.scope}/${hit.record.kind}]${slot}${date} ${truncateItem(hit.record.content)}（id=${hit.record.id}）${edge}${cues}`
       }))
       const prefix = degraded && lines.length > 0 ? '（语义嵌入不可用，仅关键词检索）\n' : ''
+      const roomNote = rooms === undefined ? '' : `（房间路由：${rooms.join('、')}）\n`
       // 输出包协议标签：记忆正文是不可信历史上下文，当前请求为检索词本身。
-      return { degraded, text: renderMemoryPacket(`${prefix}${lines.join('\n') || '无命中'}`, 'tool_search', input.query) }
+      return { degraded, text: renderMemoryPacket(`${prefix}${roomNote}${lines.join('\n') || '无命中'}`, 'tool_search', input.query) }
     },
   })
 
@@ -413,6 +450,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       content: { type: 'string', required: true, description: '修正后的正文' },
       scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '旧条目作用域，默认 project' },
       kind: { type: 'string', enum: [...KINDS], description: '种类，默认继承旧条目' },
+      placard: { type: 'string', description: '门牌（可选）：4-30 字铭牌，替换旧条目门牌。宫殿纪律：唯一 · 差异化 · 带日期锚点' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: {
@@ -423,7 +461,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
         [{ type: 'text', text: `已写入修正记忆 ${value.id}；旧条目 ${value.superseded} 已归档并建立取代链。` }],
     },
     async execute(args) {
-      const input = args as { id: string; content: string; scope?: unknown; kind?: EngramKind }
+      const input = args as { id: string; content: string; scope?: unknown; kind?: EngramKind; placard?: unknown }
       // 入库前协议剥离 + 密钥脱敏，与 engram_save 同一防线。
       const content = redactSecrets(sanitizeProtocolText(input.content))
       if (content.trim() === '') throw new Error('engram_update: 清洗后内容为空（原文只含协议标签或密钥）')
@@ -433,12 +471,14 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       if (old === undefined) throw new Error(`engram_update: 条目 ${input.id} 不存在于 ${scope} 库（用 engram_search 确认 id 与 scope）`)
       const embedder = await deps.embedder
       const embeddings = embedder === undefined ? undefined : await embedder.embed([content.trim()])
+      const imagery = placardOf(input.placard)
       const record = await store.update({
         id: input.id as never,
         scope,
         kind: input.kind ?? old.kind,
         content,
         ...(embeddings === undefined ? {} : { embedding: embeddings[0] }),
+        ...(imagery === undefined ? {} : { imagery }),
       })
       return { id: record.id, superseded: input.id }
     },
@@ -506,13 +546,55 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     },
   })
 
+  // 今日待回忆队列（检索练习）：只给线索（房间/桩位/门牌），不给内容——模型先主动回忆，
+  // 再用 engram_review 揭示核对、engram_report grade 自评。主动回忆的强化效果远强于被动重看。
+  const reviewQueue = defineTool({
+    name: 'engram_review_queue',
+    description: '今日待回忆队列：列出已到期间隔重复的记忆，每条只给宫殿坐标与门牌线索（不给正文）。用法：对每条先尝试回忆内容，然后 engram_review 揭示核对，再 engram_report 传 grade（0-5）自评——主动回忆比重复阅读的记忆强化效果强得多。会话开始注入会提示今日是否有待回忆。',
+    parameters: {
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
+      limit: { type: 'integer', description: '返回条数上限，默认 10（最逾期在前）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args) {
+      const input = args as { scope?: unknown; limit?: unknown }
+      const scopes = scopesOf(input.scope)
+      const limit = Number.isInteger(input.limit) ? Math.min(Math.max(1, input.limit as number), 50) : 10
+      const now = Date.now()
+      const groups = await Promise.all(scopes.map(async (scope) => ({
+        scope,
+        due: await (await deps.openStore(scope)).dueReviews(now, limit),
+      })))
+      const total = groups.reduce((sum, group) => sum + group.due.length, 0)
+      if (total === 0) return { text: '今日无待回忆条目（队列空）。新记忆保存后次日首次到期。' }
+      const lines: string[] = [`今日待回忆 ${total} 段（最逾期在前）。对每段：先回忆 → engram_review 核对 → engram_report 传 grade 自评。`]
+      for (const { scope, due } of groups) {
+        for (const [index, record] of due.entries()) {
+          const slot = record.slot === undefined ? '（未排桩）' : `${record.slot.room} #${record.slot.index}`
+          const placard = record.imagery?.caption ?? '（无门牌）'
+          const overdueDays = record.review?.nextReviewAt === null || record.review?.nextReviewAt === undefined
+            ? 0
+            : Math.max(0, Math.floor((now - record.review.nextReviewAt) / 86_400_000))
+          const overdue = overdueDays === 0 ? '今日到期' : `逾期 ${overdueDays} 天`
+          lines.push(`${index + 1}. [${scope}] ${slot} · 门牌「${placard}」 · ${overdue} · id=${record.id}`)
+        }
+      }
+      return { text: lines.join('\n') }
+    },
+  })
+
   // 奖励信号入口：模型用完一条记忆（尤其 skill 类）后回报实际效果，成功提权/失败降权。
+  // 同时衔接间隔重复：success=grade 5 / failure=grade 1 推进 SM-2 调度；显式 grade 自评优先。
   const report = defineTool({
     name: 'engram_report',
-    description: '回报一条记忆（尤其 skill 类）使用后的实际效果：success（有效，提权）或 failure（无效，降权）。id 与 scope 来自 engram_search 结果。效果影响后续召回排序，长期无效的记忆将被衰减归档。',
+    description: '回报一条记忆（尤其 skill 类）使用后的实际效果：success（有效，提权）或 failure（无效，降权）。id 与 scope 来自 engram_search 结果。也可作为复习自评入口：传 grade（0 完全遗忘 … 5 完美回忆）显式报告回忆质量。效果影响后续召回排序与复习排期，长期无效的记忆会被衰减归档。',
     parameters: {
       id: { type: 'string', required: true, description: '条目 id' },
-      outcome: { type: 'string', enum: ['success', 'failure'], required: true, description: '使用效果' },
+      outcome: { type: 'string', enum: ['success', 'failure'], description: '使用效果（与 grade 二选一；同传时 grade 优先）' },
+      grade: { type: 'integer', description: '回忆质量自评 0-5（复习答题用；0/1 完全遗忘，3 勉强，5 完美）' },
       scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '条目作用域，默认 project' },
     },
     output: {
@@ -520,24 +602,45 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
         id: { type: 'string', required: true },
         outcome: { type: 'string', required: true },
         confidence: { type: 'number', required: true },
+        nextReviewAt: { type: 'number' },
       } },
       render: (_args, value) => [{
         type: 'text',
-        text: value.outcome === 'success'
+        text: (value.outcome === 'success'
           ? `已记录：记忆 ${value.id} 使用有效（confidence=${value.confidence}）。该记忆后续召回排序将提升。`
-          : `已记录：记忆 ${value.id} 使用无效（confidence=${value.confidence}）。该记忆后续召回排序将下降，持续无效会被衰减归档。`,
+          : `已记录：记忆 ${value.id} 标记为无效/遗忘（confidence=${value.confidence}）。排序将下降，持续无效会被衰减归档。`)
+          + (value.nextReviewAt === undefined
+            ? ''
+            : ` 下次复习：${new Date(value.nextReviewAt).toISOString().slice(0, 10)}。`),
       }],
     },
     async execute(args) {
-      const input = args as { id: string; outcome?: unknown; scope?: unknown }
-      if (input.outcome !== 'success' && input.outcome !== 'failure') {
-        throw new Error('engram_report: outcome 必须是 success 或 failure')
+      const input = args as { id: string; outcome?: unknown; grade?: unknown; scope?: unknown }
+      const hasGrade = Number.isInteger(input.grade) && (input.grade as number) >= 0 && (input.grade as number) <= 5
+      if (input.grade !== undefined && !hasGrade) {
+        throw new Error('engram_report: grade 必须是 0-5 的整数')
       }
+      if (input.outcome !== 'success' && input.outcome !== 'failure' && !hasGrade) {
+        throw new Error('engram_report: 需要 outcome（success/failure）或 grade（0-5）参数')
+      }
+      // grade 显式自评优先；否则 outcome 映射为 SM-2 grade（success=5 完美，failure=1 遗忘）。
+      const outcome = input.outcome === 'success' || input.outcome === 'failure'
+        ? input.outcome
+        : (input.grade as number) >= 3 ? 'success' : 'failure'
+      const grade = (hasGrade ? input.grade : outcome === 'success' ? 5 : 1) as 0 | 1 | 2 | 3 | 4 | 5
       const scope = scopeOf(input.scope, 'project')
       const store = await deps.openStore(scope)
-      const record = await store.reportOutcome(input.id as never, input.outcome)
+      const record = await store.reportOutcome(input.id as never, outcome)
       if (record === undefined) throw new Error(`engram_report: 条目 ${input.id} 不存在（scope=${scope}）`)
-      return { id: record.id, outcome: input.outcome, confidence: record.confidence }
+      const scheduled = await store.scheduleReview(input.id as never, grade)
+      return {
+        id: record.id,
+        outcome,
+        confidence: record.confidence,
+        ...(scheduled?.review?.nextReviewAt === null || scheduled?.review?.nextReviewAt === undefined
+          ? {}
+          : { nextReviewAt: scheduled.review.nextReviewAt }),
+      }
     },
   })
 
@@ -585,7 +688,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
 
   const stats = defineTool({
     name: 'engram_stats',
-    description: '记忆库统计：各状态与种类数量、关系边数、信噪比、操作日志量。scope=all 时合并两库。',
+    description: '记忆库统计：各状态与种类数量、关系边数、信噪比、操作日志量，以及房间目录（房名/桩位数/最新门牌——检索前先看目录决定进哪个房间，配 engram_search 的 room 参数）。scope=all 时合并两库。',
     parameters: {
       scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
     },
@@ -596,15 +699,34 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     async execute(args) {
       const input = args as { scope?: unknown }
       const scopes = scopesOf(input.scope)
-      const all = await Promise.all(scopes.map(async (scope) => ({
-        scope,
-        stats: await (await deps.openStore(scope)).stats(),
-      })))
-      const text = all.map(({ scope, stats }) => [
-        `[${scope}] 总数 ${stats.total}（active ${stats.active} / archived ${stats.archived} / forgotten ${stats.forgotten}）`,
-        `种类分布: ${Object.entries(stats.byKind).map(([kind, count]) => `${kind}=${count}`).join(', ') || '空'}`,
-        `关系边 ${stats.edges} 条 · 信噪比 ${(stats.signalRatio * 100).toFixed(1)}% · 操作日志 ${stats.opLogCount} 条`,
-      ].join('\n')).join('\n\n')
+      const all = await Promise.all(scopes.map(async (scope) => {
+        const store = await deps.openStore(scope)
+        const [storeStats, rooms, placards] = await Promise.all([
+          store.stats(),
+          store.slotCountsByRoom(),
+          store.listPlacards(),
+        ])
+        return { scope, stats: storeStats, rooms, placards }
+      }))
+      const text = all.map(({ scope, stats, rooms, placards }) => {
+        // 房间目录（走廊路由索引）：每房一行，桩位数 + 最新门牌作路由线索。
+        const latestPlacardByRoom = new Map<string, string>()
+        for (const row of placards) {
+          if (row.room !== null) latestPlacardByRoom.set(row.room, row.caption)
+        }
+        const roomLines = Object.entries(rooms)
+          .sort(([a], [b]) => a.localeCompare(b, 'zh-Hans-CN'))
+          .map(([room, state]) => {
+            const placard = latestPlacardByRoom.get(room)
+            return `  ${room}: ${state.count}/${state.maxIndex} 桩${placard === undefined ? '' : ` · 最新门牌「${placard}」`}`
+          })
+        return [
+          `[${scope}] 总数 ${stats.total}（active ${stats.active} / archived ${stats.archived} / forgotten ${stats.forgotten}）`,
+          `种类分布: ${Object.entries(stats.byKind).map(([kind, count]) => `${kind}=${count}`).join(', ') || '空'}`,
+          `关系边 ${stats.edges} 条 · 信噪比 ${(stats.signalRatio * 100).toFixed(1)}% · 操作日志 ${stats.opLogCount} 条`,
+          roomLines.length === 0 ? '房间目录: （尚未排桩）' : `房间目录（engram_search 用 room 参数直进）:\n${roomLines.join('\n')}`,
+        ].join('\n')
+      }).join('\n\n')
       return { text }
     },
   })
@@ -777,22 +899,56 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
    */
   const tour = defineTool({
     name: 'engram_tour',
-    description: '巡游路由：按「同类巩固 → 走廊相邻 → 反差补位」顺序组织 3-7 间房间，每站附入选理由 + 意象铭牌回声。适合在用户问起某主题时直接给出一条可走的导览路线，而不是无序结果集。',
+    description: '巡游路由。mode=fixed：按固定巡游路线走全宫（桩位顺序恒定，骨架长期复用——宫殿的路线永远不变，靠顺序提取）；mode=thematic（默认）：按主题动态规划 3-7 站（同类巩固 → 走廊相邻 → 反差补位），适合用户问起某主题时给出一条可走的导览路线。',
     parameters: {
-      query: { type: 'string', required: true, description: '巡游主题（与 engram_search 同义）' },
+      query: { type: 'string', description: '巡游主题（thematic 模式必填，与 engram_search 同义）' },
+      mode: { type: 'string', enum: ['fixed', 'thematic'], description: 'fixed 固定路线全宫巡游 / thematic 主题动态路线（默认 thematic）' },
       scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
-      maxStops: { type: 'integer', description: '最多站数（默认 6，3-7 之间）' },
+      maxStops: { type: 'integer', description: '最多站数（默认 6，3-7 之间；fixed 模式默认 20）' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
       render: (_args, value) => [{ type: 'text', text: value.text }],
     },
     async execute(args, exec) {
-      const input = args as { query: string; scope?: unknown; maxStops?: unknown }
+      const input = args as { query?: string; mode?: unknown; scope?: unknown; maxStops?: unknown }
       const scopes = scopesOf(input.scope)
+      const mode = input.mode === 'fixed' ? 'fixed' : 'thematic'
+      // fixed 模式：按 tour_routes 表顺序输出全宫巡游（已归档/遗忘站点跳过并标注空桩）。
+      if (mode === 'fixed') {
+        const maxStops = Number.isInteger(input.maxStops) ? Math.max(1, input.maxStops as number) : 20
+        const sections: string[] = []
+        let shown = 0
+        let skipped = 0
+        for (const scope of scopes) {
+          const store = await deps.openStore(scope)
+          const route = await store.routeList()
+          if (route.length === 0) continue
+          const records = await store.getMany(route.map(stop => stop.id))
+          const byId = new Map(records.map(record => [String(record.id), record]))
+          const lines: string[] = []
+          for (const stop of route) {
+            if (shown >= maxStops) break
+            const record = byId.get(String(stop.id))
+            if (record === undefined || record.status !== 'active') { skipped += 1; continue }
+            shown += 1
+            const slot = record.slot === undefined ? '' : `${record.slot.room} #${record.slot.index} · `
+            const placard = record.imagery?.caption
+            lines.push(`第 ${stop.position + 1} 站 · ${slot}[${record.kind}] ${truncateItem(record.content)}（id=${record.id}）${placard === null || placard === undefined ? '' : ` · 门牌「${placard}」`}`)
+          }
+          if (lines.length > 0) sections.push(`【${scope} 宫殿 · 固定巡游】\n${lines.join('\n')}`)
+        }
+        if (shown === 0) return { text: '巡游路线为空：尚无排桩记忆（保存记忆后自动登记路线）。' }
+        const tail = skipped > 0 ? `\n（另有 ${skipped} 个空桩：原记忆已闭馆或归档，桩位保留不回收）` : ''
+        return { text: `${sections.join('\n\n')}${tail}` }
+      }
+      if (typeof input.query !== 'string' || input.query.trim() === '') {
+        throw new Error('engram_tour: thematic 模式需要 query 参数（巡游主题）')
+      }
+      const tourQuery = input.query
       const limit = 12
       const maxStops = Number.isInteger(input.maxStops) ? Math.min(Math.max(3, input.maxStops as number), 7) : 6
-      const rewrite = await rewriteQueries(deps, exec, input.query)
+      const rewrite = await rewriteQueries(deps, exec, tourQuery)
       const retrievals = await Promise.all(rewrite.queries.map(async (queryText) => {
         const vector = await queryVectorOf(deps, queryText)
         const results = await Promise.all(scopes.map(async (scope) => {
@@ -816,13 +972,13 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       const projectStore = await deps.openStore('project')
       const poolLookup = async (id: string): Promise<MemoryRecord | undefined> =>
         await userStore.get(id as never) ?? await projectStore.get(id as never)
-      const route = await planTour(merged, poolLookup, input.query, maxStops)
+      const route = await planTour(merged, poolLookup, tourQuery, maxStops)
       const prefix = degraded ? '（语义嵌入不可用，仅关键词检索）\n' : ''
       return { text: `${prefix}${route.narrative}` }
     },
   })
 
-  return [save, search, timeline, update, forget, report, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten]
+  return [save, search, timeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten]
 }
 
 // ===== P0-2 巡游路由：engram_tour =====

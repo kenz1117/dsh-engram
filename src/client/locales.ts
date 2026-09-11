@@ -167,6 +167,19 @@ export type EngramKey =
   | 'refurbMergeDone'
   | 'refurbActionFailed'
   | 'refurbMergeEmpty'
+  | 'reviewQueueTitle'
+  | 'reviewQueueEmpty'
+  | 'reviewReveal'
+  | 'reviewGradeRemember'
+  | 'reviewGradeVague'
+  | 'reviewGradeForgot'
+  | 'reviewOverdue'
+  | 'reviewDueToday'
+  | 'reviewNoPlacard'
+  | 'reviewScheduled'
+  | 'sortTime'
+  | 'sortTour'
+  | 'dueBadgeLabel'
 /** 中文词典（宿主默认语言）。整页采用「记忆宫殿」语言：楼 / 房间 / 楼层 / 铭牌 / 参观 / 管家 / 走廊。
    数据层英文枚举（status/kind/op）不在此映射，文案键保持稳定以保证编译约束。 */
 export const zh: Record<EngramKey, string> = {
@@ -328,6 +341,19 @@ export const zh: Record<EngramKey, string> = {
   refurbMergeDone: '合并任务已派发',
   refurbActionFailed: '执行失败：{msg}',
   refurbMergeEmpty: '无可合并的候选条目',
+  reviewQueueTitle: '今日待回忆',
+  reviewQueueEmpty: '今日无到期记忆，宫殿节奏良好',
+  reviewReveal: '揭示铭牌',
+  reviewGradeRemember: '记得',
+  reviewGradeVague: '模糊',
+  reviewGradeForgot: '忘了',
+  reviewOverdue: '逾期 {n} 天',
+  reviewDueToday: '今日到期',
+  reviewNoPlacard: '（无门牌）',
+  reviewScheduled: '已排入 {n} 天后再回忆',
+  sortTime: '按时间',
+  sortTour: '按巡游路线',
+  dueBadgeLabel: '今日待回忆 {n} 段，点击前往',
 }
 
 /** 英文词典。整页采用「Memory Palace」语言：palace / room / floor / placard / tour / curator / corridor。
@@ -491,4 +517,17 @@ export const en: Record<EngramKey, string> = {
   refurbMergeDone: 'Merge dispatched',
   refurbActionFailed: 'Action failed: {msg}',
   refurbMergeEmpty: 'No merge candidates',
+  reviewQueueTitle: 'Due today',
+  reviewQueueEmpty: 'Nothing due today — palace rhythm is healthy',
+  reviewReveal: 'Reveal placard',
+  reviewGradeRemember: 'Remembered',
+  reviewGradeVague: 'Hazy',
+  reviewGradeForgot: 'Forgot',
+  reviewOverdue: '{n}d overdue',
+  reviewDueToday: 'due today',
+  reviewNoPlacard: '(no placard)',
+  reviewScheduled: 'Scheduled again in {n}d',
+  sortTime: 'By time',
+  sortTour: 'By tour route',
+  dueBadgeLabel: '{n} due for review — click to open',
 }

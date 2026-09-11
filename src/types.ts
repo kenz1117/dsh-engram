@@ -51,6 +51,29 @@ export interface ImageryLabel {
   readonly provisional: boolean
 }
 
+/** 桩位：记忆在宫殿中的固定位置（房间名 + 房内序号）。地点法核心——位置固定，巡游顺序才稳定。 */
+export interface Slot {
+  /** 房间名（默认按 kind 映射：事实厅/偏好阁/决策堂/往事廊/技法坊；满员自动开「<名>-2」）。 */
+  readonly room: string
+  /** 房内桩位序号（从 1 起）。 */
+  readonly index: number
+}
+
+/** 回忆质量自评（SM-2）：0 完全遗忘 … 5 完美回忆；≥3 算通过。 */
+export type ReviewGrade = 0 | 1 | 2 | 3 | 4 | 5
+
+/** 间隔重复调度状态（SM-2 简版）。进入调度的条目不参与自动衰减，由复习结果决定命运。 */
+export interface ReviewSchedule {
+  /** 下次到期时间（epoch 毫秒）；null = 未排期（存量条目默认）。 */
+  readonly nextReviewAt: number | null
+  /** 难度系数（SM-2 ease，下限 1.3，初始 2.5）。 */
+  readonly easeFactor: number
+  /** 当前间隔天数。 */
+  readonly intervalDays: number
+  /** 连续通过次数（失败清零）。 */
+  readonly reps: number
+}
+
 /** 一条记忆。来源链：v0.0.1 记 sourceSessionId；v0.2.0 起自动摄取补 sourceRound/sourceSeq。 */
 export interface MemoryRecord {
   readonly id: MemoryId
@@ -74,6 +97,12 @@ export interface MemoryRecord {
   readonly sourceSeq: number | null
   /** 意象铭牌（schema v5 起；未铭刻时缺省）。 */
   readonly imagery?: ImageryLabel
+  /** 桩位（schema v6 起；未排桩时缺省）。 */
+  readonly slot?: Slot
+  /** 意象质量分 0-1（schema v6 起，save 时启发式落库；未评分时缺省）。 */
+  readonly imageryScore?: number
+  /** 间隔重复调度（schema v6 起；未进入调度时缺省）。 */
+  readonly review?: ReviewSchedule
 }
 
 /** 记忆关系边。 */
@@ -98,6 +127,12 @@ export interface WriteInput {
   readonly embedding?: Float32Array
   /** 意象铭牌（schema v5 起；缺省表示未铭刻）。 */
   readonly imagery?: ImageryLabel
+  /** 意象质量分（调用方经 scoreImagery 算好落库；缺省不写入）。 */
+  readonly imageryScore?: number
+  /** 桩位（调用方经排桩逻辑分配；缺省表示未排桩）。 */
+  readonly slot?: Slot
+  /** 初始复习排期（调用方决定；缺省表示不进入复习调度）。 */
+  readonly initialReviewAt?: number
 }
 
 /** 检索请求。 */
@@ -105,6 +140,11 @@ export interface SearchQuery {
   readonly text: string
   readonly scopes: readonly EngramScope[]
   readonly limit?: number
+  /**
+   * 房间路由（schema v6 起）：只在指定房间内检索（走廊索引——先决定进哪个房间）。
+   * 缺省全库检索；未排桩（slot_room 为空）的条目不属于任何房间，指定 rooms 时不出现。
+   */
+  readonly rooms?: readonly string[]
 }
 
 /** 一条检索命中。 */
@@ -116,6 +156,8 @@ export interface SearchHit {
   readonly via: 'fts' | 'vec' | 'both'
   /** 经关系边一跳扩展引入时，来源条目 id 与边类型。 */
   readonly viaEdge?: { readonly from: MemoryId; readonly type: EngramEdgeType }
+  /** 编码特异性线索（schema v6 起）：同房间相邻桩位的条目 id——提取时重建编码情境。 */
+  readonly cues?: { readonly neighbors: readonly MemoryId[] }
 }
 
 /** 检索结果：degraded=true 表示嵌入缺失/失败，仅关键词道参与排序。 */
@@ -237,6 +279,8 @@ export interface ListFilter {
   readonly q?: string
   /** 脱敏标记过滤：true 只看含 `[REDACTED:` 的条目，false 只看不含的；缺省不过滤。 */
   readonly redacted?: boolean
+  /** 排序：缺省 created_at 倒序；'tour' = 按固定巡游路线桩位顺序（未上路线者按创建时间排末尾）。 */
+  readonly sort?: 'tour'
   readonly limit: number
   readonly offset: number
 }

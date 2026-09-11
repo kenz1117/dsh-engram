@@ -185,7 +185,7 @@ describe('EngramStore (sqlite)', () => {
     const db2 = new DatabaseSync(path)
     const version = (db2.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value
     db2.close()
-    expect(version).toBe('5')
+    expect(version).toBe('6')
   })
 
   it('v3 库打开时顺序迁移到 v5（数据保留，修订表可用）', async () => {

@@ -227,8 +227,11 @@ export function throttleDecision(events: readonly SessionEventLike[]): string | 
   return null
 }
 
-/** 各 turn/start 事件的下标与轮次号（缺 data.turn 时轮次为 undefined）。 */
-function turnStarts(events: readonly SessionEventLike[]): { index: number; turn: number | undefined }[] {
+/** 各 turn/start 事件的下标与轮次号（缺 data.turn 时轮次为 undefined）。
+ *  events 允许 undefined：会话 dispose 后事件源已 detach，宿主可能给不出日志，
+ *  此时按空日志处理而不是抛 TypeError（调用方在会话生命周期之外，异常会变成未处理 rejection）。 */
+function turnStarts(events: readonly SessionEventLike[] | undefined): { index: number; turn: number | undefined }[] {
+  if (events === undefined) return []
   const starts: { index: number; turn: number | undefined }[] = []
   for (let i = 0; i < events.length; i++) {
     if (events[i]?.type !== 'turn/start') continue
@@ -387,18 +390,24 @@ export async function markPendingIngest(store: EngramStore, sessionId: string, t
  * 会话结束时的末轮摄取：切片为最后一个 turn/start 到日志末尾，复用提炼管线。
  * 失败/超时只告警并把 (sessionId, turn) pending 键写入 op_log（下次会话首次
  * pre-step 重放补做），绝不影响对话。
+ * 本函数不 reject：从取轮次到摄取全程在 try 内，异常一律降级为告警 + pending 键
+ * （dispose 观察器是 fire-and-forget，逃逸的 rejection 会被宿主的 fail-loud 当作致命错误）。
  * @returns 摄取结果；无末轮或失败（已落 pending）时返回 null。
  */
 export async function ingestFinalTurn(deps: IngestDeps): Promise<IngestOutcome | null> {
-  const round = lastTurnNumber(deps.events)
-  if (round === undefined) return null
+  /** 末轮轮次号；取不到（无 turn/start 或事件源不可用）时不落 pending——键需要轮次。 */
+  let round: number | undefined
   try {
+    round = lastTurnNumber(deps.events)
+    if (round === undefined) return null
     return await ingestPreviousTurn({ ...deps, slice: 'last' })
   } catch (error) {
-    try {
-      await markPendingIngest(await deps.openStore(), deps.sessionId, round)
-    } catch {
-      // pending 落库失败：摄取本就尽力而为，不再升级。
+    if (round !== undefined) {
+      try {
+        await markPendingIngest(await deps.openStore(), deps.sessionId, round)
+      } catch {
+        // pending 落库失败：摄取本就尽力而为，不再升级。
+      }
     }
     console.warn('[dsh-engram] 会话结束的末轮摄取失败（已记入待补做队列，不影响对话）：', error)
     return null

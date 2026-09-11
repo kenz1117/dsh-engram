@@ -126,5 +126,21 @@ export function gatherRefurbSuggestions(
       })
     }
   }
+  // 规则 5（门牌纪律）：无门牌或门牌分 < 0.5 → 补挂/重写铭牌（唯一 · 差异化 · 带日期）。
+  for (const record of active) {
+    const score = record.imageryScore
+    if (score !== undefined && score >= 0.5) continue
+    const slot = record.slot === undefined ? '' : `${record.slot.room}#${record.slot.index} `
+    suggestions.push({
+      action: 'review',
+      primaryId: record.id,
+      candidates: [],
+      scope: record.scope,
+      reason: score === undefined
+        ? `${slot}未挂门牌：宫殿纪律要求每个标记唯一、差异化、带日期，建议用 engram_update 的 placard 参数补挂。`
+        : `${slot}门牌得分 ${score.toFixed(2)} < 0.5（不合唯一/差异化/带日期纪律），建议重写铭牌。`,
+      confidence: 0.4,
+    })
+  }
   return suggestions
 }

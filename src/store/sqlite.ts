@@ -10,28 +10,44 @@ import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { EngramError, asMemoryId } from '../types.ts'
+import { assignSlot } from '../palace/slots.ts'
+import { nextSchedule } from '../review/sm2.ts'
+import { scorePlacard } from '../imagery/score.ts'
 import type {
   DecayOptions, EngramEdgeType, EngramScope, ExportData, ForgettingTombstone,
   ForgottenAuditRow, ImageryLabel,
   ListFilter, ListResult, MemoryEdge, MemoryId, MemoryOutcome,
-  MemoryRecord, ReviewView, SearchHit, SearchResult, StoreStats,
+  MemoryRecord, ReviewGrade, ReviewView, SearchHit, SearchResult, Slot, StoreStats,
   TimelineQuery, UpdateInput, WriteInput,
 } from '../types.ts'
-import type { EngramStore } from './interface.ts'
+import type { EngramStore, RoomState } from './interface.ts'
 
 /** 当前 schema 版本；结构性变更必须 +1。可空列与伴随表走增量迁移（见 openEngramStore 的迁移段）。 */
-const SCHEMA_VERSION = 5
+const SCHEMA_VERSION = 6
 /** 增量迁移表：key 为起始版本，value 为升到下一版本的 SQL（可多语句）。
  *  v2 → v3：nodes 补可空列 outcome（使用效果回报）。
  *  v3 → v4：新增 nodes_revisions 修订表（update 归档旧条目时的内容快照）。
  *  v4 → v5：nodes 补 imagery_json 列（意象铭牌：caption + sensoryTags + emotionalValence + provisional）。
- *  v5 不再升版：闭馆三问用 op_log JSON 详情承载（已有 audit 接口），不改表结构。 */
+ *  v5 → v6：桩位（slot_room/slot_index）、意象质量分（imagery_score）、SM-2 调度
+ *   （next_review_at/ease_factor/interval_days/review_reps）+ 固定巡游路线表 tour_routes。
+ *   全部可空或带默认值，存量条目零搬运；排桩由 backfillSlots 幂等补齐。 */
 const MIGRATIONS: Readonly<Record<string, string>> = {
   '2': 'ALTER TABLE nodes ADD COLUMN outcome TEXT',
   '3': `CREATE TABLE IF NOT EXISTS nodes_revisions (
     node_id TEXT NOT NULL, content TEXT NOT NULL, kind TEXT NOT NULL,
     importance REAL NOT NULL, superseded_at INTEGER NOT NULL);`,
   '4': 'ALTER TABLE nodes ADD COLUMN imagery_json TEXT',
+  '5': `ALTER TABLE nodes ADD COLUMN slot_room TEXT;
+    ALTER TABLE nodes ADD COLUMN slot_index INTEGER;
+    ALTER TABLE nodes ADD COLUMN imagery_score REAL;
+    ALTER TABLE nodes ADD COLUMN next_review_at INTEGER;
+    ALTER TABLE nodes ADD COLUMN ease_factor REAL;
+    ALTER TABLE nodes ADD COLUMN interval_days REAL;
+    ALTER TABLE nodes ADD COLUMN review_reps INTEGER DEFAULT 0;
+    CREATE TABLE IF NOT EXISTS tour_routes (
+      position INTEGER PRIMARY KEY, node_id TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS nodes_slot ON nodes (slot_room, slot_index);
+    CREATE INDEX IF NOT EXISTS nodes_review_due ON nodes (next_review_at);`,
 }
 /** RRF 融合常数：score = Σ 1/(K + rank)。 */
 const RRF_K = 60
@@ -68,6 +84,13 @@ interface NodeRow {
   embedding: Uint8Array | null
   outcome: string | null
   imagery_json: string | null
+  slot_room: string | null
+  slot_index: number | null
+  imagery_score: number | null
+  next_review_at: number | null
+  ease_factor: number | null
+  interval_days: number | null
+  review_reps: number | null
 }
 
 /** 把意象铭牌序列化为 JSON（缺省序列化为 null，落库）。 */
@@ -99,6 +122,7 @@ function jsonToImagery(raw: string | null): ImageryLabel | undefined {
 
 function rowToRecord(row: NodeRow): MemoryRecord {
   const imagery = jsonToImagery(row.imagery_json)
+  const hasReviewState = row.next_review_at !== null || row.ease_factor !== null || row.interval_days !== null
   return {
     id: asMemoryId(row.id),
     scope: row.scope as EngramScope,
@@ -115,6 +139,16 @@ function rowToRecord(row: NodeRow): MemoryRecord {
     sourceRound: row.source_round,
     sourceSeq: row.source_seq,
     ...(imagery === undefined ? {} : { imagery }),
+    ...(row.slot_room === null || row.slot_index === null ? {} : { slot: { room: row.slot_room, index: row.slot_index } }),
+    ...(row.imagery_score === null ? {} : { imageryScore: row.imagery_score }),
+    ...(hasReviewState ? {
+      review: {
+        nextReviewAt: row.next_review_at,
+        easeFactor: row.ease_factor ?? 2.5,
+        intervalDays: row.interval_days ?? 0,
+        reps: row.review_reps ?? 0,
+      },
+    } : {}),
   }
 }
 
@@ -183,14 +217,25 @@ export interface RankBoostOptions {
 /** 缺省不加 boost（测试与脚本直开库时保持旧排序行为）。 */
 const NO_BOOST: RankBoostOptions = { recencyWeight: 0, proofWeight: 0, decayAfterDays: 30 }
 
+/** 写入期自动化开关（产品决策在存储层落地，保证 save/批量/摄取/蒸馏四条写入路径行为一致）。 */
+export interface StoreAutomation {
+  /** 写入时自动排桩 + 登记巡游路线；缺省 true。 */
+  readonly autoSlot: boolean
+  /** 新记忆自动进入 SM-2 复习调度（初始 1 天后到期）；缺省 true。 */
+  readonly reviewScheduling: boolean
+}
+/** 缺省全开（config 的默认值也在此处对齐）。 */
+const DEFAULT_AUTOMATION: StoreAutomation = { autoSlot: true, reviewScheduling: true }
+
 /**
  * 打开（必要时创建）一个 scope 分库。
  * @param path - SQLite 文件路径；目录不存在会自动创建（0o700）。
  * @param rankBoost - 排序 boost 参数；缺省不乘任何因子。
+ * @param automation - 写入期自动化开关（自动排桩/初始排期）；缺省全开。
  * @returns 就绪的 EngramStore。
  * @throws EngramError(code=SCHEMA_INCOMPATIBLE) 当库的 schema 版本高于当前实现。
  */
-export async function openEngramStore(path: string, rankBoost: RankBoostOptions = NO_BOOST): Promise<EngramStore> {
+export async function openEngramStore(path: string, rankBoost: RankBoostOptions = NO_BOOST, automation: StoreAutomation = DEFAULT_AUTOMATION): Promise<EngramStore> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(path)
@@ -212,7 +257,10 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       importance REAL NOT NULL, confidence REAL NOT NULL, status TEXT NOT NULL,
       created_at INTEGER NOT NULL, last_accessed_at INTEGER NOT NULL, access_count INTEGER NOT NULL,
       source_session_id TEXT, source_round INTEGER, source_seq INTEGER, embedding BLOB, outcome TEXT,
-      imagery_json TEXT);
+      imagery_json TEXT,
+      slot_room TEXT, slot_index INTEGER, imagery_score REAL,
+      next_review_at INTEGER, ease_factor REAL, interval_days REAL,
+      review_reps INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS edges (
       from_id TEXT NOT NULL, to_id TEXT NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL,
       PRIMARY KEY (from_id, to_id, type));
@@ -222,11 +270,17 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     CREATE TABLE IF NOT EXISTS nodes_revisions (
       node_id TEXT NOT NULL, content TEXT NOT NULL, kind TEXT NOT NULL,
       importance REAL NOT NULL, superseded_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS tour_routes (
+      position INTEGER PRIMARY KEY, node_id TEXT NOT NULL);
     CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(node_id UNINDEXED, content, tokenize='unicode61');
     CREATE INDEX IF NOT EXISTS nodes_scope_status ON nodes (scope, status);
   `)
+  // v6 索引不在此处建：旧库此刻还没有 slot_room / next_review_at 列（迁移在后面才跑），
+  // 对已存在的表建这两个索引会抛 no such column。新建库走下方补建，旧库由 MIGRATIONS['5'] 建。
   const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string } | undefined
   if (versionRow === undefined) {
+    db.exec(`CREATE INDEX IF NOT EXISTS nodes_slot ON nodes (slot_room, slot_index);
+      CREATE INDEX IF NOT EXISTS nodes_review_due ON nodes (next_review_at);`)
     db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(String(SCHEMA_VERSION))
   } else {
     // 顺序增量迁移：按 MIGRATIONS 逐版升到当前版本（保数据）；更高版本或断链（缺迁移）拒绝加载。
@@ -266,8 +320,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlGet = db.prepare('SELECT * FROM nodes WHERE id = ?')
   const sqlInsert = db.prepare(`INSERT INTO nodes
     (id, scope, kind, content, importance, confidence, status, created_at, last_accessed_at, access_count,
-     source_session_id, source_round, source_seq, embedding, imagery_json)
-    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?, ?, ?, ?, ?)`)
+     source_session_id, source_round, source_seq, embedding, imagery_json,
+     slot_room, slot_index, imagery_score, next_review_at, ease_factor, interval_days)
+    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
   const sqlFtsInsert = db.prepare('INSERT INTO nodes_fts (node_id, content) VALUES (?, ?)')
   const sqlSetStatus = db.prepare('UPDATE nodes SET status = ?, last_accessed_at = ? WHERE id = ?')
   const sqlSetOutcome = db.prepare(`UPDATE nodes
@@ -308,25 +363,53 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlAllNodes = db.prepare('SELECT * FROM nodes ORDER BY created_at')
   const sqlAllEdges = db.prepare('SELECT * FROM edges')
   const sqlDecay = db.prepare(`UPDATE nodes SET status = 'archived'
-    WHERE status = 'active' AND importance < ? AND last_accessed_at < ?`)
+    WHERE status = 'active' AND importance < ? AND last_accessed_at < ? AND next_review_at IS NULL`)
+  // 进入 SM-2 复习调度的条目（next_review_at 非空）不参与自动衰减：到期未复习的记忆
+  // 该被优先复习而非归档，其退出由翻新清单 demote 规则（人工确认）接管。
+  const sqlScheduleReview = db.prepare(`UPDATE nodes
+    SET next_review_at = ?, ease_factor = ?, interval_days = ?, review_reps = ?, last_accessed_at = ?
+    WHERE id = ?`)
+  const sqlDueReviews = db.prepare(`SELECT * FROM nodes
+    WHERE status = 'active' AND next_review_at IS NOT NULL AND next_review_at <= ?
+    ORDER BY next_review_at ASC LIMIT ?`)
+  const sqlSlotCounts = db.prepare(`SELECT slot_room AS room, MAX(slot_index) AS maxIndex, COUNT(*) AS n
+    FROM nodes WHERE slot_room IS NOT NULL AND status != 'forgotten' GROUP BY slot_room`)
+  const sqlSetSlot = db.prepare('UPDATE nodes SET slot_room = ?, slot_index = ? WHERE id = ?')
+  const sqlUnslotted = db.prepare(`SELECT * FROM nodes WHERE slot_room IS NULL AND status = 'active'
+    ORDER BY kind, created_at`)
+  const sqlRouteAppend = db.prepare(`INSERT INTO tour_routes (position, node_id)
+    VALUES ((SELECT COALESCE(MAX(position), -1) + 1 FROM tour_routes), ?)`)
+  const sqlRouteList = db.prepare('SELECT position, node_id FROM tour_routes ORDER BY position')
+  const sqlRouteHas = db.prepare('SELECT 1 AS x FROM tour_routes WHERE node_id = ? LIMIT 1')
+  const sqlSlotNeighbors = db.prepare(`SELECT id FROM nodes
+    WHERE slot_room = ? AND slot_index IN (?, ?) AND status = 'active' AND id != ?`)
+  const sqlListPlacards = db.prepare(`SELECT slot_room AS room, json_extract(imagery_json, '$.caption') AS caption
+    FROM nodes WHERE imagery_json IS NOT NULL AND status = 'active'`)
   const sqlPurgeNodes = db.prepare('DELETE FROM nodes')
   const sqlPurgeEdges = db.prepare('DELETE FROM edges')
   const sqlPurgeFts = db.prepare('DELETE FROM nodes_fts')
   const sqlPurgeLog = db.prepare('DELETE FROM op_log')
+  const sqlPurgeRoutes = db.prepare('DELETE FROM tour_routes')
 
-  /** FTS 道：按 scope 集合检索（占位符动态生成，scope 集合由调用方去重）。 */
-  const ftsSearch = (match: string, scopes: readonly EngramScope[]): NodeRow[] => {
+  /** FTS 道：按 scope 集合检索（占位符动态生成，scope 集合由调用方去重）；rooms 非空时只查指定房间。 */
+  const ftsSearch = (match: string, scopes: readonly EngramScope[], rooms: readonly string[] | undefined): NodeRow[] => {
     const placeholders = scopes.map(() => '?').join(',')
+    const roomCond = rooms === undefined || rooms.length === 0
+      ? ''
+      : ` AND n.slot_room IN (${rooms.map(() => '?').join(',')})`
     return db.prepare(`SELECT n.* FROM nodes_fts f JOIN nodes n ON n.id = f.node_id
-      WHERE nodes_fts MATCH ? AND n.status = 'active' AND n.scope IN (${placeholders})
-      ORDER BY bm25(nodes_fts) LIMIT ${RANK_POOL}`).all(match, ...scopes) as unknown as NodeRow[]
+      WHERE nodes_fts MATCH ? AND n.status = 'active' AND n.scope IN (${placeholders})${roomCond}
+      ORDER BY bm25(nodes_fts) LIMIT ${RANK_POOL}`).all(match, ...scopes, ...(rooms ?? [])) as unknown as NodeRow[]
   }
 
-  /** 向量候选池：active 且带向量的条目，按 scope 集合过滤（占位符动态生成）。 */
-  const vectorPool = (scopes: readonly EngramScope[]): NodeRow[] => {
+  /** 向量候选池：active 且带向量的条目，按 scope 集合过滤（占位符动态生成）；rooms 非空时只查指定房间。 */
+  const vectorPool = (scopes: readonly EngramScope[], rooms: readonly string[] | undefined): NodeRow[] => {
     const placeholders = scopes.map(() => '?').join(',')
-    return db.prepare(`SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND scope IN (${placeholders})`)
-      .all(...scopes) as unknown as NodeRow[]
+    const roomCond = rooms === undefined || rooms.length === 0
+      ? ''
+      : ` AND slot_room IN (${rooms.map(() => '?').join(',')})`
+    return db.prepare(`SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND scope IN (${placeholders})${roomCond}`)
+      .all(...scopes, ...(rooms ?? [])) as unknown as NodeRow[]
   }
 
   const getRow = (id: string): NodeRow | undefined => sqlGet.get(id) as unknown as NodeRow | undefined
@@ -345,10 +428,14 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     const stored = embedding === null
       ? null
       : embedding instanceof Float32Array ? vecToBlob(embedding) : embedding
+    // 初始排期：进入复习调度的条目 ease 从 SM-2 默认 2.5、间隔 0（等首次答题推进）起。
+    const initialReview = input.initialReviewAt ?? null
     sqlInsert.run(
       id, input.scope, input.kind, content, importance, confidence, at, at,
       sourceSessionId, input.sourceRound ?? null, input.sourceSeq ?? null, stored,
       imageryToJson(imagery),
+      input.slot?.room ?? null, input.slot?.index ?? null, input.imageryScore ?? null,
+      initialReview, initialReview === null ? null : 2.5, initialReview === null ? null : 0,
     )
     sqlFtsInsert.run(id, tokenizeForFts(content))
     sqlLog.run(at, op, id, JSON.stringify({ kind: input.kind, scope: input.scope }))
@@ -379,6 +466,46 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     }
   }
 
+  /**
+   * 写入期自动化（save/批量/摄取/update/蒸馏全部写入路径统一在此落地；调用方须已持事务）：
+   * 1) 排桩——显式 slot 优先，否则按 kind 分房自动分配（满员开新房并记 op_log）；
+   * 2) 门牌评分——有铭牌时按「唯一/差异化/带日期」启发式落库；
+   * 3) 初始排期——reviewScheduling 开启且未显式指定时，1 天后首次到期；
+   * 4) 巡游路线——有桩位的条目登记到固定路线末尾。
+   * @returns 合入 WriteInput 的自动化字段。
+   */
+  const applyWriteAutomation = (input: WriteInput, id: MemoryId, at: number, imagery: ImageryLabel | undefined): Pick<WriteInput, 'slot' | 'imageryScore' | 'initialReviewAt'> => {
+    let slot = input.slot
+    if (slot === undefined && automation.autoSlot) {
+      const occupancy: Record<string, RoomState> = {}
+      for (const row of sqlSlotCounts.all() as unknown as { room: string; maxIndex: number; n: number }[]) {
+        occupancy[row.room] = { count: row.n, maxIndex: row.maxIndex }
+      }
+      const assigned = assignSlot(input.kind, occupancy)
+      slot = assigned.slot
+      if (assigned.openedNewRoom) {
+        sqlLog.run(at, 'room-open', 'BATCH', JSON.stringify({ room: slot.room, kind: input.kind }))
+      }
+    }
+    let imageryScore = input.imageryScore
+    if (imageryScore === undefined && imagery !== undefined) {
+      const placards = (sqlListPlacards.all() as unknown as { room: string | null; caption: string | null }[])
+        .filter((row): row is { room: string | null; caption: string } => typeof row.caption === 'string' && row.caption !== '')
+      imageryScore = scorePlacard(imagery.caption, {
+        existingCaptions: placards.map(row => row.caption),
+        roomCaptions: slot === undefined ? [] : placards.filter(row => row.room === slot.room).map(row => row.caption),
+      })
+    }
+    const initialReviewAt = input.initialReviewAt
+      ?? (automation.reviewScheduling ? at + 86_400_000 : undefined)
+    if (slot !== undefined && sqlRouteHas.get(id) === undefined) sqlRouteAppend.run(id)
+    return {
+      ...(slot === undefined ? {} : { slot }),
+      ...(imageryScore === undefined ? {} : { imageryScore }),
+      ...(initialReviewAt === undefined ? {} : { initialReviewAt }),
+    }
+  }
+
   return {
     async write(input: WriteInput) {
       const content = input.content.trim()
@@ -386,7 +513,8 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       const id = asMemoryId(randomUUID())
       const at = Date.now()
       withTransaction(() => {
-        insertRecord(id, input, content, input.importance ?? 0.5, input.confidence ?? 0.5, at, input.sourceSessionId ?? null, input.embedding ?? null, input.imagery, 'write')
+        const automationFields = applyWriteAutomation(input, id, at, input.imagery)
+        insertRecord(id, { ...input, ...automationFields }, content, input.importance ?? 0.5, input.confidence ?? 0.5, at, input.sourceSessionId ?? null, input.embedding ?? null, input.imagery, 'write')
       })
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
     },
@@ -429,7 +557,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       // 道 1：FTS5 关键词（2-gram OR）。
       const match = ftsMatchExpression(query.text)
       if (match !== undefined) {
-        ftsSearch(match, query.scopes).forEach((row, index) => {
+        ftsSearch(match, query.scopes, query.rooms).forEach((row, index) => {
           scores.set(row.id, { score: 1 / (RRF_K + index + 1), via: 'fts' })
         })
       }
@@ -438,7 +566,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       let degraded = true
       if (queryVector !== undefined) {
         degraded = false
-        const pool = vectorPool(query.scopes)
+        const pool = vectorPool(query.scopes, query.rooms)
         const ranked = pool
           .map(row => ({ row, sim: cosine(queryVector, blobToVec(row.embedding!)) }))
           .filter(entry => entry.sim >= MIN_COSINE)
@@ -491,11 +619,17 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         const row = getRow(id)
         if (row === undefined) continue
         const viaEdge = viaEdgeOf.get(id)
+        // 编码特异性线索（top5）：同房间相邻桩位——提取时重建编码情境（“它旁边挂着什么”）。
+        const cueNeighbors = hits.length < 5 && row.slot_room !== null && row.slot_index !== null
+          ? (sqlSlotNeighbors.all(row.slot_room, row.slot_index - 1, row.slot_index + 1, id) as unknown as { id: string }[])
+              .map(neighbor => asMemoryId(neighbor.id))
+          : []
         hits.push({
           record: rowToRecord(row),
           score: info.score,
           via: info.via,
           ...(viaEdge === undefined ? {} : { viaEdge }),
+          ...(cueNeighbors.length === 0 ? {} : { cues: { neighbors: cueNeighbors } }),
         })
         sqlTouch.run(Date.now(), id)
       }
@@ -525,16 +659,20 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         sqlRevisionInsert.run(input.id, old.content, old.kind, old.importance, at)
         sqlSetStatus.run('archived', at, input.id)
         sqlLog.run(at, 'superseded', input.id, JSON.stringify({ supersededBy: id }))
+        // 新条目是新物品：重新排桩/评分/排期（宫殿里修正一件物品 = 在新桩位放新版）。
+        const imagery = input.imagery ?? jsonToImagery(old.imagery_json)
+        const updateInput: WriteInput = { scope: input.scope, kind: input.kind, content }
+        const automationFields = applyWriteAutomation(updateInput, id, at, imagery)
         insertRecord(
           id,
-          { scope: input.scope, kind: input.kind, content },
+          { ...updateInput, ...automationFields },
           content,
           input.importance ?? old.importance,
           old.confidence,
           at,
           old.source_session_id,
           input.embedding ?? old.embedding,
-          input.imagery ?? jsonToImagery(old.imagery_json),
+          imagery,
           'update',
         )
         sqlEdgeUpsert.run(id, input.id, 'supersedes', at)
@@ -614,6 +752,81 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
     },
 
+    async scheduleReview(id: MemoryId, grade: ReviewGrade) {
+      const row = getRow(id)
+      if (row === undefined) return undefined
+      const now = Date.now()
+      // 未排期过的条目从 SM-2 初始态起步（ease 2.5 / 间隔 0 / reps 0）。
+      const current = rowToRecord(row).review ?? {
+        nextReviewAt: null, easeFactor: 2.5, intervalDays: 0, reps: row.review_reps ?? 0,
+      }
+      const next = nextSchedule(grade, current, now)
+      sqlScheduleReview.run(next.nextReviewAt, next.easeFactor, next.intervalDays, next.reps, now, id)
+      sqlLog.run(now, 'review-answer', id, JSON.stringify({ grade, nextIntervalDays: next.intervalDays }))
+      return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
+    },
+
+    async dueReviews(now: number, limit: number) {
+      const rows = sqlDueReviews.all(now, Math.max(1, limit)) as unknown as NodeRow[]
+      return rows.map(rowToRecord)
+    },
+
+    async slotCountsByRoom() {
+      const rows = sqlSlotCounts.all() as unknown as { room: string; maxIndex: number; n: number }[]
+      const result: Record<string, RoomState> = {}
+      for (const row of rows) result[row.room] = { count: row.n, maxIndex: row.maxIndex }
+      return result
+    },
+
+    async assignSlot(id: MemoryId, slot: Slot) {
+      sqlSetSlot.run(slot.room, slot.index, id)
+      sqlLog.run(Date.now(), 'slot-assign', id, JSON.stringify(slot))
+    },
+
+    async backfillSlots(capacityNote: (room: string) => void) {
+      // 存量排桩：只处理 active 且未排桩的条目（幂等，可重跑）；
+      // 按 kind 分房、created_at 定序，与 save 时的实时排桩共用 assignSlot 规则。
+      const rows = sqlUnslotted.all() as unknown as NodeRow[]
+      if (rows.length === 0) return 0
+      const now = Date.now()
+      withTransaction(() => {
+        const occupancy: Record<string, RoomState> = {}
+        for (const row of sqlSlotCounts.all() as unknown as { room: string; maxIndex: number; n: number }[]) {
+          occupancy[row.room] = { count: row.n, maxIndex: row.maxIndex }
+        }
+        for (const row of rows) {
+          const { slot, openedNewRoom } = assignSlot(row.kind as MemoryRecord['kind'], occupancy)
+          sqlSetSlot.run(slot.room, slot.index, row.id)
+          // 巡游路线补登记：已在路线上的（重复跑）跳过。
+          if (sqlRouteHas.get(row.id) === undefined) sqlRouteAppend.run(row.id)
+          const state = occupancy[slot.room] ?? { count: 0, maxIndex: 0 }
+          occupancy[slot.room] = { count: state.count + 1, maxIndex: Math.max(state.maxIndex, slot.index) }
+          if (openedNewRoom) capacityNote(slot.room)
+        }
+        sqlLog.run(now, 'slot-backfill', 'BATCH', JSON.stringify({ assigned: rows.length }))
+      })
+      return rows.length
+    },
+
+    async routeAppend(id: MemoryId) {
+      sqlRouteAppend.run(id)
+    },
+
+    async routeHas(id: MemoryId) {
+      return sqlRouteHas.get(id) !== undefined
+    },
+
+    async routeList() {
+      const rows = sqlRouteList.all() as unknown as { position: number; node_id: string }[]
+      return rows.map(row => ({ position: row.position, id: asMemoryId(row.node_id) }))
+    },
+
+    async listPlacards() {
+      const rows = sqlListPlacards.all() as unknown as { room: string | null; caption: string | null }[]
+      // caption 为 null 的铭牌（json 里 caption 字段为 null）不参与唯一性/差异化比较。
+      return rows.filter((row): row is { room: string | null; caption: string } => typeof row.caption === 'string' && row.caption !== '')
+    },
+
     async restore(id: MemoryId) {
       const row = getRow(id)
       if (row === undefined) throw new EngramError('NOT_FOUND', `条目 ${id} 不存在`)
@@ -639,8 +852,13 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       }
       const where = conds.join(' AND ')
       const total = (db.prepare(`SELECT COUNT(*) AS n FROM nodes WHERE ${where}`).get(...params) as unknown as { n: number }).n
-      const rows = db.prepare(`SELECT * FROM nodes WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-        .all(...params, filter.limit, filter.offset) as unknown as NodeRow[]
+      // sort=tour：LEFT JOIN 巡游路线，按桩位顺序排（未上路线者 IS NULL 置后，按创建时间收尾）。
+      const rows = filter.sort === 'tour'
+        ? db.prepare(`SELECT nodes.* FROM nodes LEFT JOIN tour_routes ON tour_routes.node_id = nodes.id
+            WHERE ${where} ORDER BY tour_routes.position IS NULL, tour_routes.position ASC, created_at DESC LIMIT ? OFFSET ?`)
+          .all(...params, filter.limit, filter.offset) as unknown as NodeRow[]
+        : db.prepare(`SELECT * FROM nodes WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+          .all(...params, filter.limit, filter.offset) as unknown as NodeRow[]
       return { records: rows.map(rowToRecord), total }
     },
 
@@ -727,7 +945,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       const id = asMemoryId(randomUUID())
       const at = Date.now()
       withTransaction(() => {
-        insertRecord(id, input, content, input.importance ?? 0.5, input.confidence ?? 0.5, at, input.sourceSessionId ?? null, input.embedding ?? null, input.imagery, 'distill')
+        // 蒸馏产物是新高层规律：与 write 同一套排桩/评分/排期自动化。
+        const automationFields = applyWriteAutomation(input, id, at, input.imagery)
+        insertRecord(id, { ...input, ...automationFields }, content, input.importance ?? 0.5, input.confidence ?? 0.5, at, input.sourceSessionId ?? null, input.embedding ?? null, input.imagery, 'distill')
         for (const oldId of oldIds) {
           sqlSetStatus.run('archived', at, oldId)
           sqlEdgeUpsert.run(id, oldId, 'supersedes', at)
@@ -758,6 +978,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         sqlPurgeEdges.run()
         sqlPurgeFts.run()
         sqlPurgeLog.run()
+        sqlPurgeRoutes.run()
       })
     },
 

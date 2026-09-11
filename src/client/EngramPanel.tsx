@@ -30,6 +30,8 @@ interface MemoryRow {
   readonly accessCount: number
   readonly sourceSessionId: string | null
   readonly sourceRound: number | null
+  /** 桩位（v0.7.2 起；未排桩时缺省）。 */
+  readonly slot?: { readonly room: string; readonly index: number }
 }
 
 interface ListResult {
@@ -471,6 +473,98 @@ function ActivityFeed({ t }: { t: T }): React.ReactElement {
   )
 }
 
+/** review-due API 的行结构（只给线索：坐标/门牌/逾期天数，不给正文——检索练习的刻意设计）。 */
+interface ReviewDueItem {
+  readonly id: string
+  readonly kind: string
+  readonly slot?: { readonly room: string; readonly index: number }
+  readonly caption: string | null
+  readonly nextReviewAt: number | null
+  readonly overdueDays: number
+  readonly reps: number
+}
+
+/** 今日待回忆：检索练习卡片。线索先行 → 揭示正文 → 三档自评（记得/模糊/忘了 → SM-2 grade 5/3/1）推进调度。
+ *  onAnswered 供 Header 角标同步递减。 */
+function ReviewQueueCard({ t, scope, toast, onAnswered }: {
+  t: T
+  scope: 'user' | 'project' | 'shared'
+  toast: ToastController
+  onAnswered: () => void
+}): React.ReactElement {
+  const [items, setItems] = useState<ReviewDueItem[] | null>(null)
+  /** 已揭示的条目正文（id → content）。 */
+  const [revealed, setRevealed] = useState<Readonly<Record<string, string>>>({})
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const reload = useCallback(() => {
+    api<{ items: ReviewDueItem[] }>(`review-due?scope=${scope}`)
+      .then(data => { setItems(data.items); setRevealed({}) })
+      .catch((error: Error) => { toast.push('error', error.message); setItems([]) })
+  }, [scope, toast])
+  useEffect(() => { reload() }, [reload])
+  /** 揭示：拉完整正文（复用 review 路由），用户核对回忆是否准确。 */
+  const reveal = (id: string): void => {
+    setBusyId(id)
+    api<ReviewView>(`review?scope=${scope}&id=${encodeURIComponent(id)}`)
+      .then(view => { setRevealed(current => ({ ...current, [id]: view.record.content })) })
+      .catch((error: Error) => { toast.push('error', error.message) })
+      .finally(() => { setBusyId(null) })
+  }
+  /** 自评：提交 grade 并把该条移出今日队列。 */
+  const answer = (item: ReviewDueItem, grade: 1 | 3 | 5): void => {
+    setBusyId(item.id)
+    api<{ review: { nextReviewAt: number | null; intervalDays: number } | null }>('review-answer', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: item.id, scope, grade }),
+    })
+      .then(result => {
+        setItems(current => current?.filter(row => row.id !== item.id) ?? null)
+        const days = result.review?.intervalDays ?? 1
+        toast.push('success', t('reviewScheduled', { n: days }))
+        onAnswered()
+      })
+      .catch((error: Error) => { toast.push('error', error.message) })
+      .finally(() => { setBusyId(null) })
+  }
+  if (items === null) return <div className={styles.expandLoading}>{t('loading')}</div>
+  if (items.length === 0) return <div className={styles.expandLoading}>{t('reviewQueueEmpty')}</div>
+  return (
+    <ul className={styles.reviewQueue}>
+      {items.map(item => (
+        <li key={item.id} className={styles.reviewItem}>
+          <div className={styles.reviewCue}>
+            <span className={`${styles.pill} ${styles.kind}`}>{kindLabel(t, item.kind)}</span>
+            {item.slot !== undefined && <span className={styles.reviewSlot}>{item.slot.room}#{item.slot.index}</span>}
+            <span className={styles.reviewCaption}>{item.caption ?? t('reviewNoPlacard')}</span>
+            <span className={styles.reviewOverdue}>
+              {item.overdueDays > 0 ? t('reviewOverdue', { n: item.overdueDays }) : t('reviewDueToday')}
+            </span>
+          </div>
+          {revealed[item.id] === undefined
+            ? (
+              <button type="button" className={styles.button} disabled={busyId === item.id}
+                onClick={() => { reveal(item.id) }}>{t('reviewReveal')}</button>
+            )
+            : (
+              <>
+                <div className={styles.reviewContent}>{revealed[item.id]}</div>
+                <div className={styles.reviewGrades}>
+                  <button type="button" className={`${styles.button} ${styles.primary}`} disabled={busyId === item.id}
+                    onClick={() => { answer(item, 5) }}>{t('reviewGradeRemember')}</button>
+                  <button type="button" className={styles.button} disabled={busyId === item.id}
+                    onClick={() => { answer(item, 3) }}>{t('reviewGradeVague')}</button>
+                  <button type="button" className={styles.button} disabled={busyId === item.id}
+                    onClick={() => { answer(item, 1) }}>{t('reviewGradeForgot')}</button>
+                </div>
+              </>
+            )}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 /** 入殿导航：根据当前 scope 的 active 房间给出开场邀请 + 候选房间列表；点击可展开抽屉。
  *  顶部 kind chip（全部 / fact / preference / decision / episode / skill）切换 focusKind，
  *  触发后端按该 kind 优先选前 N 间作为开场建议。 */
@@ -802,21 +896,21 @@ function TelemetryBar({ t, scope }: {
           <span className={styles.teleColLabel}>{t('teleGroupScale')}</span>
           <div className={styles.teleGrid}>
             <div className={styles.teleStat}>
-              <b>{stats?.total ?? 0}</b>
               <span>{t('kpiTotal')}</span>
+              <b>{stats?.total ?? 0}</b>
             </div>
             <div className={styles.teleStat}>
-              <b>{stats?.active ?? 0}</b>
               <span>{t('kpiActive')}</span>
+              <b>{stats?.active ?? 0}</b>
             </div>
             <div className={styles.teleStat}>
-              <b>{stats?.forgotten ?? 0}</b>
               <span>{t('kpiForgotten')}</span>
+              <b>{stats?.forgotten ?? 0}</b>
             </div>
             <div className={styles.teleStat} role="meter" aria-valuemin={0} aria-valuemax={100}
               aria-valuenow={Math.round((stats?.signalRatio ?? 0) * 100)} aria-label={t('kpiSignal')}>
-              <b>{`${String(Math.round((stats?.signalRatio ?? 0) * 100))}%`}</b>
               <span>{t('kpiSignal')}</span>
+              <b>{`${String(Math.round((stats?.signalRatio ?? 0) * 100))}%`}</b>
             </div>
           </div>
         </div>
@@ -825,8 +919,8 @@ function TelemetryBar({ t, scope }: {
           <div className={`${styles.teleGrid} ${styles.teleGridRecent}`}>
             {items.map(([label, value]) => (
               <div key={label} className={styles.teleStat}>
-                <b>{value}</b>
                 <span>{label}</span>
+                <b>{value}</b>
               </div>
             ))}
           </div>
@@ -884,6 +978,10 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
   const [status, setStatus] = usePersistedState<string>('library.status', 'all', ['all', 'active', 'archived', 'forgotten'])
   const [kind, setKind] = usePersistedState<string>('library.kind', 'all', ['all', 'fact', 'preference', 'decision', 'episode', 'skill'])
   const [q, setQ] = usePersistedString('library.q', '')
+  /** 陈展列表排序（持久化）：time = 开馆时间倒序；tour = 固定巡游路线桩位顺序。 */
+  const [sort, setSort] = usePersistedState<'time' | 'tour'>('library.sort', 'time', ['time', 'tour'])
+  /** 今日待回忆条数（Header 角标）：与导览管家的待回忆卡同源。 */
+  const [dueCount, setDueCount] = useState(0)
   /** 脱敏筛选已合并到顶部 KPI 与 tag 视觉，不再作为过滤器。 */
   const [redacted] = useState('all')
   const [offset, setOffset] = useState(0)
@@ -901,17 +999,34 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
 
   const reload = useCallback((): void => { setReloadTick(tick => tick + 1) }, [])
 
+  /** 刷新 Header 角标计数（本地回环毫秒级；失败静默归零，不打断面板）。 */
+  const refreshDue = useCallback((): void => {
+    api<{ items: unknown[] }>(`review-due?scope=${scope}&limit=50`)
+      .then(data => { setDueCount(data.items.length) })
+      .catch(() => { setDueCount(0) })
+  }, [scope])
+  useEffect(() => { refreshDue() }, [refreshDue])
+
+  /** 角标点击：切到导览管家并滚到今日待回忆卡（待 tab 切换渲染完成后再滚）。 */
+  const goToDue = (): void => {
+    setActiveTab('observability')
+    requestAnimationFrame(() => {
+      document.getElementById('engram-review-due')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    })
+  }
+
   useEffect(() => {
     let cancelled = false
     const qs = new URLSearchParams({
       scope, status, kind, redacted, limit: String(PAGE_SIZE), offset: String(offset),
     })
     if (q !== '') qs.set('q', q)
+    if (sort === 'tour') qs.set('sort', 'tour')
     api<ListResult>(`list?${qs.toString()}`)
       .then((data) => { if (!cancelled) { setList(data); setError(null) } })
       .catch((loadError: Error) => { if (!cancelled) setError(loadError.message) })
     return () => { cancelled = true }
-  }, [scope, status, kind, redacted, q, offset, reloadTick])
+  }, [scope, status, kind, redacted, q, sort, offset, reloadTick])
 
   const act = (route: string, record: MemoryRow): void => {
     api(route, {
@@ -1026,7 +1141,16 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
               </button>
             ))}
           </div>
-          <button type="button" className={styles.button} onClick={reload}>{t('refresh')}</button>
+          {/* 今日待回忆角标：有待回忆时在 Header 一眼可见，点击直达导览管家的待回忆卡。 */}
+          {dueCount > 0 && (
+            <button type="button" className={styles.dueBadge}
+              title={t('dueBadgeLabel', { n: dueCount })} aria-label={t('dueBadgeLabel', { n: dueCount })}
+              onClick={goToDue}>
+              <span className={styles.dueDot} aria-hidden="true" />
+              {dueCount}
+            </button>
+          )}
+          <button type="button" className={styles.button} onClick={() => { reload(); refreshDue() }}>{t('refresh')}</button>
           <ExportMenu t={t} scope={scope} />
         </div>
       </div>
@@ -1076,6 +1200,15 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
                 <button key={value} type="button"
                   className={kind === value ? `${styles.segItem} ${styles.on}` : styles.segItem}
                   onClick={() => { setKind(value); setOffset(0); setExpanded(null); clearSelection() }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className={styles.segGroup}>
+              {([['time', t('sortTime')], ['tour', t('sortTour')]] as const).map(([value, label]) => (
+                <button key={value} type="button"
+                  className={sort === value ? `${styles.segItem} ${styles.on}` : styles.segItem}
+                  onClick={() => { setSort(value); setOffset(0); setExpanded(null); clearSelection() }}>
                   {label}
                 </button>
               ))}
@@ -1134,6 +1267,9 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
                     <div className={styles.itemTags}>
                       <span className={`${styles.pill} ${styles[`status${record.status.charAt(0).toUpperCase()}${record.status.slice(1)}`] ?? ''}`}>{t(STATUS_KEY[record.status])}</span>
                       <span className={`${styles.pill} ${styles.kind}`}>{kindLabel(t, record.kind)}</span>
+                      {record.slot !== undefined && (
+                        <span className={styles.pill}>{record.slot.room}#{record.slot.index}</span>
+                      )}
                       {record.content.includes('[REDACTED:') && (
                         <span className={`${styles.pill} ${styles.redacted}`}>{t('tagRedacted')}</span>
                       )}
@@ -1194,16 +1330,20 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
                 <CorridorPanel t={t} scope={scope} onSelect={(id) => { setExpanded({ kind: 'review', record: list?.records.find(record => record.id === id) ?? ({ id: id as never, scope, kind: 'fact', content: '', importance: 0.5, confidence: 0.5, status: 'active', createdAt: Date.now(), accessCount: 0, sourceSessionId: null, sourceRound: null } as MemoryRow) }) }} />
               </section>
               <section className={styles.panelCard}>
+                <h4 className={styles.panelCardTitle}>{t('refurbTitle')}</h4>
+                {/* 翻新与走廊同列：动作类信息聚簇（左 = 宫殿全局 + 整改 + 试走，试走放在最后）。 */}
+                <RefurbCard t={t} scope={scope} onSelect={(id) => { setExpanded({ kind: 'review', record: list?.records.find(record => record.id === id) ?? ({ id: id as never, scope, kind: 'fact', content: '', importance: 0.5, confidence: 0.5, status: 'active', createdAt: Date.now(), accessCount: 0, sourceSessionId: null, sourceRound: null } as MemoryRow) }) }} onAfterAction={reload} toast={toast} />
+              </section>
+              <section className={styles.panelCard}>
                 <h4 className={styles.panelCardTitle}>{t('sectionBench')}</h4>
                 <RecallBench t={t} scope={scope} />
               </section>
-              <section className={styles.panelCard}>
-                <h4 className={styles.panelCardTitle}>{t('refurbTitle')}</h4>
-                {/* 翻新与走廊/检索同列：动作类信息聚簇（左 = 宫殿全局 + 整改）。 */}
-                <RefurbCard t={t} scope={scope} onSelect={(id) => { setExpanded({ kind: 'review', record: list?.records.find(record => record.id === id) ?? ({ id: id as never, scope, kind: 'fact', content: '', importance: 0.5, confidence: 0.5, status: 'active', createdAt: Date.now(), accessCount: 0, sourceSessionId: null, sourceRound: null } as MemoryRow) }) }} onAfterAction={reload} toast={toast} />
-              </section>
             </div>
             <aside className={styles.sideCol}>
+              <section className={styles.panelCard} id="engram-review-due">
+                <h4 className={styles.panelCardTitle}>{t('reviewQueueTitle')}</h4>
+                <ReviewQueueCard t={t} scope={scope} toast={toast} onAnswered={refreshDue} />
+              </section>
               <section className={styles.panelCard}>
                 <h4 className={styles.panelCardTitle}>{t('tourProposalTitle')}</h4>
                 <TourProposalCard t={t} scope={scope} onSelect={(id) => { setExpanded({ kind: 'review', record: list?.records.find(record => record.id === id) ?? ({ id: id as never, scope, kind: 'fact', content: '', importance: 0.5, confidence: 0.5, status: 'active', createdAt: Date.now(), accessCount: 0, sourceSessionId: null, sourceRound: null } as MemoryRow) }) }} />

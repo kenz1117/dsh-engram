@@ -27,13 +27,13 @@ import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
 import { currentUserRequestText, renderMemoryPacket } from './security/sanitize.ts'
 import { wrapWithRationale } from './selection-rationale.ts'
-import type { EngramScope } from './types.ts'
+import type { EngramScope, Slot } from './types.ts'
 
 /** Cordis 插件名（loader 诊断与注入 source 使用）。 */
 export const name = 'dsh-engram'
 
 /** 插件版本（与 package.json 同步，写进备份 _meta.json）。 */
-export const VERSION = '0.7.0'
+export const VERSION = '0.7.2'
 
 /** 必需服务：工具注册表与 LLM 流式端点（摄取/蒸馏的辅助调用）。 */
 export const inject = ['tools', 'llm']
@@ -57,17 +57,19 @@ export interface ProfileRender {
  * @returns 渲染文本与溢出条目（调用方可用辅助 LLM 压缩后重渲染）。
  */
 export function renderProfileDetailed(
-  records: readonly { id: string; kind: string; content: string }[],
+  records: readonly { id: string; kind: string; content: string; slot?: Slot }[],
   tokenBudget: number,
 ): ProfileRender {
   const estimate = (text: string): number => Math.ceil(text.length / 4)
-  const header = 'User memory profile (dsh-engram, cross-session):'
-  const footer = 'Use engram_search to recall details; use engram_save to persist new facts.'
+  // 主厅：常驻核心记忆层（每次会话都在场），行内带宫殿坐标（房间 #桩位）让 agent 有位置感。
+  const header = 'User memory profile (dsh-engram, cross-session) — Grand Hall (always present):'
+  const footer = 'Use engram_search to recall details (pass room to search inside one room); use engram_save to persist new facts.'
   let remaining = Math.max(0, tokenBudget - estimate(header) - estimate(footer))
   const lines: string[] = []
   const overflow: { id: string; kind: string; content: string }[] = []
   for (const record of records) {
-    const line = `- [${record.kind}] ${record.content}`
+    const slot = record.slot === undefined ? '' : ` ${record.slot.room}#${record.slot.index}`
+    const line = `- [${record.kind}]${slot} ${record.content}`
     const cost = estimate(line)
     if (cost <= remaining) {
       lines.push(line)
@@ -218,6 +220,12 @@ async function preStep(
   const store = await openStore('user')
   const top = await store.topActive('user', resolved.profileTopN)
   if (top.length === 0) return decision
+  // 今日待回忆提示（检索练习调度）：有到期条目时在画像末尾附一行，引导 agent 主动自测。
+  // user + project 两库合并计数；50 为计数上限（超过显示 50+）。
+  const dueTotal = resolved.reviewScheduling
+    ? (await Promise.all((['user', 'project'] as const).map(async scope =>
+        (await openStore(scope)).dueReviews(Date.now(), 50)))).reduce((sum, rows) => sum + rows.length, 0)
+    : 0
   const detailed = renderProfileDetailed(top, resolved.injectTokenBudget)
   let text = detailed.text
   // 超预算压缩：装不下的条目交给辅助 LLM 压短后重渲染；失败保持索引行降级不变。
@@ -236,8 +244,11 @@ async function preStep(
     }
   }
   // 注入去重：同一会话内画像文本与上次相同时跳过（上一轮注入仍在上下文里）；
-  // 新会话（lastProfileAgent 不同）必须注入，即使文本与上个会话相同。
-  const textWithRationale = wrapWithRationale(text, top)
+  // 新会话（lastProfileAgent 不同）必须注入，即使文本与上个会话相同。due 行纳入 hash 输入。
+  const dueLine = dueTotal === 0
+    ? ''
+    : `\nPalace review due today: ${dueTotal}${dueTotal >= 50 ? '+' : ''} memories. Use engram_review_queue for active recall (recall beats re-reading).`
+  const textWithRationale = wrapWithRationale(text, top) + dueLine
   const hash = createHash('sha256').update(textWithRationale).digest('hex')
   if (state.lastProfileAgent === String(agent.id) && hash === state.lastProfileHash) return decision
   state.lastProfileAgent = String(agent.id)
@@ -314,7 +325,18 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       : scope === 'shared'
         ? join(resolved.dbDir, 'shared.db')
         : join(resolved.dbDir, identity.dbName)
-    const created = openEngramStore(path, rankBoost)
+    const created = openEngramStore(path, rankBoost, {
+      autoSlot: resolved.autoSlot,
+      reviewScheduling: resolved.reviewScheduling,
+    })
+      // 存量排桩：首次打开时幂等补齐（slot_room 为空的 active 条目按 kind 分房、创建时间定序）。
+      .then(async store => {
+        const assigned = await store.backfillSlots(room => {
+          console.warn(`[dsh-engram] 房间已满，自动开新房「${room}」（可在管理面板翻新清单中人工拆分/命名）`)
+        })
+        if (assigned > 0) console.warn(`[dsh-engram] 存量记忆排桩完成：${assigned} 条已钉入宫殿（${path}）`)
+        return store
+      })
     stores.set(scope, created)
     return created
   }
@@ -367,6 +389,8 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   if (resolved.ingest !== 'off') {
     // 末轮摄取闭环：disposed 是 fire-and-forget 观察器（宿主不等待），5 秒超时；
     // 失败/超时由 ingestFinalTurn 落 pending 键，下次会话首次 pre-step 重放补做。
+    // 必须挂 .catch：宿主把未处理的 rejection 当致命错误（installFailLoud → process.exit），
+    // 而 dispose 时会话事件源可能已 detach——任何逃逸异常都会变成整个 DSH 进程退出。
     ctx.on('session/disposed', (session) => {
       const mode = resolved.ingest
       if (mode === 'off') return
@@ -382,6 +406,8 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
         call: params => streamText(ctx, { ...params, sessionId: session.id }),
         logRequest: logIngestRequest,
         signal: AbortSignal.timeout(FINAL_INGEST_TIMEOUT_MS),
+      }).catch((error: unknown) => {
+        console.warn('[dsh-engram] 会话结束的末轮摄取异常（不影响对话）：', error)
       })
     })
   }

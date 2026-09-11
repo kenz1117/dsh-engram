@@ -40,6 +40,10 @@ export interface EngramConfig {
   rankProofWeight?: number
   /** engram_search 是否用辅助 LLM 把查询改写为 ≤3 个互补查询再做 RRF 融合；默认 true。改写失败自动降级单查询。 */
   queryRewrite?: boolean
+  /** 写入时自动排桩（房间 + 桩位号）并登记固定巡游路线；默认 true。false 时桩位/路线完全由调用方显式指定。 */
+  autoSlot?: boolean
+  /** 新记忆是否进入 SM-2 间隔重复调度（初始 1 天后到期）；默认 true。false 时复习队列恒空、decay 行为同旧版。 */
+  reviewScheduling?: boolean
 }
 
 /** 解析后的完整配置（显式默认值集中在此一步，实现不再 `?? 默认`）。 */
@@ -58,6 +62,8 @@ export interface ResolvedEngramConfig {
   readonly rankRecencyWeight: number
   readonly rankProofWeight: number
   readonly queryRewrite: boolean
+  readonly autoSlot: boolean
+  readonly reviewScheduling: boolean
 }
 
 /** 合法配置键集合（未知键 loud 失败）。 */
@@ -65,6 +71,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'dbDir', 'injectProfile', 'profileTopN', 'modelCacheDir', 'hfEndpoint',
   'ingest', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
   'injectTokenBudget', 'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
+  'autoSlot', 'reviewScheduling',
 ])
 
 const INGEST_MODES: ReadonlySet<string> = new Set(['off', 'light', 'eager'])
@@ -85,6 +92,8 @@ export const Config: z<EngramConfig> = z.object({
   rankRecencyWeight: z.number().min(0).max(2),
   rankProofWeight: z.number().min(0).max(2),
   queryRewrite: z.boolean(),
+  autoSlot: z.boolean(),
+  reviewScheduling: z.boolean(),
 })
 
 /**
@@ -138,5 +147,7 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     rankRecencyWeight: config.rankRecencyWeight ?? 0.2,
     rankProofWeight: config.rankProofWeight ?? 0.1,
     queryRewrite: config.queryRewrite ?? true,
+    autoSlot: config.autoSlot ?? true,
+    reviewScheduling: config.reviewScheduling ?? true,
   }
 }

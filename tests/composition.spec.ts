@@ -1,8 +1,8 @@
 /**
  * REAL-composition coverage：测试用 cordis.yml 经真实 Loader 装载
  * webserver + system-prompt + tools + llm 替身 + dsh-engram，HTTP 断言
- * 管理页与 /api/engram/* 全链路（列表/统计/修正/遗忘/导出/回环写守卫），
- * 以及 10 个工具注册与 fiber 卸载（HMR 安全）。替身只用于外部网络
+ * 管理页与 /api/engram/* 全链路（列表/统计/修正/遗忘/导出/复习队列/回环写守卫），
+ * 以及 15 个工具注册与 fiber 卸载（HMR 安全）。替身只用于外部网络
  *（fetch 一律拒绝，嵌入器立即降级——降级路径本身是被测行为的一部分）
  * 与 llm 辅助调用端点。
  */
@@ -56,21 +56,27 @@ const llmDouble = {
 
 const EXPECTED_TOOLS = [
   'engram_audit_forgotten', 'engram_distill', 'engram_examine', 'engram_export', 'engram_forget',
-  'engram_neighbors', 'engram_report', 'engram_review', 'engram_save', 'engram_search',
-  'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
+  'engram_neighbors', 'engram_report', 'engram_review', 'engram_review_queue', 'engram_save',
+  'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
 ]
 
-/** 在宿主打开分库前写入种子记忆（同进程先后连接，时序安全）。 */
+/** 在宿主打开分库前写入种子记忆（同进程先后连接，时序安全）。
+ *  keep 条目的复习日程拨到 1 天前，让 review-due / review-answer 链路可断言。 */
 async function seedMemories(dbPath: string): Promise<{ keep: string; dropped: string }> {
   const store = await openEngramStore(dbPath)
   const keep = (await store.write({ scope: 'user', kind: 'preference', content: '种子偏好：回复用简体中文', importance: 0.8 })).id
   const dropped = (await store.write({ scope: 'user', kind: 'fact', content: '种子事实：将被遗忘', importance: 0.5 })).id
   await store.close()
+  const { DatabaseSync } = await import('node:sqlite')
+  const raw = new DatabaseSync(dbPath)
+  raw.prepare('UPDATE nodes SET next_review_at = ? WHERE id = ?').run(Date.now() - 86_400_000, keep)
+  raw.close()
   return { keep, dropped }
 }
 
-/** 六行 cordis.yml（webserver + system-prompt + tools + llm 替身 + engram）经真实 Loader 启动。 */
-async function loadComposition(): Promise<Context> {
+/** 六行 cordis.yml（webserver + system-prompt + tools + llm 替身 + engram）经真实 Loader 启动。
+ *  extraConfig 追加到 engram 行 config 下（如 `    ingest: 'light'`）。 */
+async function loadComposition(extraConfig: readonly string[] = []): Promise<Context> {
   root = await mkdtemp(join(tmpdir(), 'dsh-engram-'))
   const dbPath = join(root, 'engram', 'user.db')
   await seedMemories(dbPath)
@@ -86,6 +92,7 @@ async function loadComposition(): Promise<Context> {
     "- name: '@kenz1117/dsh-engram'",
     '  config:',
     `    dbDir: '${join(root, 'engram')}'`,
+    ...extraConfig,
     '',
   ].join('\n'))
 
@@ -131,14 +138,14 @@ async function call(port: number, method: 'GET' | 'POST', path: string, body?: u
 }
 
 describe('dsh-engram real Loader composition', () => {
-  it('装载后 10 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
+  it('装载后 15 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
     const names = () => loaded.tools.schemas().map(schema => schema.name)
     for (const expected of EXPECTED_TOOLS) {
       expect(names()).toContain(expected)
     }
 
-    // HMR 安全：卸载 engram 行后 9 个工具全部释放（tools 服务仍在，其余工具不受影响）。
+    // HMR 安全：卸载 engram 行后 15 个工具全部释放（tools 服务仍在，其余工具不受影响）。
     const entry = [...loaded.loader.entries()]
       .find(candidate => candidate.options.name === '@kenz1117/dsh-engram')
     expect(entry).toBeDefined()
@@ -167,6 +174,34 @@ describe('dsh-engram real Loader composition', () => {
     const list = await call(port, 'GET', '/api/engram/list?scope=user&limit=10')
     expect(list.status).toBe(200)
     expect((list.json as { total: number }).total).toBe(2)
+
+    // 巡游路线排序：按排桩先后（种子偏好先写先上路线）。
+    const tourList = await call(port, 'GET', '/api/engram/list?scope=user&sort=tour&limit=10')
+    expect((tourList.json as { records: { content: string, slot?: { room: string, index: number } }[] }).records
+      .map(record => record.content)).toEqual(['种子偏好：回复用简体中文', '种子事实：将被遗忘'])
+    // 列表行带桩位坐标（宫殿位置感）。
+    expect((tourList.json as { records: { slot?: { room: string } }[] }).records[0]?.slot).toEqual({ room: '偏好阁', index: 1 })
+
+    // 今日待回忆：只给线索不给正文（检索练习的刻意设计）。
+    const due = await call(port, 'GET', '/api/engram/review-due?scope=user')
+    expect(due.status).toBe(200)
+    const dueItems = (due.json as { items: { id: string, overdueDays: number, slot?: { room: string } }[] }).items
+    expect(dueItems).toHaveLength(1)
+    expect(dueItems[0]?.overdueDays).toBeGreaterThanOrEqual(1)
+    expect(dueItems[0]?.slot).toEqual({ room: '偏好阁', index: 1 })
+    expect(due.text).not.toContain('简体中文')
+
+    // 自评推进 SM-2：首次通过间隔 1 天；非法 grade 拒绝。
+    const keepId = dueItems[0]!.id
+    const answered = await call(port, 'POST', '/api/engram/review-answer', { id: keepId, scope: 'user', grade: 5 })
+    expect(answered.status).toBe(200)
+    expect((answered.json as { review: { intervalDays: number, reps: number } }).review).toEqual(
+      expect.objectContaining({ intervalDays: 1, reps: 1 }),
+    )
+    expect((await call(port, 'POST', '/api/engram/review-answer', { id: keepId, scope: 'user', grade: 9 })).status).toBe(400)
+    // 答题后不再出现在今日队列。
+    const afterAnswer = await call(port, 'GET', '/api/engram/review-due?scope=user')
+    expect((afterAnswer.json as { items: unknown[] }).items).toHaveLength(0)
 
     // 更新：走取代链（旧条目 archived、新条目 active）。
     const dropped = (list.json as { records: { id: string; content: string }[] }).records
@@ -204,6 +239,17 @@ describe('dsh-engram real Loader composition', () => {
       { id: dropped!.id, scope: 'user', reason: 'x', affects: 'x', stillUseful: 'x' },
       { origin: 'https://evil.example' })
     expect(evil.status).toBe(403)
+  })
+
+  it('会话 dispose 且事件源不可用时，摄取不产生未处理 rejection', { timeout: 60_000 }, async () => {
+    // 回归：disposed 观察器是 fire-and-forget，逃逸的 rejection 会被宿主 fail-loud 当致命错误
+    // 直接退出进程（社区 issue #1：turnStarts 读 undefined.length）。
+    const loaded = await loadComposition(["    ingest: 'light'"])
+    // 模拟 dispose 后事件源已 detach：snapshotEvents 给不出日志。
+    const fakeSession = { id: 'sess-disposed', snapshotEvents: () => undefined }
+    loaded.emit('session/disposed', fakeSession as never)
+    // 给 fire-and-forget 摄取一个跑完的窗口；若产生未处理 rejection，vitest 会判定本用例失败。
+    await new Promise(resolve => setTimeout(resolve, 300))
   })
 
   it('未知配置键经 Loader 装载 loud 失败', { timeout: 60_000 }, async () => {

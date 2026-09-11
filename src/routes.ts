@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type { EngramKind, EngramScope, EngramStatus, ListFilter } from './types.ts'
+import type { EngramKind, EngramScope, EngramStatus, ListFilter, ReviewGrade } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import { writeMirror } from './mirror/markdown.ts'
@@ -150,6 +150,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               ...(kind !== null && kind !== '' && kind !== 'all' ? { kind: kind as EngramKind } : {}),
               ...(q !== null && q !== '' ? { q } : {}),
               ...(redacted === 'true' || redacted === 'false' ? { redacted: redacted === 'true' } : {}),
+              // 巡游路线排序：面板「按巡游路线」开关；缺省 created_at 倒序。
+              ...(url.searchParams.get('sort') === 'tour' ? { sort: 'tour' as const } : {}),
               limit,
               offset,
             }
@@ -202,6 +204,44 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             json(res, 200, { operations: merged })
             return
           }
+          if (req.method === 'GET' && route === 'review-due') {
+            // 今日待回忆（检索练习）：只给线索（坐标/门牌/逾期天数），不给正文——正文由面板「揭示」走 review 路由拉取。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
+            const now = Date.now()
+            const due = await (await deps.openStore(scope)).dueReviews(now, limit)
+            json(res, 200, {
+              scope,
+              items: due.map(record => ({
+                id: record.id,
+                kind: record.kind,
+                ...(record.slot === undefined ? {} : { slot: record.slot }),
+                caption: record.imagery?.caption ?? null,
+                nextReviewAt: record.review?.nextReviewAt ?? null,
+                overdueDays: record.review?.nextReviewAt === null || record.review?.nextReviewAt === undefined
+                  ? 0
+                  : Math.max(0, Math.floor((now - record.review.nextReviewAt) / 86_400_000)),
+                reps: record.review?.reps ?? 0,
+              })),
+            })
+            return
+          }
+          if (req.method === 'POST' && route === 'review-answer') {
+            // 检索练习自评：面板 记得/模糊/忘了 三档映射 SM-2 grade 5/3/1，推进调度。
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            if (body === null || typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
+            const grade = typeof body.grade === 'number' && Number.isInteger(body.grade) && body.grade >= 0 && body.grade <= 5
+              ? body.grade as 0 | 1 | 2 | 3 | 4 | 5
+              : null
+            if (grade === null) { json(res, 400, { error: 'grade must be an integer 0-5' }); return }
+            const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')
+            const store = await deps.openStore(scope)
+            const record = await store.scheduleReview(body.id as never, grade)
+            if (record === undefined) { json(res, 404, { error: `未找到条目 ${body.id}` }); return }
+            json(res, 200, { id: record.id, review: record.review ?? null })
+            return
+          }
           if (req.method === 'GET' && route === 'review') {
             const scope = scopeOf(url.searchParams.get('scope'), 'user')
             const id = url.searchParams.get('id')
@@ -210,6 +250,45 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const view = await store.review(id as never)
             if (view === undefined) { json(res, 404, { error: `未找到条目 ${id}` }); return }
             json(res, 200, view)
+            return
+          }
+          if (req.method === 'GET' && route === 'review-due') {
+            // 今日待回忆队列：只给坐标与门牌线索，不给正文（检索练习——先主动回忆再由面板揭示核对）。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
+            const now = Date.now()
+            const due = await (await deps.openStore(scope)).dueReviews(now, limit)
+            json(res, 200, {
+              scope,
+              count: due.length,
+              now,
+              items: due.map(record => ({
+                id: record.id,
+                kind: record.kind,
+                scope: record.scope,
+                importance: record.importance,
+                confidence: record.confidence,
+                ...(record.slot === undefined ? {} : { slot: record.slot }),
+                ...(typeof record.imagery?.caption === 'string' ? { caption: record.imagery.caption } : {}),
+                ...(record.review?.nextReviewAt === null || record.review?.nextReviewAt === undefined
+                  ? {}
+                  : { overdueDays: Math.max(0, Math.floor((now - record.review.nextReviewAt) / 86_400_000)) }),
+                ...(record.review === undefined ? {} : { reps: record.review.reps, intervalDays: record.review.intervalDays }),
+              })),
+            })
+            return
+          }
+          if (req.method === 'POST' && route === 'review-answer') {
+            // 复习自评：grade 0-5 推进 SM-2 调度（≥3 通过；<3 重置间隔）。
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            if (body === null || typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
+            const grade = Number(body.grade)
+            if (!Number.isInteger(grade) || grade < 0 || grade > 5) { json(res, 400, { error: 'grade must be an integer 0-5' }); return }
+            const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')
+            const record = await (await deps.openStore(scope)).scheduleReview(body.id as never, grade as ReviewGrade)
+            if (record === undefined) { json(res, 404, { error: `未找到条目 ${body.id}` }); return }
+            json(res, 200, { record })
             return
           }
           if (req.method === 'GET' && route === 'export') {
