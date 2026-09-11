@@ -14,6 +14,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import styles from './panel.module.css'
+import { KIND_KEY, type EngramKey } from './locales.ts'
+
+/** 走廊图使用的翻译函数（渲染器合成的窄签名）。 */
+type CorridorT = (key: EngramKey, params?: Record<string, unknown>) => string
+
+/** kind → 本地化房间名（词典缺失时回退数据值）。 */
+function roomLabel(t: CorridorT, kind: string): string {
+  const key = KIND_KEY[kind]
+  return key === undefined ? kind : t(key as EngramKey)
+}
 
 interface CorridorNode {
   readonly id: string
@@ -33,20 +43,13 @@ interface CorridorEdge {
   readonly type: string
 }
 
-/** 楼层色板：5 个语义色相。 */
-const FLOOR_PALETTE: Readonly<Record<string, string>> = {
+/** 房间色板：5 个语义色相（按 kind 分组）。 */
+const KIND_PALETTE: Readonly<Record<string, string>> = {
   fact: '#5b8def',
   preference: '#f0a85c',
   decision: '#9b6bd9',
   episode: '#3cb489',
   skill: '#e26b86',
-}
-const FLOOR_LABEL: Readonly<Record<string, string>> = {
-  fact: '事实层',
-  preference: '偏好层',
-  decision: '决策层',
-  episode: '事件层',
-  skill: '技能层',
 }
 
 /** 边视觉语义。dash 显式允许 undefined：exactOptionalPropertyTypes 下字面量表无需逐项删键。 */
@@ -75,6 +78,8 @@ interface CorridorMapProps {
   readonly edges: readonly CorridorEdge[]
   readonly onSelect?: (id: string) => void
   readonly selectedId?: string
+  /** 界面文案（房间名与图例走宿主 locale 词典）。 */
+  readonly t: CorridorT
 }
 
 /** 节点半径。 */
@@ -123,7 +128,7 @@ function step(nodes: PositionedNode[], edges: readonly CorridorEdge[], width: nu
     b.vx -= fx
     b.vy -= fy
   }
-  // 中心引力 + 楼层水平分簇。
+  // 中心引力 + 房间水平分簇。
   const kinds = [...new Set(nodes.map(n => n.kind))]
   const band = width / Math.max(kinds.length, 1)
   for (const n of nodes) {
@@ -149,7 +154,7 @@ function step(nodes: PositionedNode[], edges: readonly CorridorEdge[], width: nu
 
 /** 走廊鸟瞰组件。 */
 export function CorridorMap(props: CorridorMapProps): ReactElement {
-  const { scope, nodes, edges, onSelect, selectedId } = props
+  const { scope, nodes, edges, onSelect, selectedId, t } = props
   const width = 560
   const height = 320
   /** 邻居表：node id → 邻居 id 集合（含一跳）。 */
@@ -164,7 +169,7 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
     }
     return map
   }, [nodes, edges])
-  /** 起始布局：按楼层水平均分带，垂直随机抖动。 */
+  /** 起始布局：按房间水平均分带，垂直随机抖动。 */
   const initialNodes = useMemo<PositionedNode[]>(() => {
     const kinds = [...new Set(nodes.map(n => n.kind))]
     const band = width / Math.max(kinds.length, 1)
@@ -206,7 +211,7 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
   }, [initialNodes, edges])
   const positions = positionsRef.current
   const posMap = useMemo(() => new Map(positions.map(p => [p.id, p])), [positions])
-  const floors = useMemo(() => [...new Set(nodes.map(n => n.kind))], [nodes])
+  const roomKinds = useMemo(() => [...new Set(nodes.map(n => n.kind))], [nodes])
   /** hover 高亮：当前节点 id → 邻居 id 集合；null = 不高亮。 */
   const [hoverId, setHoverId] = useState<string | null>(null)
   const hoverNeighbors = useMemo(() => {
@@ -267,25 +272,25 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
   }, [])
 
   if (nodes.length === 0) {
-    return <div className={styles.empty}>走廊空空如也，落成几间房间后这里会出现鸟瞰图。</div>
+    return <div className={styles.empty}>{t('corridorEmpty')}</div>
   }
 
   return (
     <div className={styles.mapWrap}>
       <svg ref={svgRef} viewBox={`0 0 ${String(width)} ${String(height)}`} className={styles.map}
-        preserveAspectRatio="xMidYMid meet" role="img" aria-label="走廊鸟瞰图" key={scope}>
-        {/* 楼层背景带（斑马纹区隔）。scope 切换通过父 svg key 重挂载触发 fade-in。 */}
-        {floors.map((kind, idx) => {
-          const band = width / Math.max(floors.length, 1)
+        preserveAspectRatio="xMidYMid meet" role="img" aria-label={t('corridorAria')} key={scope}>
+        {/* 房间背景带（斑马纹区隔）。scope 切换通过父 svg key 重挂载触发 fade-in。 */}
+        {roomKinds.map((kind, idx) => {
+          const band = width / Math.max(roomKinds.length, 1)
           return <rect key={kind} x={band * idx} y={0} width={band} height={height} fill={idx % 2 === 0 ? 'rgba(127,127,127,0.04)' : 'transparent'} />
         })}
-        {/* 楼层标签条顶部。 */}
-        {floors.map((kind, idx) => {
-          const band = width / Math.max(floors.length, 1)
+        {/* 房间标签条顶部。 */}
+        {roomKinds.map((kind, idx) => {
+          const band = width / Math.max(roomKinds.length, 1)
           return (
             <text key={`${kind}-label`} x={band * (idx + 0.5)} y={14} textAnchor="middle"
               fill="rgba(127,127,127,0.7)" fontSize="10" fontFamily="ui-sans-serif, system-ui">
-              {FLOOR_LABEL[kind] ?? kind}
+              {roomLabel(t, kind)}
             </text>
           )
         })}
@@ -328,7 +333,7 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
         })}
         {/* 房间节点。 */}
         {positions.map((n, index) => {
-          const color = FLOOR_PALETTE[n.kind] ?? '#7d8590'
+          const color = KIND_PALETTE[n.kind] ?? '#7d8590'
           const isSelected = selectedId === n.id
           const isHovered = hoverId === n.id
           const faded = isFaded(n.id)
@@ -365,7 +370,7 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
               <rect x={0} y={0} width={176} height={48} rx={6} ry={6}
                 fill="var(--dsw-alias-bg-base)" stroke="var(--dsw-alias-border-l2)" strokeWidth={1} opacity={0.96} />
               <text x={8} y={16} fill="var(--dsw-alias-label-primary)" fontSize="11" fontWeight={600}
-                fontFamily="ui-sans-serif, system-ui">{FLOOR_LABEL[node.kind] ?? node.kind}</text>
+                fontFamily="ui-sans-serif, system-ui">{roomLabel(t, node.kind)}</text>
               <text x={8} y={32} fill="var(--dsw-alias-label-secondary)" fontSize="10"
                 fontFamily="ui-sans-serif, system-ui">{`${fullContent}${(node.content ?? node.title).length > 120 ? '…' : ''}`}</text>
             </g>
@@ -373,13 +378,13 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
         })()}
       </svg>
       <div className={styles.legend}>
-        {floors.map(kind => (
+        {roomKinds.map(kind => (
           <span key={kind} className={styles.legendItem}>
-            <span className={styles.legendDot} style={{ background: FLOOR_PALETTE[kind] ?? '#7d8590' }} />
-            {FLOOR_LABEL[kind] ?? kind}
+            <span className={styles.legendDot} style={{ background: KIND_PALETTE[kind] ?? '#7d8590' }} />
+            {roomLabel(t, kind)}
           </span>
         ))}
-        <span className={styles.legendItem}>{nodes.length} 间 · {edges.length} 条走廊</span>
+        <span className={styles.legendItem}>{t('corridorSummary', { nodes: nodes.length, edges: edges.length })}</span>
       </div>
       <div className={styles.legend} style={{ marginTop: 2 }}>
         {Object.entries(EDGE_STYLE).map(([type, style]) => (
@@ -387,7 +392,7 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
             <svg width={20} height={6} aria-hidden="true">
               <line x1={0} y1={3} x2={20} y2={3} stroke={style.color} strokeWidth={style.width} strokeDasharray={style.dash} />
             </svg>
-            <span>{type === 'supersedes' ? '推陈出新' : type === 'contradicts' ? '互斥' : '相邻 / 支持 / 提炼'}</span>
+            <span>{type === 'supersedes' ? t('edgeSupersedes') : type === 'contradicts' ? t('edgeContradicts') : t('edgeOther')}</span>
           </span>
         ))}
       </div>

@@ -21,16 +21,16 @@ afterEach(async () => {
 })
 
 describe('Markdown 镜像导出', () => {
-  it('每房间生成一个 .md：含 frontmatter、铭牌正文、走廊列表', async () => {
+  it('每条记忆生成一个 .md：含 frontmatter、铭牌正文、走廊列表', async () => {
     const a = await store.write({ scope: 'user', kind: 'fact', content: '部署端口是 4000', importance: 0.7, confidence: 0.8 })
     const b = await store.write({ scope: 'user', kind: 'preference', content: '偏好简体中文界面', importance: 0.6, confidence: 0.7 })
     await store.linkEdge(a.id, b.id, 'related')
     const data = await store.exportAll()
     const report = await writeMirror(mirrorRoot, data)
-    expect(report.fileCount).toBe(2 + 2) // 2 rooms + _index.md + _meta.json
-    expect(report.floors).toHaveLength(2)
+    expect(report.fileCount).toBe(2 + 2) // 2 memories + _index.md + _meta.json
+    expect(report.rooms).toHaveLength(2)
 
-    // fact 楼层：应有 a 的文件
+    // fact 房间：应有 a 的文件
     const factDir = join(mirrorRoot, 'fact')
     const factFiles = await readdir(factDir)
     expect(factFiles).toHaveLength(1)
@@ -43,7 +43,7 @@ describe('Markdown 镜像导出', () => {
     expect(factContent).toContain(b.id.slice(0, 8))
     expect(factContent).toContain('related')
 
-    // preference 楼层：应有 b 的文件
+    // preference 房间：应有 b 的文件
     const prefDir = join(mirrorRoot, 'preference')
     const prefFiles = await readdir(prefDir)
     expect(prefFiles).toHaveLength(1)
@@ -52,22 +52,22 @@ describe('Markdown 镜像导出', () => {
     expect(prefContent).toContain(a.id.slice(0, 8)) // 走廊条目
   })
 
-  it('_index.md 含楼层导览 + 房间清单 + 走廊汇总', async () => {
+  it('_index.md 含房间导览 + 记忆清单 + 走廊汇总', async () => {
     await store.write({ scope: 'user', kind: 'fact', content: '事实一', importance: 0.9 })
     await store.write({ scope: 'user', kind: 'fact', content: '事实二', importance: 0.4 })
     await store.write({ scope: 'user', kind: 'episode', content: '事件一', importance: 0.6 })
     const report = await writeMirror(mirrorRoot, await store.exportAll())
     const index = await readFile(join(mirrorRoot, '_index.md'), 'utf8')
     expect(index).toContain('# 记忆宫殿 · 私人宫殿')
-    expect(index).toContain('## 楼层导览')
-    expect(index).toContain('**fact 层** · 2 间')
-    expect(index).toContain('**episode 层** · 1 间')
-    expect(index).toContain('## 房间清单')
+    expect(index).toContain('## 房间导览')
+    expect(index).toContain('**事实厅** · 2 条记忆')
+    expect(index).toContain('**往事廊** · 1 条记忆')
+    expect(index).toContain('## 记忆清单')
     expect(index).toContain('## 走廊（关系边）')
     expect(report.exportedAt).toBeGreaterThan(0)
   })
 
-  it('_meta.json 含楼层汇总与总数，可被面板二次消费', async () => {
+  it('_meta.json 含房间汇总与总数，可被面板二次消费', async () => {
     await store.write({ scope: 'user', kind: 'fact', content: '活跃', importance: 0.5 })
     const forgotten = await store.write({ scope: 'user', kind: 'fact', content: '已闭馆', importance: 0.5 })
     await store.forget(forgotten.id)
@@ -75,12 +75,12 @@ describe('Markdown 镜像导出', () => {
     const meta = JSON.parse(await readFile(join(mirrorRoot, '_meta.json'), 'utf8')) as {
       scope: string
       total: number
-      floors: Array<{ kind: string; roomCount: number; active: number; archived: number; forgotten: number }>
+      rooms: Array<{ kind: string; memoryCount: number; active: number; archived: number; forgotten: number }>
     }
     expect(meta.scope).toBe('user')
     expect(meta.total).toBe(2)
-    const fact = meta.floors.find(f => f.kind === 'fact')!
-    expect(fact.roomCount).toBe(2)
+    const fact = meta.rooms.find(room => room.kind === 'fact')!
+    expect(fact.memoryCount).toBe(2)
     expect(fact.active).toBe(1)
     expect(fact.forgotten).toBe(1)
   })
@@ -88,7 +88,7 @@ describe('Markdown 镜像导出', () => {
   it('空宫殿也能正常写镜像（_index.md + _meta.json + 0 房间）', async () => {
     const report = await writeMirror(mirrorRoot, await store.exportAll())
     expect(report.fileCount).toBe(2)
-    expect(report.floors).toEqual([])
+    expect(report.rooms).toEqual([])
     const meta = JSON.parse(await readFile(join(mirrorRoot, '_meta.json'), 'utf8')) as { total: number }
     expect(meta.total).toBe(0)
   })

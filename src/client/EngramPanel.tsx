@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
-import { NS, type EngramKey } from './locales.ts'
+import { KIND_KEY, NS, type EngramKey } from './locales.ts'
 import { CorridorMap } from './CorridorMap.tsx'
 import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
@@ -48,6 +48,8 @@ interface StatsPart {
     readonly forgotten: number
     readonly redacted: number
     readonly signalRatio: number
+    /** 各房间（kind）条目数；stats 路由的 byKind 字段（房间目录数据源）。 */
+    readonly byKind?: Readonly<Record<string, number>>
   }
 }
 
@@ -76,17 +78,18 @@ const STATUS_KEY: Record<MemoryRow['status'], EngramKey> = {
   archived: 'statusArchived',
   forgotten: 'statusForgotten',
 }
-const KIND_KEY: Record<string, EngramKey> = {
-  fact: 'kindFact',
-  preference: 'kindPreference',
-  decision: 'kindDecision',
-  episode: 'kindEpisode',
-  skill: 'kindSkill',
-}
 const SCOPE_KEY: Record<MemoryRow['scope'], EngramKey> = {
   user: 'scopeUser',
   project: 'scopeProject',
   shared: 'scopeShared',
+}
+/** 房间色相类（panel.module.css 的 .roomFact 等）；未知 kind 回退通用的 .kind。 */
+const ROOM_CLASS: Record<string, string> = {
+  fact: 'roomFact',
+  preference: 'roomPreference',
+  decision: 'roomDecision',
+  episode: 'roomEpisode',
+  skill: 'roomSkill',
 }
 const OP_KEY: Record<string, EngramKey> = {
   write: 'opWrite',
@@ -119,6 +122,11 @@ const DETAIL_KEY: Record<string, EngramKey> = {
 function kindLabel(t: T, kind: string): string {
   const key = KIND_KEY[kind]
   return key === undefined ? kind : t(key)
+}
+
+/** 房间 pill 的类名：按 kind 取色相类，未知 kind 回退通用品牌色。 */
+function roomPillClass(kind: string): string {
+  return `${styles.pill} ${styles[ROOM_CLASS[kind] ?? 'kind'] ?? ''}`
 }
 
 /** op 数据值 → 本地化标签（未知值回退原文）。 */
@@ -181,6 +189,42 @@ function relTime(t: T, ms: number): string {
   return t('timeDaysAgo', { n: Math.floor(hours / 24) })
 }
 
+/** 速览指标：大数 + 小标签 + 可选尾注；secondary 用于并排的次级计数。 */
+function Metric({ label, value, tail, secondary }: {
+  label: string
+  value: string | number
+  tail?: string | undefined
+  secondary?: boolean
+}): React.ReactElement {
+  return (
+    <div className={styles.metric}>
+      <span className={styles.metricLabel}>{label}</span>
+      <b className={secondary === true ? `${styles.metricValue} ${styles.metricValueSecondary}` : styles.metricValue}>{value}</b>
+      {tail !== undefined && <span className={styles.metricTail}>{tail}</span>}
+    </div>
+  )
+}
+
+/** 健康分环：SVG 描边进度（0-100），颜色随分数分档。 */
+function HealthRing({ score }: { score: number }): React.ReactElement {
+  const radius = 24
+  const circumference = 2 * Math.PI * radius
+  const filled = circumference * (Math.min(100, Math.max(0, score)) / 100)
+  const tone = score >= 80 ? 'var(--dsw-alias-state-success-primary)'
+    : score >= 50 ? 'var(--dsw-alias-state-warn-primary)'
+      : 'var(--dsw-alias-state-error-primary)'
+  return (
+    <div className={styles.ring} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={score}>
+      <svg width="56" height="56" viewBox="0 0 56 56" aria-hidden="true">
+        <circle cx="28" cy="28" r={radius} fill="none" stroke="var(--dsw-alias-border-l2)" strokeWidth="4" />
+        <circle cx="28" cy="28" r={radius} fill="none" stroke={tone} strokeWidth="4" strokeLinecap="round"
+          strokeDasharray={`${filled.toFixed(1)} ${circumference.toFixed(1)}`} />
+      </svg>
+      <b>{score}</b>
+    </div>
+  )
+}
+
 /** 细仪表条：重要性（品牌色）与置信（成功色）共用，conf 变体换色。 */
 function Meter({ value, conf }: { value: number; conf?: boolean }): React.ReactElement {
   return (
@@ -228,7 +272,7 @@ function ReviewBody({ t, recordId, scope }: {
           <dt>{t('labelContent')}</dt>
           <dd>{record.content}</dd>
           <dt>{t('labelKind')}</dt>
-          <dd><span className={`${styles.pill} ${styles.kind}`}>{kindLabel(t, record.kind)}</span></dd>
+          <dd><span className={roomPillClass(record.kind)}>{kindLabel(t, record.kind)}</span></dd>
           <dt>{t('labelStatus')}</dt>
           <dd><span className={`${styles.pill} ${styles[`status${record.status.charAt(0).toUpperCase()}${record.status.slice(1)}`] ?? ''}`}>{t(STATUS_KEY[record.status])}</span></dd>
           <dt>{t('importance')}</dt>
@@ -409,7 +453,7 @@ function RecallBench({ t, scope }: { t: T; scope: 'user' | 'project' | 'shared' 
               <span className={styles.viaChip}
                 title={`${hit.viaEdge.type} ${hit.viaEdge.from}`}>{t('viaEdgeLabel')} · {hit.viaEdge.type}</span>
             )}
-            <span className={`${styles.pill} ${styles.kind}`}>{kindLabel(t, hit.kind)}</span>
+            <span className={roomPillClass(hit.kind)}>{kindLabel(t, hit.kind)}</span>
             <span className={styles.benchScore}>{hit.score.toFixed(4)}</span>
           </div>
           <div className={styles.benchContent}>{hit.content}</div>
@@ -446,30 +490,85 @@ function activityDetail(t: T, detail: string | null): string {
   return detail.length > 56 ? `${detail.slice(0, 56)}…` : detail
 }
 
-/** 最近活动：两库 op_log 合并倒序，摄取/检索改写/压缩/蒸馏/条目操作全貌可见。 */
-function ActivityFeed({ t }: { t: T }): React.ReactElement {
+/** 日志筛选分组：op 枚举 → 分组（数据层英文枚举只在显示层映射）。 */
+type LogFilter = 'all' | 'write' | 'ingest' | 'retrieve' | 'organize'
+const LOG_GROUPS: Readonly<Record<LogFilter, readonly string[] | null>> = {
+  all: null,
+  write: ['write', 'update', 'forget', 'restore', 'decay', 'superseded', 'outcome-report'],
+  ingest: ['ingest-request', 'ingest-done'],
+  retrieve: ['search-rewrite-request', 'compress-request'],
+  organize: ['distill-request'],
+}
+const LOG_FILTER_KEY: Readonly<Record<LogFilter, EngramKey>> = {
+  all: 'logFilterAll',
+  write: 'logFilterWrite',
+  ingest: 'logFilterIngest',
+  retrieve: 'logFilterRetrieve',
+  organize: 'logFilterOrganize',
+}
+
+/**
+ * 管家日志整页视图：顶部近 7 天三个计数，下面是两库合并的完整 op_log
+ * （时间 · 操作 · 宫殿 · 摘要），可按操作类别筛选；不再限高裁切，供逐条审计。
+ */
+function LogPanel({ t, telemetry }: { t: T; telemetry: TelemetrySnapshot | null }): React.ReactElement {
   const [rows, setRows] = useState<ActivityRow[] | null>(null)
+  const [filter, setFilter] = useState<LogFilter>('all')
   useEffect(() => {
     let cancelled = false
-    api<{ operations: ActivityRow[] }>('activity?limit=20')
+    api<{ operations: ActivityRow[] }>('activity?limit=50')
       .then((data) => { if (!cancelled) setRows(data.operations) })
       .catch(() => { if (!cancelled) setRows([]) })
     return () => { cancelled = true }
   }, [])
-  if (rows === null) return <div className={styles.expandLoading}>{t('loading')}</div>
-  if (rows.length === 0) return <div className={styles.expandLoading}>{t('activityEmpty')}</div>
+  const allow = LOG_GROUPS[filter]
+  const visible = (rows ?? []).filter(row => allow === null || allow.includes(row.op))
+  const counts = telemetry?.counts
   return (
-    // activityList：管家日志限高 280px + 内部滚动，避免 20 条满载把观察页整列拉长。
-    <ul className={`${styles.timeline} ${styles.activityList}`}>
-      {rows.map((op, index) => (
-        <li key={index}>
-          <span className={styles.actTime}>{relTime(t, op.at)}</span>
-          <b>{opLabel(t, op.op)}</b>
-          <span className={styles.actScope}>{op.scope === 'user' ? t('scopeUser') : t('scopeProject')}</span>
-          <div className={styles.actBody} title={op.detail ?? ''}>{activityDetail(t, op.detail)}</div>
-        </li>
-      ))}
-    </ul>
+    <>
+      <section className={styles.section}>
+        <div className={styles.panelCard}>
+          <div className={styles.heroMetrics}>
+            <Metric label={t('teleWrites')} value={counts?.writes ?? 0} tail={t('teleGroupRecent')} />
+            <Metric label={t('teleIngest')} value={counts?.ingestDones ?? 0} tail={t('teleGroupRecent')} />
+            <Metric label={t('teleConsolidate')} value={counts?.consolidations ?? 0} tail={t('teleGroupRecent')} />
+          </div>
+        </div>
+      </section>
+      <section className={styles.section}>
+        <div className={styles.sectionHead}>
+          <h4 className={styles.sectionTitle}>{t('tabLog')}</h4>
+          <span className={styles.sectionHint}>{t('logCount', { n: visible.length })}</span>
+        </div>
+        <div className={styles.filters} role="tablist">
+          <div className={styles.segGroup}>
+            {(['all', 'write', 'ingest', 'retrieve', 'organize'] as const).map(option => (
+              <button key={option} type="button" role="tab" aria-selected={filter === option}
+                className={filter === option ? `${styles.segItem} ${styles.on}` : styles.segItem}
+                onClick={() => { setFilter(option) }}>{t(LOG_FILTER_KEY[option])}</button>
+            ))}
+          </div>
+        </div>
+        <div className={styles.panelCard}>
+          {rows === null
+            ? <div className={styles.expandLoading}>{t('loading')}</div>
+            : visible.length === 0
+              ? <div className={styles.expandLoading}>{t('activityEmpty')}</div>
+              : (
+                <div className={styles.logList}>
+                  {visible.map((op, index) => (
+                    <div key={index} className={styles.logRow}>
+                      <span className={styles.logTime}>{relTime(t, op.at)}</span>
+                      <span className={styles.logOp}>{opLabel(t, op.op)}</span>
+                      <span className={styles.logScope}>{op.scope === 'user' ? t('scopeUser') : t('scopeProject')}</span>
+                      <span className={styles.logDetail} title={op.detail ?? ''}>{activityDetail(t, op.detail)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+        </div>
+      </section>
+    </>
   )
 }
 
@@ -534,7 +633,7 @@ function ReviewQueueCard({ t, scope, toast, onAnswered }: {
       {items.map(item => (
         <li key={item.id} className={styles.reviewItem}>
           <div className={styles.reviewCue}>
-            <span className={`${styles.pill} ${styles.kind}`}>{kindLabel(t, item.kind)}</span>
+            <span className={roomPillClass(item.kind)}>{kindLabel(t, item.kind)}</span>
             {item.slot !== undefined && <span className={styles.reviewSlot}>{item.slot.room}#{item.slot.index}</span>}
             <span className={styles.reviewCaption}>{item.caption ?? t('reviewNoPlacard')}</span>
             <span className={styles.reviewOverdue}>
@@ -565,9 +664,9 @@ function ReviewQueueCard({ t, scope, toast, onAnswered }: {
   )
 }
 
-/** 入殿导航：根据当前 scope 的 active 房间给出开场邀请 + 候选房间列表；点击可展开抽屉。
+/** 入殿导航：根据当前 scope 的 active 记忆给出开场邀请 + 候选记忆列表；点击可展开抽屉。
  *  顶部 kind chip（全部 / fact / preference / decision / episode / skill）切换 focusKind，
- *  触发后端按该 kind 优先选前 N 间作为开场建议。 */
+ *  触发后端按该 kind 优先选前 N 条作为开场建议。 */
 function TourProposalCard({ t, scope, onSelect }: { t: T; scope: 'user' | 'project' | 'shared'; onSelect: (id: string) => void }): React.ReactElement {
   interface Stop { id: string; kind: string; content: string; importance: number; confidence: number }
   interface Proposal { greeting: string; activeCount: number; empty: boolean; suggestedStops: readonly Stop[] }
@@ -613,7 +712,7 @@ function TourProposalCard({ t, scope, onSelect }: { t: T; scope: 'user' | 'proje
                   <button type="button" className={styles.tourStop} onClick={() => { onSelect(stop.id) }}>
                     <span className={styles.tourStopIndex}>{index + 1}</span>
                     <span className={styles.tourStopBody}>
-                      <span className={styles.tourStopKind}>{stop.kind}</span>
+                      <span className={styles.tourStopKind}>{kindLabel(t, stop.kind)}</span>
                       <span className={styles.tourStopText}>{stop.content.length > 60 ? `${stop.content.slice(0, 60)}…` : stop.content}</span>
                     </span>
                   </button>
@@ -628,9 +727,9 @@ function TourProposalCard({ t, scope, onSelect }: { t: T; scope: 'user' | 'proje
 }
 
 /** 翻新清单：扫描 active 条目，给出 merge / demote / review / split 四类建议；带手动刷新 + 写回按钮。
- *  - review / split：跳到对应房间抽屉查看（无副作用）。
- *  - demote：调用 engram_forget（带三问墓志铭），房间转 archived。
- *  - merge：触发当前 scope 的 engram_distill（用户级闭馆整理），把多间相似房间蒸馏为一条高层规律。 */
+ *  - review / split：跳到对应记忆抽屉查看（无副作用）。
+ *  - demote：调用 engram_forget（带三问墓志铭），记忆转 archived。
+ *  - merge：触发当前 scope 的 engram_distill（用户级闭馆整理），把多条相似记忆蒸馏为一条高层规律。 */
 function RefurbCard({ t, scope, onSelect, onAfterAction, toast }: {
   t: T
   scope: 'user' | 'project' | 'shared'
@@ -771,7 +870,7 @@ function CorridorPanel({ t, scope, onSelect }: {
   if (failed !== null) return <div className={styles.expandLoading}>{t('corridorFailed')}：{failed}</div>
   if (graph === null) return <div className={styles.expandLoading}>{t('corridorLoad')}</div>
   if (graph.nodes.length === 0) return <div className={styles.empty}>{t('corridorEmpty')}</div>
-  return <CorridorMap scope={scope} nodes={graph.nodes} edges={graph.edges} onSelect={onSelect} />
+  return <CorridorMap scope={scope} nodes={graph.nodes} edges={graph.edges} onSelect={onSelect} t={t} />
 }
 
 /** 宫殿健康分卡：5 维 0-100 + 总分 + 每维度进度条。 */
@@ -789,38 +888,17 @@ interface HealthReport {
   readonly evaluatedAt: number
 }
 
-function HealthScoreCard({ t, scope }: { t: T; scope: 'user' | 'project' | 'shared' }): React.ReactElement {
-  const [report, setReport] = useState<HealthReport | null>(null)
-  const [failed, setFailed] = useState<string | null>(null)
-  useEffect(() => {
-    let cancelled = false
-    api<HealthReport>(`health?scope=${scope}`)
-      .then(data => { if (!cancelled) setReport(data); setFailed(null) })
-      .catch((err: Error) => { if (!cancelled) setFailed(err.message) })
-    return () => { cancelled = true }
-  }, [scope])
-  if (failed !== null) return <div className={styles.expandLoading}>{t('healthFailed')}：{failed}</div>
-  if (report === null) return <div className={styles.expandLoading}>{t('healthLoading')}</div>
-  const tone = report.overall >= 80 ? 'good' : report.overall >= 50 ? 'mid' : 'low'
+/** 房间目录：kind → 条目数（stats.byKind）；色块与房间 pill 同色相。 */
+function RoomDirectory({ t, byKind }: { t: T; byKind: Readonly<Record<string, number>> }): React.ReactElement {
   return (
-    <div className={styles.health}>
-      <div className={`${styles.healthScore} ${tone === 'good' ? styles.healthScoreGood : tone === 'mid' ? styles.healthScoreMid : styles.healthScoreLow}`}>
-        <b>{report.overall}</b>
-        <span>/ 100</span>
-      </div>
-      <div className={styles.healthMetrics}>
-        {report.parts.map(part => (
-          <div key={part.scope} className={styles.healthMetric}>
-            <div className={styles.healthMetricHead}>
-              <span>{part.scope === 'user' ? t('scopeUser') : part.scope === 'project' ? t('scopeProject') : t('scopeShared')}</span>
-              <b>{part.score}</b>
-            </div>
-            <div className={styles.healthMetricBar}>
-              <i style={{ width: `${String(part.score)}%` }} />
-            </div>
-          </div>
-        ))}
-      </div>
+    <div className={styles.roomList}>
+      {KINDS.map(kind => (
+        <div key={kind} className={styles.roomRow}>
+          <span className={`${styles.roomSwatch} ${styles[ROOM_CLASS[kind] ?? ''] ?? ''}`} aria-hidden="true" />
+          <span>{kindLabel(t, kind)}</span>
+          <b className={styles.roomCount}>{byKind[kind] ?? 0}</b>
+        </div>
+      ))}
     </div>
   )
 }
@@ -839,47 +917,81 @@ interface TelemetrySnapshot {
 }
 
 /**
- * 管家日报整体条：tabs 上方常驻（原 KPI 条位置），scope 跟随 Header 全局三宫格。
- * 内容分两组横排：宫殿规模（房间 / 开放 / 闭馆 / 清晰度）+ 近 7 天活动五计数；
- * 数字与标签同行（baseline 对齐），标签 nowrap，杜绝窄卡换行。
+ * 宫殿总览取数：规模（stats，含房间分布）+ 近 7 天活动（telemetry）+ 健康分（health）
+ * 一次并行拉齐，供今日速览、健康分构成与房间目录共用（同一路由不重复请求）。
+ * @param scope - 当前观察的宫殿（跟随 Header 三宫格）。
+ * @returns 各段数据与取数失败原因（失败时保留上一次成功值）。
  */
-function TelemetryBar({ t, scope }: {
-  t: T
-  scope: 'user' | 'project' | 'shared'
-}): React.ReactElement {
-  const [snap, setSnap] = useState<TelemetrySnapshot | null>(null)
-  const [stats, setStats] = useState<StatsPart['stats'] | null>(null)
-  const [failed, setFailed] = useState<string | null>(null)
+function usePalaceOverview(scope: 'user' | 'project' | 'shared'): {
+  stats: StatsPart['stats'] | null
+  byKind: Readonly<Record<string, number>>
+  telemetry: TelemetrySnapshot | null
+  health: HealthReport | null
+  failed: string | null
+} {
+  const [state, setState] = useState<{
+    stats: StatsPart['stats'] | null
+    byKind: Readonly<Record<string, number>>
+    telemetry: TelemetrySnapshot | null
+    health: HealthReport | null
+    failed: string | null
+  }>({ stats: null, byKind: {}, telemetry: null, health: null, failed: null })
   useEffect(() => {
     let cancelled = false
-    // 宫殿规模（stats）+ 近 7 天活动（telemetry）一次并行拉齐。
     Promise.all([
-      api<TelemetrySnapshot>(`telemetry?days=7&scope=${scope}`),
       api<{ parts: StatsPart[] }>('stats'),
+      api<TelemetrySnapshot>(`telemetry?days=7&scope=${scope}`),
+      api<HealthReport>(`health?scope=${scope}`),
     ])
-      .then(([tele, statRes]) => {
+      .then(([statRes, tele, health]) => {
         if (cancelled) return
-        setSnap(tele)
-        setStats(statRes.parts.find(part => part.scope === scope)?.stats ?? null)
-        setFailed(null)
+        const stats = statRes.parts.find(part => part.scope === scope)?.stats ?? null
+        setState({ stats, byKind: stats?.byKind ?? {}, telemetry: tele, health, failed: null })
       })
-      .catch((err: Error) => { if (!cancelled) setFailed(err.message) })
+      .catch((error: Error) => {
+        if (!cancelled) setState(current => ({ ...current, failed: error.message }))
+      })
     return () => { cancelled = true }
   }, [scope])
-  if (failed !== null) return <div className={styles.expandLoading}>{t('teleFailed')}：{failed}</div>
-  if (snap === null) return <div className={styles.expandLoading}>{t('teleLoading')}</div>
-  const items: Array<[string, number]> = [
-    [t('teleWrites'), snap.counts.writes],
-    [t('teleForgets'), snap.counts.forgets],
-    [t('teleIngest'), snap.counts.ingestRequests],
-    [t('teleDistill'), snap.counts.distillRequests],
-    [t('teleConsolidate'), snap.counts.consolidations],
-  ]
+  return state
+}
+
+/**
+ * 今日速览：三个主指标（记忆 / 开放 / 清晰度）+ 近 7 天三个次级计数 + 健康分环。
+ * 取代原先常驻的九格日报条——主次分层，其余计数下沉到「管家日志」tab。
+ */
+function TodayHero({ t, overview }: { t: T; overview: ReturnType<typeof usePalaceOverview> }): React.ReactElement {
+  const { stats, telemetry, health, failed } = overview
+  if (failed !== null) {
+    return <section className={styles.panelCard}><div className={styles.expandLoading}>{t('teleFailed')}：{failed}</div></section>
+  }
+  if (telemetry === null) {
+    return <section className={styles.panelCard}><div className={styles.expandLoading}>{t('teleLoading')}</div></section>
+  }
+  const counts = telemetry.counts
   return (
     <section className={styles.panelCard}>
-      <div className={styles.panelCardTitle}>
-        <h4>{t('teleTitle')}</h4>
-        {/* 隐私元数据：叹号图标 + 短标签 + hover/聚焦弹出长说明，挂在卡片标题右侧。 */}
+      <div className={styles.hero}>
+        <div className={styles.heroMetrics}>
+          <Metric label={t('kpiTotal')} value={stats?.total ?? 0}
+            tail={`${t('teleGroupRecent')} +${String(counts.writes)}`} />
+          <Metric label={t('kpiActive')} value={stats?.active ?? 0}
+            tail={`${t('kpiForgotten')} ${String(stats?.forgotten ?? 0)}`} />
+          <Metric label={t('kpiSignal')} value={`${String(Math.round((stats?.signalRatio ?? 0) * 100))}%`}
+            tail={t('cardRedacted', { n: stats?.redacted ?? 0 })} />
+        </div>
+        <div className={styles.heroSide}>
+          <Metric label={t('teleWrites')} value={counts.writes} secondary />
+          <Metric label={t('teleIngest')} value={counts.ingestRequests} secondary />
+          <Metric label={t('teleConsolidate')} value={counts.consolidations} secondary />
+          <HealthRing score={health?.overall ?? 0} />
+        </div>
+      </div>
+      <div className={styles.heroFoot}>
+        <span className={styles.sectionHint}>
+          {health === null ? t('healthLoading') : t('healthEvaluatedAt', { time: relTime(t, health.evaluatedAt) })}
+        </span>
+        {/* 隐私元数据：叹号图标 + 短标签 + hover/聚焦弹出长说明。 */}
         <span className={styles.telePrivacy} role="note" aria-label={t('telePrivacyHint')} tabIndex={0}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.2"/>
@@ -890,43 +1002,314 @@ function TelemetryBar({ t, scope }: {
           <span className={styles.telePrivacyTip} role="tooltip">{t('telePrivacyTip')}</span>
         </span>
       </div>
-      <div className={styles.teleBar}>
-        {/* 左：规模 2×2；右：近 7 天 5 格。两区等高，组标题居左上小灰字。 */}
-        <div className={styles.teleCol}>
-          <span className={styles.teleColLabel}>{t('teleGroupScale')}</span>
-          <div className={styles.teleGrid}>
-            <div className={styles.teleStat}>
-              <span>{t('kpiTotal')}</span>
-              <b>{stats?.total ?? 0}</b>
-            </div>
-            <div className={styles.teleStat}>
-              <span>{t('kpiActive')}</span>
-              <b>{stats?.active ?? 0}</b>
-            </div>
-            <div className={styles.teleStat}>
-              <span>{t('kpiForgotten')}</span>
-              <b>{stats?.forgotten ?? 0}</b>
-            </div>
-            <div className={styles.teleStat} role="meter" aria-valuemin={0} aria-valuemax={100}
-              aria-valuenow={Math.round((stats?.signalRatio ?? 0) * 100)} aria-label={t('kpiSignal')}>
-              <span>{t('kpiSignal')}</span>
-              <b>{`${String(Math.round((stats?.signalRatio ?? 0) * 100))}%`}</b>
-            </div>
-          </div>
-        </div>
-        <div className={styles.teleCol}>
-          <span className={styles.teleColLabel}>{t('teleGroupRecent')}</span>
-          <div className={`${styles.teleGrid} ${styles.teleGridRecent}`}>
-            {items.map(([label, value]) => (
-              <div key={label} className={styles.teleStat}>
-                <span>{label}</span>
-                <b>{value}</b>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
     </section>
+  )
+}
+
+/** 历史回填 API 的估算结构（GET /api/engram/history-backfill）。 */
+interface BackfillEstimateView {
+  readonly rules: {
+    readonly days: number
+    readonly maxTurnsPerSession: number
+    readonly maxTotalTurns: number
+    readonly includeSubagents: boolean
+    readonly includeSeeded: boolean
+    readonly includeNoCwd: boolean
+  }
+  readonly candidates: number
+  readonly eligibleTurns: number
+  readonly pendingTurns: number
+  readonly alreadyIngested: number
+  readonly skipped: {
+    readonly subagent: number
+    readonly seeded: number
+    readonly noCwd: number
+    readonly tooOld: number
+    readonly unreadable: number
+  }
+  readonly truncated: boolean
+  readonly unavailable?: string
+}
+
+/** 宿主已注册的 provider 与模型清单（GET /api/engram/models）。 */
+interface ModelsView {
+  readonly providers: readonly { readonly id: string; readonly name: string; readonly models: readonly { readonly id: string; readonly name: string }[] }[]
+  readonly failures: readonly string[]
+}
+
+/** 历史回填任务状态（GET /api/engram/history-backfill/status）。 */
+interface BackfillStatusView {
+  readonly progress: {
+    readonly state: 'running' | 'done' | 'cancelled' | 'failed'
+    readonly sessionsTotal: number
+    readonly sessionsDone: number
+    readonly turnsPlanned: number
+    readonly turnsDone: number
+    readonly memoriesWritten: number
+    readonly turnsSkipped: number
+    readonly turnsFailed: number
+    readonly skipReasons: Readonly<Record<string, number>>
+    readonly currentSession?: string
+  }
+  readonly failures: readonly { readonly sessionId: string; readonly turn: number; readonly reason: string }[]
+  readonly error?: string
+}
+
+/** 跳过原因（摄取管线的英文枚举）→ 词典键。 */
+const SKIP_KEY: Record<string, EngramKey> = {
+  'low-activity': 'skipLowActivity',
+  chitchat: 'skipChitchat',
+  'capture-forbidden': 'skipForbidden',
+  'no-user-content': 'skipNoContent',
+  'already-ingested': 'skipAlready',
+  'no-such-turn': 'skipNoTurn',
+  'no-previous-turn': 'skipNoTurn',
+  'no-route-in-log': 'skipNoRoute',
+  unparsable: 'skipUnparsable',
+}
+
+/** 跳过原因的本地化标签（未知枚举回退原值）。 */
+function skipLabel(t: T, reason: string): string {
+  const key = SKIP_KEY[reason]
+  return key === undefined ? reason : t(key)
+}
+
+/**
+ * 历史回填：导入规则由用户选择（时间窗 / 轮数上限 / 三类会话过滤），
+ * 先估算（零成本）再执行；运行中每 1.5 秒轮询进度，可暂停续做。
+ */
+function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): React.ReactElement {
+  /** 规则（持久化）：时间窗与过滤开关以字符串存，便于 localStorage 往返。 */
+  const [days, setDays] = usePersistedState<string>('backfill.days', '7', ['7', '30', '90', '0'])
+  const [maxTurns, setMaxTurns] = usePersistedString('backfill.maxTurns', '20')
+  const [maxTotal, setMaxTotal] = usePersistedString('backfill.maxTotal', '200')
+  const [subagents, setSubagents] = usePersistedState<string>('backfill.subagents', 'false', ['false', 'true'])
+  const [seeded, setSeeded] = usePersistedState<string>('backfill.seeded', 'false', ['false', 'true'])
+  const [noCwd, setNoCwd] = usePersistedState<string>('backfill.noCwd', 'false', ['false', 'true'])
+  /** 辅助模型选择：'' = 自动（用当前在用的模型）；否则 `provider::model`。 */
+  const [modelChoice, setModelChoice] = usePersistedString('backfill.model', '')
+  const [models, setModels] = useState<ModelsView | null>(null)
+  const [estimate, setEstimate] = useState<BackfillEstimateView | null>(null)
+  const [status, setStatus] = useState<BackfillStatusView | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  // 已注册模型清单：只拉一次（模型注册表变化不频繁，切换 tab 会重新挂载）。
+  useEffect(() => {
+    let cancelled = false
+    api<ModelsView>('models')
+      .then((data) => { if (!cancelled) setModels(data) })
+      .catch(() => { if (!cancelled) setModels({ providers: [], failures: [] }) })
+    return () => { cancelled = true }
+  }, [])
+
+  /** 显式选中的辅助模型（未选 = 交给后端用当前在用的模型）。 */
+  const selection = ((): { provider: string; model: string } | undefined => {
+    if (modelChoice === '') return undefined
+    const separator = modelChoice.indexOf('::')
+    if (separator <= 0) return undefined
+    return { provider: modelChoice.slice(0, separator), model: modelChoice.slice(separator + 2) }
+  })()
+
+  const params = new URLSearchParams({
+    days, maxTurnsPerSession: maxTurns, maxTotalTurns: maxTotal,
+    includeSubagents: subagents, includeSeeded: seeded, includeNoCwd: noCwd,
+  })
+  if (selection !== undefined) {
+    params.set('provider', selection.provider)
+    params.set('model', selection.model)
+  }
+  const query = params.toString()
+
+  const reload = useCallback((): void => {
+    setBusy(true)
+    api<{ estimate: BackfillEstimateView }>(`history-backfill?${query}`)
+      .then((data) => { setEstimate(data.estimate) })
+      .catch((error: Error) => { toast.push('error', error.message) })
+      .finally(() => { setBusy(false) })
+  }, [query, toast])
+  useEffect(() => { reload() }, [reload])
+
+  // 进度轮询：运行中每 1.5 秒一次；空闲只拉一次拿最终态。
+  const running = status?.progress.state === 'running'
+  useEffect(() => {
+    let cancelled = false
+    const poll = (): void => {
+      api<BackfillStatusView>('history-backfill/status')
+        .then((data) => { if (!cancelled) setStatus(data) })
+        .catch(() => { /* 轮询失败静默重试，不打断面板 */ })
+    }
+    poll()
+    if (!running) return () => { cancelled = true }
+    const timer = window.setInterval(poll, 1500)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [running])
+
+  const start = (): void => {
+    setBusy(true)
+    api<{ ok: boolean; status: BackfillStatusView }>('history-backfill/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        days: Number(days), maxTurnsPerSession: Number(maxTurns), maxTotalTurns: Number(maxTotal),
+        includeSubagents: subagents === 'true', includeSeeded: seeded === 'true', includeNoCwd: noCwd === 'true',
+        ...(selection === undefined ? {} : { provider: selection.provider, model: selection.model }),
+      }),
+    })
+      .then((data) => { setStatus(data.status) })
+      .catch((error: Error) => { toast.push('error', error.message) })
+      .finally(() => { setBusy(false) })
+  }
+  const pause = (): void => {
+    api<{ status: BackfillStatusView }>('history-backfill/cancel', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    })
+      .then((data) => { setStatus(data.status) })
+      .catch((error: Error) => { toast.push('error', error.message) })
+  }
+
+  const progress = status?.progress
+  const stateLabel = progress === undefined
+    ? ''
+    : progress.state === 'running' ? t('backfillStateRunning')
+      : progress.state === 'done' ? t('backfillStateDone')
+        : progress.state === 'cancelled' ? t('backfillStateCancelled')
+          : t('backfillStateFailed')
+  const percent = progress === undefined || progress.turnsPlanned === 0
+    ? 0
+    : Math.min(100, Math.round((progress.turnsDone / progress.turnsPlanned) * 100))
+
+  return (
+    <div className={styles.backfill}>
+      <p className={styles.backfillIntro}>{t('backfillIntro')}</p>
+
+      {/* 导入规则：全部由用户选择（持久化，下次进来沿用）。 */}
+      <div className={styles.backfillRules}>
+        <label className={styles.backfillRule}>
+          <span>{t('backfillDays')}</span>
+          <select className={styles.input} value={days} onChange={event => { setDays(event.target.value) }}>
+            <option value="7">{t('backfillDaysUnit', { n: 7 })}</option>
+            <option value="30">{t('backfillDaysUnit', { n: 30 })}</option>
+            <option value="90">{t('backfillDaysUnit', { n: 90 })}</option>
+            <option value="0">{t('backfillDaysAll')}</option>
+          </select>
+        </label>
+        <label className={styles.backfillRule}>
+          <span>{t('backfillMaxTurns')}</span>
+          <input className={styles.input} type="number" min={1} max={500} value={maxTurns}
+            onChange={event => { setMaxTurns(event.target.value) }} />
+        </label>
+        <label className={styles.backfillRule}>
+          <span>{t('backfillMaxTotal')}</span>
+          <input className={styles.input} type="number" min={1} max={5000} value={maxTotal}
+            onChange={event => { setMaxTotal(event.target.value) }} />
+        </label>
+        {/* 辅助模型：默认「自动」= 回填时用你当前在用的模型（历史日志里的旧模型可能已不可用）。 */}
+        <label className={styles.backfillRule}>
+          <span>{t('backfillModel')}</span>
+          <select className={styles.input} value={modelChoice}
+            onChange={event => { setModelChoice(event.target.value) }}>
+            <option value="">{t('backfillModelAuto')}</option>
+            {(models?.providers ?? []).map(provider => (
+              <optgroup key={provider.id} label={provider.name}>
+                {provider.models.map(model => (
+                  <option key={`${provider.id}::${model.id}`} value={`${provider.id}::${model.id}`}>{model.name}</option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className={styles.backfillToggles}>
+        <label className={styles.backfillToggle}>
+          <input type="checkbox" checked={subagents === 'true'}
+            onChange={event => { setSubagents(event.target.checked ? 'true' : 'false') }} />
+          {t('backfillIncludeSubagents')}
+        </label>
+        <label className={styles.backfillToggle}>
+          <input type="checkbox" checked={seeded === 'true'}
+            onChange={event => { setSeeded(event.target.checked ? 'true' : 'false') }} />
+          {t('backfillIncludeSeeded')}
+        </label>
+        <label className={styles.backfillToggle}>
+          <input type="checkbox" checked={noCwd === 'true'}
+            onChange={event => { setNoCwd(event.target.checked ? 'true' : 'false') }} />
+          {t('backfillIncludeNoCwd')}
+        </label>
+      </div>
+
+      {/* 估算：零成本先看数（不写库、不调 LLM）。 */}
+      <div className={styles.backfillEstimate}>
+        {estimate === null
+          ? <span className={styles.backfillMuted}>{t('backfillEstimating')}</span>
+          : estimate.unavailable !== undefined
+            ? <span className={styles.backfillMuted}>{estimate.unavailable}</span>
+            : (
+              <>
+                <div className={styles.backfillNumbers}>
+                  <span className={styles.backfillMetric}>{t('backfillCandidates', { n: estimate.candidates })}</span>
+                  <span className={styles.backfillMetric}>{t('backfillPendingTurns', { n: estimate.pendingTurns })}</span>
+                  <span className={styles.backfillMetric}>{t('backfillAlready', { n: estimate.alreadyIngested })}</span>
+                </div>
+                <div className={styles.backfillMuted}>
+                  {t('backfillSkippedDetail', {
+                    subagent: estimate.skipped.subagent,
+                    seeded: estimate.skipped.seeded,
+                    noCwd: estimate.skipped.noCwd,
+                    tooOld: estimate.skipped.tooOld,
+                    unreadable: estimate.skipped.unreadable,
+                  })}
+                </div>
+                {estimate.truncated && <div className={styles.backfillMuted}>{t('backfillTruncated')}</div>}
+              </>
+            )}
+      </div>
+
+      <div className={styles.backfillActions}>
+        <button type="button" className={styles.button} disabled={busy} onClick={reload}>{t('backfillReestimate')}</button>
+        <button type="button" className={`${styles.button} ${styles.primary}`}
+          disabled={busy || running || estimate === null || estimate.unavailable !== undefined || estimate.pendingTurns === 0}
+          onClick={start}>{t('backfillStart')}</button>
+        <button type="button" className={styles.button} disabled={!running} onClick={pause}>{t('backfillPause')}</button>
+      </div>
+      {progress !== undefined && (
+        <div className={styles.backfillProgress}>
+          <div className={styles.backfillProgressHead}>
+            <span>{stateLabel}</span>
+            <span>{t('backfillProgressTurns', { done: progress.turnsDone, total: progress.turnsPlanned })}</span>
+          </div>
+          <div className={styles.progressBar}><i style={{ width: `${String(percent)}%` }} /></div>
+          <div className={styles.backfillMeta}>
+            <span>{t('backfillProgressSessions', { done: progress.sessionsDone, total: progress.sessionsTotal })}</span>
+            <span>{t('backfillWritten', { n: progress.memoriesWritten })}</span>
+            <span>{t('backfillTurnsSkipped', { n: progress.turnsSkipped })}</span>
+            <span>{t('backfillTurnsFailed', { n: progress.turnsFailed })}</span>
+          </div>
+          {/* 跳过原因分布：让「写入很少」可解释（多为节流跳过而非失败）。 */}
+          {Object.keys(progress.skipReasons).length > 0 && (
+            <div className={styles.backfillMeta}>
+              <span>{t('backfillSkipReasons')}</span>
+              {Object.entries(progress.skipReasons).sort(([, a], [, b]) => b - a).map(([reason, count]) => (
+                <span key={reason}>{`${skipLabel(t, reason)} ${String(count)}`}</span>
+              ))}
+            </div>
+          )}
+          {(status?.failures ?? []).length > 0 && (
+            <ul className={styles.backfillFailures}>
+              <li className={styles.backfillMuted}>{t('backfillFailures')}</li>
+              {status!.failures.slice(0, 3).map((failure, index) => (
+                <li key={`${failure.sessionId}-${String(failure.turn)}-${String(index)}`}>
+                  {`${failure.sessionId.slice(-12)} · ${String(failure.turn)} · ${failure.reason}`}
+                </li>
+              ))}
+            </ul>
+          )}
+          {(status?.failures ?? []).length > 0 && (
+            <div className={styles.backfillMuted}>{t('backfillRouteHint')}</div>
+          )}
+          {status?.error !== undefined && <div className={styles.backfillMuted}>{status.error}</div>}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -972,7 +1355,7 @@ function ExportMenu({ t, scope }: { t: T; scope: 'user' | 'project' | 'shared' }
 /** 设置页「记忆库」section 主组件（t 由渲染器按 locale: NS 声明合成）。 */
 export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement {
   const toast = useToast()
-  /** 全局 scope（持久化）：Header 三宫格是唯一切换器，驱动日报条、导览管家全部卡片、陈展列表与导出。 */
+  /** 全局 scope（持久化）：Header 三宫格是唯一切换器，驱动今日速览、各视图卡片、陈展列表与导出。 */
   const [scope, setScope] = usePersistedState<'user' | 'project' | 'shared'>('library.scope', 'user', ['user', 'project', 'shared'])
   /** 库顶 status / kind / q 过滤器（持久化）。 */
   const [status, setStatus] = usePersistedState<string>('library.status', 'all', ['all', 'active', 'archived', 'forgotten'])
@@ -980,7 +1363,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
   const [q, setQ] = usePersistedString('library.q', '')
   /** 陈展列表排序（持久化）：time = 开馆时间倒序；tour = 固定巡游路线桩位顺序。 */
   const [sort, setSort] = usePersistedState<'time' | 'tour'>('library.sort', 'time', ['time', 'tour'])
-  /** 今日待回忆条数（Header 角标）：与导览管家的待回忆卡同源。 */
+  /** 今日待回忆条数（Header 角标）：与今日视图的待回忆卡同源。 */
   const [dueCount, setDueCount] = useState(0)
   /** 脱敏筛选已合并到顶部 KPI 与 tag 视觉，不再作为过滤器。 */
   const [redacted] = useState('all')
@@ -994,8 +1377,10 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   /** 批量遗忘的两段式确认。 */
   const [confirmForget, setConfirmForget] = useState(false)
-  /** Tab 视图：library 列表 / observability 召回与活动。 */
-  const [activeTab, setActiveTab] = useState<'library' | 'observability'>('observability')
+  /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / log 管家日志 / backfill 历史回填。 */
+  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'log' | 'backfill'>('today')
+  /** 今日速览、健康分构成与房间目录共用一份总览数据（同一路由不重复请求）。 */
+  const overview = usePalaceOverview(scope)
 
   const reload = useCallback((): void => { setReloadTick(tick => tick + 1) }, [])
 
@@ -1007,13 +1392,25 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
   }, [scope])
   useEffect(() => { refreshDue() }, [refreshDue])
 
-  /** 角标点击：切到导览管家并滚到今日待回忆卡（待 tab 切换渲染完成后再滚）。 */
+  /** 角标点击：切到今日速览并滚到今日待回忆卡（待 tab 切换渲染完成后再滚）。 */
   const goToDue = (): void => {
-    setActiveTab('observability')
+    setActiveTab('today')
     requestAnimationFrame(() => {
       document.getElementById('engram-review-due')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     })
   }
+
+  /** 打开详情抽屉：陈展列表已有该行时复用真实行，只有 id 的列表用最小占位行（抽屉自行拉 review）。 */
+  const openReview = useCallback((id: string): void => {
+    const record = list?.records.find(row => row.id === id)
+    setExpanded({
+      kind: 'review',
+      record: record ?? ({
+        id: id as never, scope, kind: 'fact', content: '', importance: 0.5, confidence: 0.5,
+        status: 'active', createdAt: Date.now(), accessCount: 0, sourceSessionId: null, sourceRound: null,
+      } as MemoryRow),
+    })
+  }, [list, scope])
 
   useEffect(() => {
     let cancelled = false
@@ -1141,7 +1538,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
               </button>
             ))}
           </div>
-          {/* 今日待回忆角标：有待回忆时在 Header 一眼可见，点击直达导览管家的待回忆卡。 */}
+          {/* 今日待回忆角标：有待回忆时在 Header 一眼可见，点击直达今日视图的待回忆卡。 */}
           {dueCount > 0 && (
             <button type="button" className={styles.dueBadge}
               title={t('dueBadgeLabel', { n: dueCount })} aria-label={t('dueBadgeLabel', { n: dueCount })}
@@ -1155,16 +1552,14 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
         </div>
       </div>
 
-      {/* 管家日报整体条（tabs 上方常驻）：宫殿规模 + 近 7 天活动；scope 跟随 Header 全局三宫格。 */}
-      <TelemetryBar t={t} scope={scope} />
-
-      {/* 顶部 Tab Bar：两个标签页（导览管家 / 宫殿陈展；按"管家先"语义排序）。 */}
+      {/* 顶部 Tab Bar：五个视图（今日 / 宫殿 / 走廊 / 日志 / 回填；按「先管家后陈展」语义排序）。
+          原常驻管家日报条已收进「今日」视图的速览卡，其余计数移入「日志」。 */}
       <div className={styles.tabs} role="tablist">
         <button type="button" role="tab"
-          className={activeTab === 'observability' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'observability'}
-          onClick={() => { setActiveTab('observability') }}>
-          {t('tabObservability')}
+          className={activeTab === 'today' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
+          aria-selected={activeTab === 'today'}
+          onClick={() => { setActiveTab('today') }}>
+          {t('tabToday')}
         </button>
         <button type="button" role="tab"
           className={activeTab === 'library' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
@@ -1173,10 +1568,31 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
           {t('tabLibrary')}
           <small>{t('tabLibraryCount', { n: list?.total ?? 0 })}</small>
         </button>
+        <button type="button" role="tab"
+          className={activeTab === 'corridor' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
+          aria-selected={activeTab === 'corridor'}
+          onClick={() => { setActiveTab('corridor') }}>
+          {t('tabCorridor')}
+        </button>
+        <button type="button" role="tab"
+          className={activeTab === 'log' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
+          aria-selected={activeTab === 'log'}
+          onClick={() => { setActiveTab('log') }}>
+          {t('tabLog')}
+        </button>
+        <button type="button" role="tab"
+          className={activeTab === 'backfill' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
+          aria-selected={activeTab === 'backfill'}
+          onClick={() => { setActiveTab('backfill') }}>
+          {t('tabBackfill')}
+        </button>
       </div>
 
       {activeTab === 'library' && (
         <div className={styles.tabPanel}>
+          <div className={styles.sectionHead}>
+            <h4 className={styles.sectionTitle}>{t('tabLibrary')}</h4>
+          </div>
           <div className={styles.filters}>
             <div className={styles.segGroup}>
               {([
@@ -1266,7 +1682,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
                   <div className={styles.itemBody}>
                     <div className={styles.itemTags}>
                       <span className={`${styles.pill} ${styles[`status${record.status.charAt(0).toUpperCase()}${record.status.slice(1)}`] ?? ''}`}>{t(STATUS_KEY[record.status])}</span>
-                      <span className={`${styles.pill} ${styles.kind}`}>{kindLabel(t, record.kind)}</span>
+                      <span className={roomPillClass(record.kind)}>{kindLabel(t, record.kind)}</span>
                       {record.slot !== undefined && (
                         <span className={styles.pill}>{record.slot.room}#{record.slot.index}</span>
                       )}
@@ -1278,7 +1694,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
                           {record.outcome === 'success' ? t('tagOutcomeSuccess') : t('tagOutcomeFailure')}
                         </span>
                       )}
-                      <span className={styles.pill} title={fmtTime(record.createdAt)} style={{ marginLeft: 'auto' }}>
+                      <span className={styles.itemStamp} title={fmtTime(record.createdAt)}>
                         {t(SCOPE_KEY[record.scope])} · {relTime(t, record.createdAt)}
                       </span>
                     </div>
@@ -1317,43 +1733,93 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
         </div>
       )}
 
-      {activeTab === 'observability' && (
+      {activeTab === 'today' && (
         <div className={styles.tabPanel}>
+          {/* 今日速览：主指标 + 健康环，替代原常驻日报条。 */}
+          <TodayHero t={t} overview={overview} />
           <div className={styles.layout}>
             <div className={styles.mainCol}>
-              <section className={styles.panelCard}>
-                <h4 className={styles.panelCardTitle}>{t('healthTitle')}</h4>
-                <HealthScoreCard t={t} scope={scope} />
+              <section className={styles.section} id="engram-review-due">
+                <div className={styles.sectionHead}>
+                  <h4 className={styles.sectionTitle}>{t('reviewQueueTitle')}</h4>
+                  <span className={styles.sectionHint}>{t('reviewQueueHint')}</span>
+                </div>
+                <div className={styles.panelCard}>
+                  <ReviewQueueCard t={t} scope={scope} toast={toast} onAnswered={refreshDue} />
+                </div>
               </section>
-              <section className={styles.panelCard}>
-                <h4 className={styles.panelCardTitle}>{t('sectionCorridor')}</h4>
-                <CorridorPanel t={t} scope={scope} onSelect={(id) => { setExpanded({ kind: 'review', record: list?.records.find(record => record.id === id) ?? ({ id: id as never, scope, kind: 'fact', content: '', importance: 0.5, confidence: 0.5, status: 'active', createdAt: Date.now(), accessCount: 0, sourceSessionId: null, sourceRound: null } as MemoryRow) }) }} />
-              </section>
-              <section className={styles.panelCard}>
-                <h4 className={styles.panelCardTitle}>{t('refurbTitle')}</h4>
-                {/* 翻新与走廊同列：动作类信息聚簇（左 = 宫殿全局 + 整改 + 试走，试走放在最后）。 */}
-                <RefurbCard t={t} scope={scope} onSelect={(id) => { setExpanded({ kind: 'review', record: list?.records.find(record => record.id === id) ?? ({ id: id as never, scope, kind: 'fact', content: '', importance: 0.5, confidence: 0.5, status: 'active', createdAt: Date.now(), accessCount: 0, sourceSessionId: null, sourceRound: null } as MemoryRow) }) }} onAfterAction={reload} toast={toast} />
-              </section>
-              <section className={styles.panelCard}>
-                <h4 className={styles.panelCardTitle}>{t('sectionBench')}</h4>
-                <RecallBench t={t} scope={scope} />
+              <section className={styles.section}>
+                <div className={styles.sectionHead}>
+                  <h4 className={styles.sectionTitle}>{t('refurbTitle')}</h4>
+                </div>
+                <div className={styles.panelCard}>
+                  <RefurbCard t={t} scope={scope} onSelect={openReview} onAfterAction={reload} toast={toast} />
+                </div>
               </section>
             </div>
             <aside className={styles.sideCol}>
-              <section className={styles.panelCard} id="engram-review-due">
-                <h4 className={styles.panelCardTitle}>{t('reviewQueueTitle')}</h4>
-                <ReviewQueueCard t={t} scope={scope} toast={toast} onAnswered={refreshDue} />
+              <section className={styles.section}>
+                <div className={styles.sectionHead}>
+                  <h4 className={styles.sectionTitle}>{t('roomsTitle')}</h4>
+                  <span className={styles.sectionHint}>{t('roomsHint')}</span>
+                </div>
+                <div className={styles.panelCard}>
+                  <RoomDirectory t={t} byKind={overview.byKind} />
+                </div>
               </section>
-              <section className={styles.panelCard}>
-                <h4 className={styles.panelCardTitle}>{t('tourProposalTitle')}</h4>
-                <TourProposalCard t={t} scope={scope} onSelect={(id) => { setExpanded({ kind: 'review', record: list?.records.find(record => record.id === id) ?? ({ id: id as never, scope, kind: 'fact', content: '', importance: 0.5, confidence: 0.5, status: 'active', createdAt: Date.now(), accessCount: 0, sourceSessionId: null, sourceRound: null } as MemoryRow) }) }} />
-              </section>
-              <section className={styles.panelCard}>
-                <h4 className={styles.panelCardTitle}>{t('sectionActivity')}</h4>
-                <ActivityFeed t={t} />
+              <section className={styles.section}>
+                <div className={styles.sectionHead}>
+                  <h4 className={styles.sectionTitle}>{t('tourProposalTitle')}</h4>
+                </div>
+                <div className={styles.panelCard}>
+                  <TourProposalCard t={t} scope={scope} onSelect={openReview} />
+                </div>
               </section>
             </aside>
           </div>
+        </div>
+      )}
+
+      {activeTab === 'corridor' && (
+        <div className={styles.tabPanel}>
+          <div className={styles.mainCol}>
+            <section className={styles.section}>
+              <div className={styles.sectionHead}>
+                <h4 className={styles.sectionTitle}>{t('sectionCorridor')}</h4>
+              </div>
+              <div className={styles.panelCard}>
+                <CorridorPanel t={t} scope={scope} onSelect={openReview} />
+              </div>
+            </section>
+            <section className={styles.section}>
+              <div className={styles.sectionHead}>
+                <h4 className={styles.sectionTitle}>{t('benchTitle')}</h4>
+                <span className={styles.sectionHint}>{t('benchNote')}</span>
+              </div>
+              <div className={styles.panelCard}>
+                <RecallBench t={t} scope={scope} />
+              </div>
+            </section>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'log' && (
+        <div className={styles.tabPanel}>
+          <LogPanel t={t} telemetry={overview.telemetry} />
+        </div>
+      )}
+
+      {activeTab === 'backfill' && (
+        <div className={styles.tabPanel}>
+          <section className={styles.section}>
+            <div className={styles.sectionHead}>
+              <h4 className={styles.sectionTitle}>{t('backfillRulesTitle')}</h4>
+            </div>
+            <div className={styles.panelCard}>
+              <HistoryBackfillCard t={t} toast={toast} />
+            </div>
+          </section>
         </div>
       )}
 

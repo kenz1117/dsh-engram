@@ -131,8 +131,9 @@ export interface WriteInput {
   readonly imageryScore?: number
   /** 桩位（调用方经排桩逻辑分配；缺省表示未排桩）。 */
   readonly slot?: Slot
-  /** 初始复习排期（调用方决定；缺省表示不进入复习调度）。 */
-  readonly initialReviewAt?: number
+  /** 初始复习排期：毫秒时间戳 = 指定首次到期；null = 明确不进入复习调度（历史回填用，
+   *  避免一次性回填的条目同时涌入今日复习队列）；缺省 = 由写入期自动化决定。 */
+  readonly initialReviewAt?: number | null
 }
 
 /** 检索请求。 */
@@ -172,6 +173,8 @@ export interface TimelineQuery {
   readonly until?: number
   readonly topic?: string
   readonly scopes: readonly EngramScope[]
+  /** 排序：缺省 'time' 按创建时间倒序；'tour' 按固定巡游路线桩位顺序（未上路线者按创建时间排末尾）。 */
+  readonly order?: 'time' | 'tour'
   readonly limit?: number
 }
 

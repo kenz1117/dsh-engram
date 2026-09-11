@@ -44,7 +44,7 @@ export interface EngramStore {
   getMany(ids: readonly MemoryId[]): Promise<MemoryRecord[]>
   /**
    * 走廊：从 id 出发走 related/supersedes/contradicts 走廊边，depth 跳内返回
-   * 全部可到的邻居房间（不含起点本身，去重）。无邻居返回空数组。
+   * 全部可到的邻居记忆（不含起点本身，去重）。无邻居返回空数组。
    */
   neighbors(id: MemoryId, depth: number): Promise<MemoryRecord[]>
   /**
@@ -52,7 +52,7 @@ export interface EngramStore {
    * @param queryVector - 查询向量；undefined 表示嵌入不可用（结果 degraded）。
    */
   search(query: SearchQuery, queryVector: Float32Array | undefined): Promise<SearchResult>
-  /** 时间线查询，按 createdAt 倒序。 */
+  /** 时间线查询：缺省按 createdAt 倒序，order='tour' 时按固定巡游路线桩位顺序。 */
   timeline(query: TimelineQuery): Promise<MemoryRecord[]>
   /** 修正：旧条目转 archived，建立 supersedes 边（from=新，to=旧），返回新条目。 */
   update(input: UpdateInput): Promise<MemoryRecord>

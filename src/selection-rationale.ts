@@ -1,22 +1,22 @@
 /**
- * 注入归因：把画像中每条房间按启发式打标签（recent / bright / corridor-hit / strong-evidence），
- * 输出成 XML 注解块附加在画像文本前，让 agent 知道「为什么这间进了宫」。
+ * 注入归因：把画像中每条记忆按启发式打标签（recent / bright / corridor-hit / strong-evidence），
+ * 输出成 XML 注解块附加在画像文本前，让 agent 知道「为什么这条进了宫」。
  * model-visible ⟺ logged：rationale 也写进会话日志（连同画像正文）。
  * @module @kenz1117/dsh-engram/selection-rationale
  */
 
 import type { MemoryRecord } from './types.ts'
 
-/** 单条房间的入选原因（可叠加）。 */
+/** 单条记忆的入选原因（可叠加）。 */
 export type Reason = 'recent' | 'bright' | 'corridor-hit' | 'strong-evidence'
 
-/** 给定一组入选房间，返回归因 XML 字符串；空 rooms 返回空串。 */
+/** 给定一组入选记忆，返回归因 XML 字符串；空 rooms 返回空串。 */
 export function buildSelectionRationale(records: readonly MemoryRecord[]): string {
   if (records.length === 0) return ''
   const now = Date.now()
   const lines: string[] = [
     '<engram_selection_rationale>',
-    `本轮画像共 ${String(records.length)} 间房间，挑选理由如下：`,
+    `本轮画像共 ${String(records.length)} 条记忆，挑选理由如下：`,
     '',
   ]
   for (const record of records) {

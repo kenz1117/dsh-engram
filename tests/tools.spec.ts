@@ -270,6 +270,35 @@ describe('engram tools', () => {
     await expect(tools.get('engram_timeline')!.execute({ scope: 'user', since: 'not-a-date' }, fakeExec)).rejects.toThrow(/since/)
   })
 
+  it('engram_timeline order=tour 改按巡游路线桩位顺序并带宫殿坐标', async () => {
+    // 独立库：同库既有条目会占满 20 条上限，把本轮两条挤出结果。
+    const tourStore = await openEngramStore(join(dir, 'tour.db'))
+    try {
+      const tourTools = new Map<string, ExecutableTool>(
+        createEngramTools({
+          openStore: async () => tourStore,
+          embedder: Promise.resolve(undefined),
+          call: undefined,
+          routeOverride: undefined,
+          queryRewrite: false,
+          exportDir: join(dir, 'exports'),
+        }).map(tool => [tool.name, tool]),
+      )
+      const a = await tourStore.write({ scope: 'user', kind: 'episode', content: '先上桩的事件' })
+      await new Promise(resolve => setTimeout(resolve, 3))
+      const b = await tourStore.write({ scope: 'user', kind: 'episode', content: '后上桩的事件' })
+      // 缺省时间序：后写的在前（与路线序相反，两条路径可区分）。
+      const byTime = await tourTools.get('engram_timeline')!.execute({ scope: 'user' }, fakeExec) as { text: string }
+      expect(byTime.text.indexOf(b.id)).toBeLessThan(byTime.text.indexOf(a.id))
+      const byTour = await tourTools.get('engram_timeline')!.execute({ scope: 'user', order: 'tour' }, fakeExec) as { text: string }
+      expect(byTour.text.indexOf(a.id)).toBeLessThan(byTour.text.indexOf(b.id))
+      expect(byTour.text).toContain('往事廊#')
+      expect(byTour.text).toContain('按固定巡游路线桩位顺序')
+    } finally {
+      await tourStore.close()
+    }
+  })
+
   it('嵌入可用时 engram_save 存向量、engram_search 走语义道', async () => {
     // 确定性伪嵌入器：向量 = 内容首字符码点归一化，保证同内容同向量。
     const pseudo = {
@@ -298,11 +327,17 @@ describe('engram tools', () => {
     expect(result.text).toContain('记忆甲内容')
   })
 
-  it('工具集恰为 15 个且名字正确', () => {
+  it('工具集恰为 16 个且名字正确', () => {
     expect([...tools.keys()].sort()).toEqual([
       'engram_audit_forgotten', 'engram_distill', 'engram_examine', 'engram_export', 'engram_forget',
-      'engram_neighbors', 'engram_report', 'engram_review', 'engram_review_queue', 'engram_save',
-      'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
+      'engram_ingest_history', 'engram_neighbors', 'engram_report', 'engram_review', 'engram_review_queue',
+      'engram_save', 'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
     ])
+  })
+
+  it('engram_ingest_history 缺省只估算；环境不支持时明确说明', async () => {
+    // 未注入 historyBackfill（= 当前组合无会话持久化）时给出可读说明而不是抛错。
+    const result = await tools.get('engram_ingest_history')!.execute({}, fakeExec) as { text: string }
+    expect(result.text).toContain('历史回填不可用')
   })
 })

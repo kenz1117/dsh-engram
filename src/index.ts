@@ -6,7 +6,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
@@ -16,6 +16,11 @@ import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { createLocalEmbedder } from './embedder/local.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import { FINAL_INGEST_TIMEOUT_MS, ingestFinalTurn, ingestPreviousTurn, replayPendingIngests } from './ingest/hook.ts'
+import { estimateHistoryBackfill, runHistoryBackfill } from './ingest/history.ts'
+import type {
+  HistoryBackfillDeps, HistoryBackfillRules, HistoryEstimate, HistoryLogSource, HistoryRunProgress, HistoryRunResult,
+  HistorySessionHeader,
+} from './ingest/history.ts'
 import { runConsolidation } from './consolidation/run.ts'
 import type { IngestRequestEventData } from './ingest/hook.ts'
 import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
@@ -173,13 +178,19 @@ async function preStep(
   openStore: (scope: EngramScope) => Promise<EngramStore>,
   resolved: ResolvedEngramConfig,
   embedder: Promise<EngramEmbedder | undefined>,
-  state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null },
+  state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null; route: LlmRoute | undefined },
   logRequest: (data: IngestRequestEventData) => void,
   { agent, step, turn, signal }: { agent: Agent; step: number; turn: number; signal: AbortSignal },
   next: () => Promise<PreStepDecision>,
 ): Promise<PreStepDecision> {
   const decision = await next()
   if (decision.kind === 'reject') return decision
+  // 记录当前会话在用的路由：历史回填优先复用它——历史日志里的 provider/model 是当年的，
+  // 在当前环境可能已不可用（如换过提供商），用当前模型才跑得通。
+  if (step === 1) {
+    const currentRoute = resolved.routeOverride ?? routeFromEvents(agent.session.snapshotEvents() as unknown as readonly SessionEventLike[])
+    if (currentRoute !== undefined) state.route = currentRoute
+  }
   const mode = resolved.ingest
   if (step === 1 && mode !== 'off') {
     // 重放待补做的末轮摄取（上次会话 disposed 失败/超时的 pending 键）。
@@ -315,16 +326,14 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     decayAfterDays: resolved.decayAfterDays,
   }
 
-  // 分库懒打开：user 恒打开；project 库按项目标识命名（同仓库跨会话共享）。
-  const stores = new Map<EngramScope, Promise<EngramStore>>()
-  const openStore = (scope: EngramScope): Promise<EngramStore> => {
-    const existing = stores.get(scope)
+  // 分库懒打开：按分库文件名缓存连接（user / shared / project-<hash>；项目库按标识命名，同仓库跨会话共享）。
+  const stores = new Map<string, Promise<EngramStore>>()
+
+  /** 打开（或复用）一个分库文件；首次打开时幂等补齐存量排桩。 */
+  const openDb = (dbName: string): Promise<EngramStore> => {
+    const existing = stores.get(dbName)
     if (existing !== undefined) return existing
-    const path = scope === 'user'
-      ? join(resolved.dbDir, 'user.db')
-      : scope === 'shared'
-        ? join(resolved.dbDir, 'shared.db')
-        : join(resolved.dbDir, identity.dbName)
+    const path = join(resolved.dbDir, dbName)
     const created = openEngramStore(path, rankBoost, {
       autoSlot: resolved.autoSlot,
       reviewScheduling: resolved.reviewScheduling,
@@ -337,9 +346,36 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
         if (assigned > 0) console.warn(`[dsh-engram] 存量记忆排桩完成：${assigned} 条已钉入宫殿（${path}）`)
         return store
       })
-    stores.set(scope, created)
+    stores.set(dbName, created)
     return created
   }
+
+  const openStore = (scope: EngramScope): Promise<EngramStore> => openDb(
+    scope === 'user' ? 'user.db' : scope === 'shared' ? 'shared.db' : identity.dbName,
+  )
+
+  /** cwd → 分库文件名（历史回填会对每个历史 cwd 解析一次，避免重复读 git 元数据）。 */
+  const cwdDbNames = new Map<string, string>()
+  /**
+   * 按任意 cwd 的项目标识打开分库（历史回填专用）：历史会话写进它自己项目的库，
+   * 而不是当前工作目录的库——否则跨项目内容会串库。
+   * @param cwd - 历史会话 header 里记录的 cwd。
+   * @returns 该 cwd 对应项目分库的连接。
+   */
+  /** cwd → 分库文件名（缓存，避免重复读 git 元数据与重复迁移检查）。 */
+  const dbNameForCwd = (cwd: string): string => {
+    const cached = cwdDbNames.get(cwd)
+    if (cached !== undefined) return cached
+    const projectIdentity = resolveProjectIdentity(cwd)
+    // 历史 cwd 也可能存在旧命名库（cwd 编码）：同样走一次 rename 迁移，避免看不到旧数据。
+    if (migrateProjectDb(resolved.dbDir, projectIdentity) === 'renamed') {
+      console.warn(`[dsh-engram] 历史项目库已迁移为 origin 命名（${cwd}）`)
+    }
+    cwdDbNames.set(cwd, projectIdentity.dbName)
+    return projectIdentity.dbName
+  }
+
+  const openStoreForProjectCwd = (cwd: string): Promise<EngramStore> => openDb(dbNameForCwd(cwd))
 
   // 嵌入器可选：下载/加载失败不阻塞插件加载，检索降级纯关键词并在结果中标记。
   const embedder: Promise<EngramEmbedder | undefined> = createLocalEmbedder(resolved.modelCacheDir, resolved.hfEndpoint)
@@ -349,6 +385,134 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     })
   void embedder
 
+  // 辅助请求写 engram 自己的操作日志（下游插件禁止向会话日志写未知事件类型）。
+  const logIngestRequest = (data: IngestRequestEventData): void => {
+    void openStore('user').then(store => store.audit('ingest-request', 'AUX', JSON.stringify(data))).catch(() => { /* 审计失败不影响摄取 */ })
+  }
+
+  // preStep 的可变状态：route 记录当前会话在用的路由，历史回填优先复用它。
+  const preStepState: {
+    pendingReplayed: boolean
+    lastProfileAgent: string | null
+    lastProfileHash: string | null
+    route: LlmRoute | undefined
+  } = { pendingReplayed: false, lastProfileAgent: null, lastProfileHash: null, route: undefined }
+
+  // ---- 历史会话回填：把 dsh 持久化的历史会话逐轮摄取进宫殿（面板「历史回填」tab / engram_ingest_history）----
+  /** 会话持久化服务（可选；缺席时历史回填不可用）。 */
+  const persistenceService = (): HistoryLogSource | undefined => {
+    const persistence = ctx.get('sessionPersistence' as never) as
+      | { list(signal?: AbortSignal): Promise<readonly HistorySessionHeader[]>; load(id: string): Promise<{ events: readonly unknown[] }> }
+      | undefined
+    if (persistence === undefined) return undefined
+    return { list: signal => persistence.list(signal), load: id => persistence.load(id) }
+  }
+
+  /** user 分库若已存在则打开（估算用：不因估算产生空库文件）。 */
+  const openUserStoreIfExists = (): Promise<EngramStore | undefined> =>
+    existsSync(join(resolved.dbDir, 'user.db')) ? openStore('user') : Promise.resolve(undefined)
+
+  /** 指定 cwd 的项目库若已存在则打开（估算用：不因估算产生空库文件）。 */
+  const openProjectStoreIfExists = (cwd: string): Promise<EngramStore | undefined> => {
+    const dbName = dbNameForCwd(cwd)
+    return existsSync(join(resolved.dbDir, dbName)) ? openDb(dbName) : Promise.resolve(undefined)
+  }
+
+  /** 组装历史回填依赖；source 每次现取，兼容持久化服务在插件之后挂载的组合。 */
+  const buildHistoryDeps = (): HistoryBackfillDeps => ({
+    source: persistenceService(),
+    resolveStore: openStoreForProjectCwd,
+    resolveExistingStore: openProjectStoreIfExists,
+    openUserStore: () => openStore('user'),
+    resolveExistingUserStore: openUserStoreIfExists,
+    embedder,
+    // 回填必须走提炼管线：ingest=off 的部署也允许手工回填，按最省的 light 档提炼。
+    mode: resolved.ingest === 'off' ? 'light' : resolved.ingest,
+    // 优先用当前可用路由（配置覆盖 > 当前会话在用的模型）——历史日志里的旧 provider/model 可能已不可用。
+    routeOverride: resolved.routeOverride ?? preStepState.route,
+    // 辅助调用归属：审计经 logRequest 带会话 id 落 op_log，streamText 只需一个稳定标识。
+    call: callParams => streamText(ctx, { ...callParams, sessionId: '' }),
+    logRequest: logIngestRequest,
+  })
+
+  /** 回填任务（进程内单例；面板轮询它的进度，工具同步等待自己的那一次运行）。 */
+  let backfillJob:
+    | { controller: AbortController; progress: HistoryRunProgress; failures: HistoryRunResult['failures']; error?: string }
+    | undefined
+
+  /** 历史回填对外接口：面板路由（异步 job）与工具（同步运行）共用。 */
+  const historyApi = {
+    /** 已注册的 provider 与模型清单（面板「辅助模型」下拉的数据源）。 */
+    models: async (): Promise<{
+      providers: { id: string; name: string; models: { id: string; name: string }[] }[]
+      failures: string[]
+    }> => {
+      const llm = ctx.get('llm' as never) as
+        | {
+            listProviders(): readonly { id: string; name: string }[]
+            listModels(provider: string): Promise<readonly { id: string; name: string }[]>
+          }
+        | undefined
+      if (llm === undefined) return { providers: [], failures: [] }
+      const failures: string[] = []
+      const providers = await Promise.all(llm.listProviders().map(async (provider) => {
+        try {
+          const models = await llm.listModels(provider.id)
+          return { id: provider.id, name: provider.name, models: models.map(model => ({ id: model.id, name: model.name })) }
+        } catch (error) {
+          // 单个 provider 列举失败（如远端不可达）不影响其余分组。
+          failures.push(`${provider.id}: ${error instanceof Error ? error.message : String(error)}`)
+          return { id: provider.id, name: provider.name, models: [] }
+        }
+      }))
+      return { providers, failures }
+    },
+    estimate: (rules: HistoryBackfillRules): Promise<HistoryEstimate> =>
+      estimateHistoryBackfill(buildHistoryDeps(), resolved.historyBackfill, rules),
+    run: (rules: HistoryBackfillRules, signal: AbortSignal): Promise<HistoryRunResult> =>
+      runHistoryBackfill(buildHistoryDeps(), resolved.historyBackfill, rules, () => { /* 同步运行不对外播报进度 */ }, signal),
+    /** 启动后台回填；已有任务在跑时拒绝（面板按钮据此禁用）。 */
+    start: (rules: HistoryBackfillRules): { ok: boolean; reason?: string } => {
+      if (backfillJob !== undefined && backfillJob.progress.state === 'running') {
+        return { ok: false, reason: '已有回填任务正在运行，请先暂停或等待完成' }
+      }
+      const controller = new AbortController()
+      const job: NonNullable<typeof backfillJob> = {
+        controller,
+        failures: [],
+        progress: {
+          state: 'running', sessionsTotal: 0, sessionsDone: 0, turnsPlanned: 0,
+          turnsDone: 0, memoriesWritten: 0, turnsSkipped: 0, turnsFailed: 0, skipReasons: {},
+        },
+      }
+      backfillJob = job
+      void runHistoryBackfill(
+        buildHistoryDeps(), resolved.historyBackfill, rules,
+        progress => { job.progress = progress },
+        controller.signal,
+      )
+        .then((result) => { job.progress = result; job.failures = result.failures })
+        .catch((error: unknown) => {
+          // 整批失败（如枚举会话出错）：置 failed 并保留已累计进度，不抛给宿主。
+          console.warn('[dsh-engram] 历史回填失败：', error)
+          job.progress = { ...job.progress, state: 'failed' }
+          job.error = error instanceof Error ? error.message : String(error)
+        })
+      return { ok: true }
+    },
+    cancel: (): void => { backfillJob?.controller.abort() },
+    /** 当前任务快照；从未跑过时返回 idle 占位。 */
+    status: (): { progress: HistoryRunProgress; failures: HistoryRunResult['failures']; error?: string } => ({
+      progress: backfillJob?.progress ?? {
+        state: 'done', sessionsTotal: 0, sessionsDone: 0, turnsPlanned: 0,
+        turnsDone: 0, memoriesWritten: 0, turnsSkipped: 0, turnsFailed: 0, skipReasons: {},
+      },
+      failures: backfillJob?.failures ?? [],
+      ...(backfillJob?.error === undefined ? {} : { error: backfillJob.error }),
+    }),
+  }
+
+  // 工具注册（历史回填的估算/执行由 historyApi 提供）。
   for (const tool of createEngramTools({
     openStore,
     embedder,
@@ -356,11 +520,12 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     routeOverride: resolved.routeOverride,
     queryRewrite: resolved.queryRewrite,
     exportDir: `${resolved.dbDir}/exports`,
+    historyBackfill: { estimate: historyApi.estimate, run: historyApi.run },
   })) {
     ctx.tools.register(tool)
   }
 
-  // 管理面板（可选）：webServer 就绪后注册 /engram 页面与 /api/engram/* 接口。
+  // 管理面板（可选）：webServer 就绪后注册管理页与 /api/engram/* 接口。
   // 注入子 fiber 在无 webServer 的组合（headless）下保持等待，不阻塞主装载，
   // 工具/画像注入/摄取/衰减等其余能力不受影响。
   ctx.inject(['webServer'], (webCtx) => {
@@ -373,17 +538,19 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       dbDir: resolved.dbDir,
       pluginVersion: VERSION,
       embedder,
+      history: {
+        estimate: historyApi.estimate,
+        start: historyApi.start,
+        cancel: historyApi.cancel,
+        status: historyApi.status,
+        models: historyApi.models,
+        defaults: resolved.historyBackfill,
+      },
     })
   })
 
-  // 辅助请求写 engram 自己的操作日志（下游插件禁止向会话日志写未知事件类型）。
-  const logIngestRequest = (data: IngestRequestEventData): void => {
-    void openStore('user').then(store => store.audit('ingest-request', 'AUX', JSON.stringify(data))).catch(() => { /* 审计失败不影响摄取 */ })
-  }
-
   if (resolved.injectProfile || resolved.ingest !== 'off') {
-    const state = { pendingReplayed: false, lastProfileAgent: null, lastProfileHash: null }
-    ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, resolved, embedder, state, logIngestRequest, payload, next), { prepend: true })
+    ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, resolved, embedder, preStepState, logIngestRequest, payload, next), { prepend: true })
   }
 
   if (resolved.ingest !== 'off') {

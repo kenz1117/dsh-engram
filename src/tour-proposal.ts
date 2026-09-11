@@ -12,9 +12,9 @@ import type { EngramScope, MemoryRecord } from './types.ts'
 export interface TourProposal {
   /** 给 agent 的开场邀请语（已结合宫殿状态动态生成）。 */
   readonly greeting: string
-  /** 建议走一趟的房间（按重要度降序，最多 5 间）。 */
+  /** 建议走一趟的记忆（按重要度降序，最多 5 条）。 */
   readonly suggestedStops: readonly MemoryRecord[]
-  /** 当前活跃房间总数（用于邀请语决策：0 间 vs 多于 10 间语气不同）。 */
+  /** 当前活跃记忆总数（用于邀请语决策：0 条 vs 多于 10 条语气不同）。 */
   readonly activeCount: number
   /** 是否处于「宫殿尚空」状态（邀请语应建议先放第一段记忆）。 */
   readonly empty: boolean
@@ -44,7 +44,7 @@ export function buildTourProposal(
 
   const greeting = empty
     ? `[${scope}] 宫殿尚空。建议：先放第一段记忆（例如一条 fact 或 preference），让后续会话有锚点可循。`
-    : `[${scope}] 宫殿现存 ${active.length} 间 active 房间。建议开场巡游：${scored.map((r, i) => `第 ${i + 1} 站「${r.content.slice(0, 24)}${r.content.length > 24 ? '…' : ''}」`).join('；')}。`
+    : `[${scope}] 宫殿现存 ${active.length} 条 active 记忆。建议开场巡游：${scored.map((r, i) => `第 ${i + 1} 站「${r.content.slice(0, 24)}${r.content.length > 24 ? '…' : ''}」`).join('；')}。`
 
   return { greeting, suggestedStops: scored, activeCount: active.length, empty }
 }

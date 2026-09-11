@@ -10,7 +10,7 @@ import type { LlmRoute, SessionEventLike } from '../llm/client.ts'
 import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
 import type { EngramEmbedder } from '../embedder/interface.ts'
 import type { EngramStore } from '../store/interface.ts'
-import type { EngramKind } from '../types.ts'
+import type { EngramKind, EngramScope } from '../types.ts'
 import { sanitizeProtocolText } from '../security/sanitize.ts'
 import { redactSecrets } from '../security/redact.ts'
 import { hasRecallToolCalls, omitRecallToolResults } from '../security/recall.ts'
@@ -105,6 +105,12 @@ export interface IngestDeps {
   readonly signal: AbortSignal
   /** 切片模式；缺省 previous（上一轮）。 */
   readonly slice?: IngestSlice
+  /** 是否对本切片应用节流（低活动/寒暄/禁记跳过）。缺省只作用于 previous 切片；历史回填传 true。 */
+  readonly throttle?: boolean
+  /** 写入的分库作用域标记（缺省 user）。历史回填按会话 cwd 写 project 库时传 'project'。 */
+  readonly writeScope?: EngramScope
+  /** 历史回填模式：写入不进入 SM-2 复习调度（避免一次性回填的条目同时涌入今日复习队列）。 */
+  readonly history?: boolean
 }
 
 /** 从事件里按类型收集文本块，跳过插件注入的 user 快照（它们不是用户说的话）。 */
@@ -300,8 +306,8 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: 'already-ingested' }
   }
 
-  // 节流（只限 previous 自动摄取）：低活动/寒暄/显式禁记的轮次不值得起一次辅助 LLM。
-  if (sliceMode === 'previous') {
+  // 节流（默认只限 previous 自动摄取）：低活动/寒暄/显式禁记的轮次不值得起一次辅助 LLM。
+  if (sliceMode === 'previous' || deps.throttle === true) {
     const throttled = throttleDecision(slice)
     if (throttled !== null) {
       return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: throttled }
@@ -359,7 +365,7 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     }
     if (writtenContents.includes(content)) continue
     await store.write({
-      scope: 'user',
+      scope: deps.writeScope ?? 'user',
       kind,
       content,
       importance,
@@ -368,6 +374,7 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
       sourceRound: round,
       ...(minSeq === null ? {} : { sourceSeq: minSeq }),
       ...(embedder === undefined ? {} : { embedding: (await embedder.embed([content]))[0] }),
+      ...(deps.history === true ? { initialReviewAt: null } : {}),
     })
     writtenContents.push(content)
     written += 1

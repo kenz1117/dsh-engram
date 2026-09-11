@@ -12,7 +12,7 @@ export type RefurbAction = 'merge' | 'demote' | 'review' | 'split'
 /** 一条翻新建议。 */
 export interface RefurbSuggestion {
   readonly action: RefurbAction
-  /** 主要房间 id（用户确认后聚焦此 id）。 */
+  /** 主要记忆 id（用户确认后聚焦此 id）。 */
   readonly primaryId: string
   /** 合并场景：候选副本 id 列表。 */
   readonly candidates: readonly string[]
@@ -25,6 +25,8 @@ export interface RefurbSuggestion {
 
 /** 翻新参数（按需调阈值；缺省用历史经验值）。 */
 export interface RefurbOptions {
+  /** active 条目少于该数时不出任何建议（默认 8）：小库样本太少，逐条命中噪声大于价值。 */
+  readonly minActive: number
   /** importance 低于该值的 active 条目建议降级（默认 0.2）。 */
   readonly demoteBelow: number
   /** lastAccessedAt 早于该天数的条目建议复习（默认 60）。 */
@@ -35,6 +37,7 @@ export interface RefurbOptions {
 
 /** 缺省参数。 */
 export const DEFAULT_REFURB_OPTIONS: RefurbOptions = {
+  minActive: 8,
   demoteBelow: 0.2,
   staleDays: 60,
   duplicateTitleWindow: 0,
@@ -43,6 +46,7 @@ export const DEFAULT_REFURB_OPTIONS: RefurbOptions = {
 /**
  * 扫描一组 active 条目，按规则生成翻新建议。
  * 仅扫描同 scope 内的内容；跨 scope 的相似合并留给上层判定。
+ * active 条目少于 `options.minActive` 时返回空列表：小库样本太少，逐条命中噪声大于价值。
  */
 export function gatherRefurbSuggestions(
   records: readonly MemoryRecord[],
@@ -51,6 +55,8 @@ export function gatherRefurbSuggestions(
   const suggestions: RefurbSuggestion[] = []
   const now = Date.now()
   const active = records.filter(r => r.status === 'active')
+  // 小库早退：样本太少时（尤其门牌规则）几乎逐条命中，噪声大于价值。
+  if (active.length < options.minActive) return []
   const byScope = new Map<EngramScope, MemoryRecord[]>()
   for (const record of active) {
     const list = byScope.get(record.scope) ?? []
@@ -93,7 +99,7 @@ export function gatherRefurbSuggestions(
             primaryId: record.id,
             candidates: dupes.map(d => d.id),
             scope,
-            reason: `与 ${dupes.length} 间房间内容前 20 字重复，建议蒸馏合并。`,
+            reason: `与 ${dupes.length} 条记忆内容前 20 字重复，建议蒸馏合并。`,
             confidence: 0.6,
           })
         }
@@ -121,7 +127,7 @@ export function gatherRefurbSuggestions(
         primaryId: record.id,
         candidates: [],
         scope: record.scope,
-        reason: `内容长度 ${record.content.length} > 400，建议拆为多条独立房间。`,
+        reason: `内容长度 ${record.content.length} > 400，建议拆为多条独立记忆。`,
         confidence: 0.6,
       })
     }

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>记忆宫殿 · 面板重设计原型</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<!-- App Shell：Header + 冻结导航 + 视图容器。五个视图共用同一套外壳，导航不随视图重绘。 -->
+<div class="panel">
+
+  <header class="appHeader">
+    <div class="brand">
+      <span class="brandLogo" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 48 48" fill="none">
+          <path d="M6 20 L24 7 L42 20 Z" fill="currentColor" fill-opacity="0.9"/>
+          <rect x="9" y="20" width="30" height="18" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/>
+          <rect x="13" y="24" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/>
+          <rect x="29" y="24" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M21 38 L21 28 Q21 25 24 25 Q27 25 27 28 L27 38" fill="none" stroke="currentColor" stroke-width="1.8"/>
+        </svg>
+      </span>
+      <div class="brandText">
+        <h1 data-i18n="headerTitle">记忆库</h1>
+        <p data-i18n="headerSubtitle">记忆宫殿 · 位置当索引，路线定顺序</p>
+      </div>
+    </div>
+    <div class="headerActions">
+      <div class="segGroup segScope" role="tablist" aria-label="scope">
+        <span class="segIndicator" data-seg-indicator></span>
+        <button type="button" class="segItem on" data-scope="user" role="tab" aria-selected="true">私人</button>
+        <button type="button" class="segItem" data-scope="project" role="tab" aria-selected="false">项目</button>
+        <button type="button" class="segItem" data-scope="shared" role="tab" aria-selected="false">共享</button>
+      </div>
+      <button type="button" class="dueBadge" id="dueBadge" data-act="goto-due" title="今日待回忆">
+        <span class="dueDot" aria-hidden="true"></span>
+        <b data-due-count>4</b>
+      </button>
+      <button type="button" class="button" data-act="refresh">刷新</button>
+      <button type="button" class="button" data-act="export">导出</button>
+    </div>
+  </header>
+
+  <!-- 冻结导航：五个视图，active 由单一规则 .on 标记。 -->
+  <nav class="appNav" role="tablist" aria-label="记忆库视图">
+    <button type="button" class="navItem on" role="tab" aria-selected="true" data-view="today">今日</button>
+    <button type="button" class="navItem" role="tab" aria-selected="false" data-view="palace">宫殿 <small data-nav-count>348</small></button>
+    <button type="button" class="navItem" role="tab" aria-selected="false" data-view="tour">巡游</button>
+    <button type="button" class="navItem" role="tab" aria-selected="false" data-view="log">日志</button>
+    <button type="button" class="navItem" role="tab" aria-selected="false" data-view="backfill">回填</button>
+  </nav>
+
+  <main id="view" class="view" aria-live="polite"></main>
+
+  <div id="drawerRoot"></div>
+  <div id="toastRoot" class="toastViewport" aria-live="polite"></div>
+</div>
+
+<script src="mock.js"></script>
+<script src="views.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

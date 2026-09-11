@@ -14,6 +14,8 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { EngramKind, EngramScope, EngramStatus, ListFilter, ReviewGrade } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
+import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
+import type { ResolvedHistoryRules } from './config.ts'
 import { writeMirror } from './mirror/markdown.ts'
 import { createBackup, restoreBackup, BACKUP_SCHEMA_VERSION } from './backup/tar.ts'
 import { runConsolidation } from './consolidation/run.ts'
@@ -102,6 +104,41 @@ function scopeOf(raw: string | null, fallback: EngramScope): EngramScope {
   return fallback
 }
 
+/** 宽松取数：数字与数字字符串都接受，其余返回 undefined（回退配置默认）。 */
+function toNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return undefined
+}
+
+/** 宽松取布尔：真值/假值的字符串与布尔都接受，其余返回 undefined。 */
+function toBoolean(value: unknown): boolean | undefined {
+  if (value === true || value === 'true') return true
+  if (value === false || value === 'false') return false
+  return undefined
+}
+
+/** 从 query 或 body 收敛历史回填规则（未给或非法的字段留给配置默认值）。 */
+function historyRulesOf(raw: Readonly<Record<string, unknown>>): HistoryBackfillRules {
+  const days = toNumber(raw['days'])
+  const maxTurnsPerSession = toNumber(raw['maxTurnsPerSession'])
+  const maxTotalTurns = toNumber(raw['maxTotalTurns'])
+  const includeSubagents = toBoolean(raw['includeSubagents'])
+  const includeSeeded = toBoolean(raw['includeSeeded'])
+  const includeNoCwd = toBoolean(raw['includeNoCwd'])
+  return {
+    ...(days === undefined ? {} : { days }),
+    ...(maxTurnsPerSession === undefined ? {} : { maxTurnsPerSession }),
+    ...(maxTotalTurns === undefined ? {} : { maxTotalTurns }),
+    ...(includeSubagents === undefined ? {} : { includeSubagents }),
+    ...(includeSeeded === undefined ? {} : { includeSeeded }),
+    ...(includeNoCwd === undefined ? {} : { includeNoCwd }),
+  }
+}
+
 /** 管理面板的路由依赖。 */
 export interface RouteDeps {
   readonly openStore: (scope: EngramScope) => Promise<EngramStore>
@@ -114,6 +151,24 @@ export interface RouteDeps {
   readonly dbDir: string
   /** 当前插件版本，写进备份 _meta.json 供恢复端校验。 */
   readonly pluginVersion: string
+  /** 历史回填（面板「历史回填」tab）：估算 / 启动 / 取消 / 查进度 + 部署默认规则。 */
+  readonly history: {
+    /** 估算候选会话与轮数（不写库、不调 LLM）。 */
+    readonly estimate: (rules: HistoryBackfillRules) => Promise<HistoryEstimate>
+    /** 启动后台回填；已有任务在跑时拒绝。 */
+    readonly start: (rules: HistoryBackfillRules) => { ok: boolean; reason?: string }
+    /** 请求中止当前任务（已完成的轮次保留，可重跑续做）。 */
+    readonly cancel: () => void
+    /** 当前任务进度快照。 */
+    readonly status: () => { progress: HistoryRunProgress; failures: HistoryRunResult['failures']; error?: string }
+    /** 已注册的 provider 与模型清单（面板「辅助模型」下拉）。 */
+    readonly models: () => Promise<{
+      providers: { id: string; name: string; models: { id: string; name: string }[] }[]
+      failures: string[]
+    }>
+    /** 部署配置里的默认规则（面板表单初始值）。 */
+    readonly defaults: ResolvedHistoryRules
+  }
 }
 
 /**
@@ -322,7 +377,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
             const mirrorRoot = join(deps.mirrorDir, scope, stamp)
             const report = await writeMirror(mirrorRoot, data)
-            json(res, 200, { ...report, scope, roomCount: data.records.length, edgeCount: data.edges.length })
+            json(res, 200, { ...report, scope, memoryCount: data.records.length, edgeCount: data.edges.length })
             return
           }
           if (req.method === 'GET' && route === 'health') {
@@ -372,8 +427,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             return
           }
           if (req.method === 'GET' && route === 'corridor') {
-            // 走廊图：节点 = 房间（按楼层分簇），边 = related/supersedes/contradicts/refines/supports。
-            // 同一作用域只读一份；面板组件默认只画 active 房间的子图，避免闭馆节点遮蔽。
+            // 走廊图：节点 = 记忆（按房间分簇），边 = related/supersedes/contradicts/refines/supports。
+            // 同一作用域只读一份；面板组件默认只画 active 记忆的子图，避免闭馆节点遮蔽。
             const scope = scopeOf(url.searchParams.get('scope'), 'user')
             const includeStatuses = new Set(['active'])
             const rawStatus = url.searchParams.get('status')
@@ -414,7 +469,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             return
           }
           if (req.method === 'GET' && route === 'tour-proposal') {
-            // 入殿导航：会话首轮时的开场建议（基于当前 scope 的 active 房间）。
+            // 入殿导航：会话首轮时的开场建议（基于当前 scope 的 active 记忆）。
             // 仅取 active（greeting 区分空宫殿与多房间两种文案），suggestedStops ≤ 5。
             const rawScope = url.searchParams.get('scope')
             const scope: EngramScope = rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : 'user'
@@ -456,6 +511,37 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 confidence: suggestion.confidence,
               })),
             })
+            return
+          }
+          if (req.method === 'GET' && route === 'models') {
+            // 已注册的 provider 与模型清单：面板「辅助模型」下拉的数据源。
+            json(res, 200, await deps.history.models())
+            return
+          }
+          if (req.method === 'GET' && route === 'history-backfill') {
+            // 历史回填估算：规则走 query（面板表单直接 GET），返回候选/轮数/预计调用次数；不写库不调 LLM。
+            json(res, 200, {
+              defaults: deps.history.defaults,
+              estimate: await deps.history.estimate(historyRulesOf(Object.fromEntries(url.searchParams))),
+            })
+            return
+          }
+          if (req.method === 'GET' && route === 'history-backfill/status') {
+            json(res, 200, deps.history.status())
+            return
+          }
+          if (req.method === 'POST' && route === 'history-backfill/start') {
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            const started = deps.history.start(historyRulesOf(body ?? {}))
+            if (!started.ok) { json(res, 409, { ok: false, error: started.reason ?? '无法启动回填' }); return }
+            json(res, 200, { ok: true, status: deps.history.status() })
+            return
+          }
+          if (req.method === 'POST' && route === 'history-backfill/cancel') {
+            if (!guardWrite(req, res)) return
+            deps.history.cancel()
+            json(res, 200, { ok: true, status: deps.history.status() })
             return
           }
           if (req.method === 'POST' && route === 'consolidate') {

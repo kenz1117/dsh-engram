@@ -42,22 +42,29 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
+/** 记录 llm 替身收到的调用参数（断言辅助调用的路由归属）。 */
+const llmCalls: { route?: unknown }[] = []
+
 /** llm 服务替身：辅助调用端点存在但不可用（摄取/蒸馏运行时失败路径不属于本测试）。 */
 const llmDouble = {
   name: 'test-engram-llm',
   apply(ctx: Context): void {
     ctx.provide('llm', {
-      stream: async function* () {
+      stream: async function* (params: { route?: unknown }) {
+        llmCalls.push(params)
         throw new Error('llm offline in test')
       },
+      // 模型清单（面板「辅助模型」下拉的数据源）。
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-v4', name: 'DeepSeek V4' }],
     } as never)
   },
 }
 
 const EXPECTED_TOOLS = [
   'engram_audit_forgotten', 'engram_distill', 'engram_examine', 'engram_export', 'engram_forget',
-  'engram_neighbors', 'engram_report', 'engram_review', 'engram_review_queue', 'engram_save',
-  'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
+  'engram_ingest_history', 'engram_neighbors', 'engram_report', 'engram_review', 'engram_review_queue',
+  'engram_save', 'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
 ]
 
 /** 在宿主打开分库前写入种子记忆（同进程先后连接，时序安全）。
@@ -250,6 +257,109 @@ describe('dsh-engram real Loader composition', () => {
     loaded.emit('session/disposed', fakeSession as never)
     // 给 fire-and-forget 摄取一个跑完的窗口；若产生未处理 rejection，vitest 会判定本用例失败。
     await new Promise(resolve => setTimeout(resolve, 300))
+  })
+
+  it('历史回填 HTTP 链路：估算 → 启动 → 轮询到结束（LLM 失败只计数不中断）', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition(["    ingest: 'light'"])
+    const port = loaded.webServer.port
+    // 会话持久化替身：一个可回填会话（一轮，活动信号充足以越过节流）。
+    const pad = '这是一段足够长的具体描述，用来越过节流阈值。'.repeat(12)
+    const events = [
+      { type: 'turn/start', data: { turn: 1 }, seq: 1, time: Date.now() },
+      { type: 'user/message', data: { content: [{ type: 'text', text: pad }] }, seq: 2, time: Date.now() },
+      { type: 'assistant/message', data: { content: [{ type: 'text', text: '答' }] }, seq: 3, time: Date.now() },
+      // 路由必须能从日志解析（插件未配 provider/model），否则摄取会在路由检查处跳过。
+      { type: 'request/header', data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4-flash' } } }, seq: 4, time: Date.now() },
+      ...[0, 1, 2, 3, 4].map(index => ({ type: 'tool/result', data: { callId: `c${String(index)}`, isError: false }, seq: 5 + index, time: Date.now() })),
+    ]
+    loaded.provide('sessionPersistence' as never, {
+      list: async () => [{ id: 'hist-1', createdAt: Date.now() - 1000, cwd: process.cwd() }],
+      load: async () => ({ events }),
+    } as never)
+
+    // 模型清单接口：面板「辅助模型」下拉的数据源。
+    const modelsResponse = await call(port, 'GET', '/api/engram/models')
+    expect(modelsResponse.status).toBe(200)
+    const modelsBody = modelsResponse.json as { providers: { id: string; models: { id: string }[] }[] }
+    expect(modelsBody.providers[0]?.id).toBe('deepseek')
+    expect(modelsBody.providers[0]?.models[0]?.id).toBe('deepseek-v4')
+
+    // 估算：不写库、不调 LLM。
+    const estimate = await call(port, 'GET', '/api/engram/history-backfill?days=7&maxTotalTurns=5')
+    expect(estimate.status).toBe(200)
+    const estimateBody = estimate.json as { estimate: { candidates: number; pendingTurns: number, unavailable?: string } }
+    expect(estimateBody.estimate.unavailable).toBeUndefined()
+    expect(estimateBody.estimate.candidates).toBe(1)
+    expect(estimateBody.estimate.pendingTurns).toBeGreaterThan(0)
+
+    // 未挂载持久化服务时不可用的说明路径：这里已提供替身，应能启动。
+    const started = await call(port, 'POST', '/api/engram/history-backfill/start',
+      { days: 7, maxTotalTurns: 5, maxTurnsPerSession: 1 })
+    expect(started.status).toBe(200)
+
+    // 轮询到结束（期间 LLM 替身抛错 → 该轮记失败，整批不中断）。
+    let status = await call(port, 'GET', '/api/engram/history-backfill/status')
+    for (let attempt = 0; attempt < 40 && (status.json as { progress: { state: string } }).progress.state === 'running'; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      status = await call(port, 'GET', '/api/engram/history-backfill/status')
+    }
+    const finalBody = status.json as {
+      progress: { state: string; turnsDone: number; turnsFailed: number }
+      failures: { reason: string }[]
+    }
+    expect(finalBody.progress.state).toBe('done')
+    expect(finalBody.progress.turnsDone).toBeGreaterThan(0)
+    // LLM 替身离线：该轮必须被记成失败而不是静默吞掉或整批中断。
+    expect(finalBody.progress.turnsFailed).toBeGreaterThan(0)
+    expect(finalBody.failures[0]?.reason).toContain('llm offline in test')
+  })
+
+  it('历史回填优先复用当前会话在用的路由（而不是历史日志里的旧模型）', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition(["    ingest: 'light'"])
+    const port = loaded.webServer.port
+    // 历史会话日志里记录的是旧模型 zai/glm-4.5-air（当前环境没有该 provider 配置）。
+    const pad = '这是一段足够长的具体描述，用来越过节流阈值。'.repeat(12)
+    const historicalEvents = [
+      { type: 'request/header', data: { header: { config: { provider: 'zai', model: 'glm-4.5-air' } } }, seq: 1, time: Date.now() },
+      { type: 'turn/start', data: { turn: 1 }, seq: 2, time: Date.now() },
+      { type: 'user/message', data: { content: [{ type: 'text', text: pad }] }, seq: 3, time: Date.now() },
+      { type: 'assistant/message', data: { content: [{ type: 'text', text: '答' }] }, seq: 4, time: Date.now() },
+      ...[0, 1, 2, 3, 4].map(index => ({ type: 'tool/result', data: { callId: `c${String(index)}`, isError: false }, seq: 5 + index, time: Date.now() })),
+    ]
+    loaded.provide('sessionPersistence' as never, {
+      list: async () => [{ id: 'hist-old-model', createdAt: Date.now() - 1000, cwd: process.cwd() }],
+      load: async () => ({ events: historicalEvents }),
+    } as never)
+    // 模拟「当前会话在用 deepseek」：preStep 每轮第一步记录该路由。
+    const fakeAgent = {
+      id: 'sess-current',
+      session: {
+        id: 'sess-current',
+        snapshotEvents: () => [{ type: 'request/header', data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4' } } }, seq: 1, time: Date.now() }],
+      },
+    }
+    // emit 的重载签名较窄，这里用最小可调用视图派发事件；决策按真实契约返回 enter + messages
+    // （空批即可，本用例只关心路由记录），并 await 让 preStep 的失败直接暴露为测试失败。
+    const emitter = loaded as unknown as { emit: (name: string, ...args: unknown[]) => unknown }
+    await (emitter.emit('agent/pre-step', {
+      agent: fakeAgent, step: 1, turn: 1, signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] })) as Promise<unknown>)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    llmCalls.length = 0
+
+    const estimate = await call(port, 'GET', '/api/engram/history-backfill?days=7&maxTurnsPerSession=1&maxTotalTurns=1')
+    expect((estimate.json as { estimate: { candidates: number } }).estimate.candidates).toBe(1)
+    const started = await call(port, 'POST', '/api/engram/history-backfill/start', { days: 7, maxTurnsPerSession: 1, maxTotalTurns: 1 })
+    expect(started.status).toBe(200)
+    let status = await call(port, 'GET', '/api/engram/history-backfill/status')
+    for (let attempt = 0; attempt < 40 && (status.json as { progress: { state: string } }).progress.state === 'running'; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      status = await call(port, 'GET', '/api/engram/history-backfill/status')
+    }
+    // 辅助调用必须走当前在用的 deepseek，而不是历史日志里的 zai（否则会因 provider 无该模型而失败）。
+    expect(llmCalls.length).toBeGreaterThan(0)
+    expect(JSON.stringify(llmCalls)).toContain('deepseek')
+    expect(JSON.stringify(llmCalls)).not.toContain('zai')
   })
 
   it('未知配置键经 Loader 装载 loud 失败', { timeout: 60_000 }, async () => {

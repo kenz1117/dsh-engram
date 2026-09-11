@@ -470,7 +470,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
    * 写入期自动化（save/批量/摄取/update/蒸馏全部写入路径统一在此落地；调用方须已持事务）：
    * 1) 排桩——显式 slot 优先，否则按 kind 分房自动分配（满员开新房并记 op_log）；
    * 2) 门牌评分——有铭牌时按「唯一/差异化/带日期」启发式落库；
-   * 3) 初始排期——reviewScheduling 开启且未显式指定时，1 天后首次到期；
+   * 3) 初始排期——reviewScheduling 开启且未显式指定时，1 天后首次到期（显式 null = 明确不排期）；
    * 4) 巡游路线——有桩位的条目登记到固定路线末尾。
    * @returns 合入 WriteInput 的自动化字段。
    */
@@ -496,8 +496,11 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         roomCaptions: slot === undefined ? [] : placards.filter(row => row.room === slot.room).map(row => row.caption),
       })
     }
-    const initialReviewAt = input.initialReviewAt
-      ?? (automation.reviewScheduling ? at + 86_400_000 : undefined)
+    // initialReviewAt 显式给 null = 调用方明确不排期（历史回填：不让回填条目涌入复习队列）；
+    // undefined 才走自动化默认（reviewScheduling 开启时 1 天后首次到期）。
+    const initialReviewAt = input.initialReviewAt === undefined
+      ? (automation.reviewScheduling ? at + 86_400_000 : undefined)
+      : input.initialReviewAt ?? undefined
     if (slot !== undefined && sqlRouteHas.get(id) === undefined) sqlRouteAppend.run(id)
     return {
       ...(slot === undefined ? {} : { slot }),
@@ -639,11 +642,23 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     async timeline(query: TimelineQuery) {
       const limit = query.limit ?? 20
       const placeholders = query.scopes.map(() => '?').join(',')
-      const rows = db.prepare(`SELECT * FROM nodes WHERE status = 'active' AND scope IN (${placeholders})
-        AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at <= ?)
-        AND (? IS NULL OR instr(content, ?) > 0)
-        ORDER BY created_at DESC LIMIT ?`)
-        .all(...query.scopes, query.since ?? null, query.since ?? null, query.until ?? null, query.until ?? null, query.topic ?? null, query.topic ?? null, limit) as unknown as NodeRow[]
+      const where = `nodes.status = 'active' AND nodes.scope IN (${placeholders})
+        AND (? IS NULL OR nodes.created_at >= ?) AND (? IS NULL OR nodes.created_at <= ?)
+        AND (? IS NULL OR instr(nodes.content, ?) > 0)`
+      const params: (string | number | null)[] = [
+        ...query.scopes,
+        query.since ?? null, query.since ?? null,
+        query.until ?? null, query.until ?? null,
+        query.topic ?? null, query.topic ?? null,
+        limit,
+      ]
+      // order=tour：LEFT JOIN 巡游路线，按桩位顺序排（未上路线者 IS NULL 置后，按创建时间收尾）。
+      const rows = query.order === 'tour'
+        ? db.prepare(`SELECT nodes.* FROM nodes LEFT JOIN tour_routes ON tour_routes.node_id = nodes.id
+            WHERE ${where} ORDER BY tour_routes.position IS NULL, tour_routes.position ASC, nodes.created_at DESC LIMIT ?`)
+          .all(...params) as unknown as NodeRow[]
+        : db.prepare(`SELECT nodes.* FROM nodes WHERE ${where} ORDER BY nodes.created_at DESC LIMIT ?`)
+          .all(...params) as unknown as NodeRow[]
       return rows.map(rowToRecord)
     },
 

@@ -44,6 +44,34 @@ export interface EngramConfig {
   autoSlot?: boolean
   /** 新记忆是否进入 SM-2 间隔重复调度（初始 1 天后到期）；默认 true。false 时复习队列恒空、decay 行为同旧版。 */
   reviewScheduling?: boolean
+  /** 历史回填默认规则：时间窗天数，0 = 不限；默认 7。 */
+  historyBackfillDays?: number
+  /** 历史回填默认规则：单个会话最多摄取轮数；默认 20。 */
+  historyBackfillMaxTurnsPerSession?: number
+  /** 历史回填上限：单次运行的总轮数硬上限（面板/工具参数只能调低）；默认 200。 */
+  historyBackfillMaxTotalTurns?: number
+  /** 历史回填默认规则：是否包含子代理会话（origin=subagent）；默认 false。 */
+  historyBackfillIncludeSubagents?: boolean
+  /** 历史回填默认规则：是否包含种子会话（isSeeded）；默认 false。 */
+  historyBackfillIncludeSeeded?: boolean
+  /** 历史回填默认规则：是否包含无 cwd 的会话（无法归属项目分库）；默认 false。 */
+  historyBackfillIncludeNoCwd?: boolean
+}
+
+/** 历史回填规则（面板/工具可在默认值之上按次调整；总轮数受硬上限约束）。 */
+export interface ResolvedHistoryRules {
+  /** 时间窗天数；0 = 不限。 */
+  readonly days: number
+  /** 单个会话最多摄取轮数。 */
+  readonly maxTurnsPerSession: number
+  /** 单次运行总轮数硬上限。 */
+  readonly maxTotalTurns: number
+  /** 是否包含子代理会话。 */
+  readonly includeSubagents: boolean
+  /** 是否包含种子会话。 */
+  readonly includeSeeded: boolean
+  /** 是否包含无 cwd 会话。 */
+  readonly includeNoCwd: boolean
 }
 
 /** 解析后的完整配置（显式默认值集中在此一步，实现不再 `?? 默认`）。 */
@@ -64,6 +92,8 @@ export interface ResolvedEngramConfig {
   readonly queryRewrite: boolean
   readonly autoSlot: boolean
   readonly reviewScheduling: boolean
+  /** 历史回填默认规则（历史会话 → 记忆宫殿的一次性/按需回填）。 */
+  readonly historyBackfill: ResolvedHistoryRules
 }
 
 /** 合法配置键集合（未知键 loud 失败）。 */
@@ -72,6 +102,8 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'ingest', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
   'injectTokenBudget', 'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
   'autoSlot', 'reviewScheduling',
+  'historyBackfillDays', 'historyBackfillMaxTurnsPerSession', 'historyBackfillMaxTotalTurns',
+  'historyBackfillIncludeSubagents', 'historyBackfillIncludeSeeded', 'historyBackfillIncludeNoCwd',
 ])
 
 const INGEST_MODES: ReadonlySet<string> = new Set(['off', 'light', 'eager'])
@@ -94,13 +126,19 @@ export const Config: z<EngramConfig> = z.object({
   queryRewrite: z.boolean(),
   autoSlot: z.boolean(),
   reviewScheduling: z.boolean(),
+  historyBackfillDays: z.number().step(1).min(0).max(3650),
+  historyBackfillMaxTurnsPerSession: z.number().step(1).min(1).max(500),
+  historyBackfillMaxTotalTurns: z.number().step(1).min(1).max(5000),
+  historyBackfillIncludeSubagents: z.boolean(),
+  historyBackfillIncludeSeeded: z.boolean(),
+  historyBackfillIncludeNoCwd: z.boolean(),
 })
 
 /**
  * 显式 resolve 步骤：默认值只在唯一的此处落地，非法值 loud 失败。
  * @param config - cordis.yml 传入的未校验配置。
  * @returns 完整解析配置。
- * @throws 未知键、ingest 档位非法、provider/model 只给其一、decay/预算/排序权重越界时抛错。
+ * @throws 未知键、ingest 档位非法、provider/model 只给其一、decay/预算/排序权重/历史回填规则越界时抛错。
  */
 export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   for (const key of Object.keys(config)) {
@@ -132,6 +170,17 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   if (config.rankProofWeight !== undefined && (config.rankProofWeight < 0 || config.rankProofWeight > 2)) {
     throw new Error('dsh-engram: rankProofWeight must be in [0, 2]')
   }
+  if (config.historyBackfillDays !== undefined && (!Number.isInteger(config.historyBackfillDays) || config.historyBackfillDays < 0 || config.historyBackfillDays > 3650)) {
+    throw new Error('dsh-engram: historyBackfillDays must be an integer in [0, 3650] (0 = unlimited)')
+  }
+  if (config.historyBackfillMaxTurnsPerSession !== undefined
+    && (!Number.isInteger(config.historyBackfillMaxTurnsPerSession) || config.historyBackfillMaxTurnsPerSession < 1 || config.historyBackfillMaxTurnsPerSession > 500)) {
+    throw new Error('dsh-engram: historyBackfillMaxTurnsPerSession must be an integer in [1, 500]')
+  }
+  if (config.historyBackfillMaxTotalTurns !== undefined
+    && (!Number.isInteger(config.historyBackfillMaxTotalTurns) || config.historyBackfillMaxTotalTurns < 1 || config.historyBackfillMaxTotalTurns > 5000)) {
+    throw new Error('dsh-engram: historyBackfillMaxTotalTurns must be an integer in [1, 5000]')
+  }
   const dbDir = config.dbDir ?? join(homedir(), '.dsh', 'engram')
   return {
     dbDir,
@@ -149,5 +198,13 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     queryRewrite: config.queryRewrite ?? true,
     autoSlot: config.autoSlot ?? true,
     reviewScheduling: config.reviewScheduling ?? true,
+    historyBackfill: {
+      days: config.historyBackfillDays ?? 7,
+      maxTurnsPerSession: config.historyBackfillMaxTurnsPerSession ?? 20,
+      maxTotalTurns: config.historyBackfillMaxTotalTurns ?? 200,
+      includeSubagents: config.historyBackfillIncludeSubagents ?? false,
+      includeSeeded: config.historyBackfillIncludeSeeded ?? false,
+      includeNoCwd: config.historyBackfillIncludeNoCwd ?? false,
+    },
   }
 }

@@ -53,9 +53,7 @@ export type EngramKey =
   | 'sourceExplicit'
   | 'sourceSession'
   | 'round'
-  | 'cardActive'
   | 'cardRedacted'
-  | 'signalRatio'
   | 'detail'
   | 'edit'
   | 'forget'
@@ -74,9 +72,22 @@ export type EngramKey =
   | 'detailOperations'
   | 'headerTitle'
   | 'headerSubtitle'
+  | 'tabToday'
   | 'tabLibrary'
-  | 'tabObservability'
+  | 'tabCorridor'
+  | 'tabLog'
   | 'tabLibraryCount'
+  | 'roomsTitle'
+  | 'roomsHint'
+  | 'reviewQueueHint'
+  | 'healthEvaluatedAt'
+  | 'logFilterAll'
+  | 'logFilterWrite'
+  | 'logFilterIngest'
+  | 'logFilterRetrieve'
+  | 'logFilterOrganize'
+  | 'logCount'
+  | 'benchTitle'
   | 'drawerClose'
   | 'drawerTitle'
   | 'kpiTotal'
@@ -107,30 +118,23 @@ export type EngramKey =
   | 'batchForgetConfirm'
   | 'batchRestore'
   | 'clearSelection'
-  | 'sectionBench'
   | 'sectionCorridor'
   | 'corridorEmpty'
   | 'corridorFailed'
   | 'corridorLoad'
-  | 'healthTitle'
+  | 'corridorAria'
+  | 'corridorSummary'
+  | 'edgeSupersedes'
+  | 'edgeContradicts'
+  | 'edgeOther'
   | 'healthLoading'
-  | 'healthFailed'
-  | 'healthMetricSignal'
-  | 'healthMetricActive'
-  | 'healthMetricCorridors'
-  | 'healthMetricRedaction'
-  | 'healthMetricDecay'
-  | 'teleTitle'
   | 'teleFailed'
   | 'teleLoading'
-  | 'teleGroupScale'
   | 'teleGroupRecent'
   | 'telePrivacyHint'
   | 'telePrivacyTip'
   | 'teleWrites'
-  | 'teleForgets'
   | 'teleIngest'
-  | 'teleDistill'
   | 'teleConsolidate'
   | 'benchPlaceholder'
   | 'benchRun'
@@ -145,7 +149,6 @@ export type EngramKey =
   | 'viaEdgeLabel'
   | 'benchRewrite'
   | 'benchCompress'
-  | 'sectionActivity'
   | 'activityEmpty'
   | 'detailRevisions'
   | 'tourProposalTitle'
@@ -180,7 +183,60 @@ export type EngramKey =
   | 'sortTime'
   | 'sortTour'
   | 'dueBadgeLabel'
-/** 中文词典（宿主默认语言）。整页采用「记忆宫殿」语言：楼 / 房间 / 楼层 / 铭牌 / 参观 / 管家 / 走廊。
+  | 'tabBackfill'
+  | 'backfillIntro'
+  | 'backfillRulesTitle'
+  | 'backfillDays'
+  | 'backfillDaysAll'
+  | 'backfillDaysUnit'
+  | 'backfillMaxTurns'
+  | 'backfillMaxTotal'
+  | 'backfillModel'
+  | 'backfillModelAuto'
+  | 'backfillIncludeSubagents'
+  | 'backfillIncludeSeeded'
+  | 'backfillIncludeNoCwd'
+  | 'backfillReestimate'
+  | 'backfillEstimateTitle'
+  | 'backfillCandidates'
+  | 'backfillPendingTurns'
+  | 'backfillAlready'
+  | 'backfillSkippedDetail'
+  | 'backfillTruncated'
+  | 'backfillStart'
+  | 'backfillPause'
+  | 'backfillStateRunning'
+  | 'backfillStateDone'
+  | 'backfillStateCancelled'
+  | 'backfillStateFailed'
+  | 'backfillProgressSessions'
+  | 'backfillProgressTurns'
+  | 'backfillWritten'
+  | 'backfillTurnsSkipped'
+  | 'backfillTurnsFailed'
+  | 'backfillFailures'
+  | 'backfillEstimating'
+  | 'backfillSkipReasons'
+  | 'backfillRouteHint'
+  | 'skipLowActivity'
+  | 'skipChitchat'
+  | 'skipForbidden'
+  | 'skipNoContent'
+  | 'skipAlready'
+  | 'skipNoTurn'
+  | 'skipNoRoute'
+  | 'skipUnparsable'
+
+/** kind 数据值 → 词典键（面板与走廊图共用一份，避免两处各自硬编码房间名）。 */
+export const KIND_KEY: Readonly<Record<string, EngramKey>> = {
+  fact: 'kindFact',
+  preference: 'kindPreference',
+  decision: 'kindDecision',
+  episode: 'kindEpisode',
+  skill: 'kindSkill',
+}
+
+/** 中文词典（宿主默认语言）。整页采用「记忆宫殿」语言：宫殿 / 房间（kind 分组）/ 记忆 / 铭牌 / 参观 / 管家 / 走廊。
    数据层英文枚举（status/kind/op）不在此映射，文案键保持稳定以保证编译约束。 */
 export const zh: Record<EngramKey, string> = {
   nav: '记忆宫殿',
@@ -194,9 +250,9 @@ export const zh: Record<EngramKey, string> = {
   exportMirror: '镜像目录',
   exportMdHint: '单文件，可直接分享',
   exportJsonHint: '结构化全文，便于程序处理',
-  exportMirrorHint: '每房间一个 .md，可用 Obsidian 漫游',
-  allStatuses: '全部房间',
-  allKinds: '全部楼层',
+  exportMirrorHint: '每条记忆一个 .md，可用 Obsidian 漫游',
+  allStatuses: '全部状态',
+  allKinds: '全部房间',
   redactedAll: '全部铭牌',
   redactedOnly: '含涂改',
   redactedNone: '无涂改',
@@ -207,14 +263,14 @@ export const zh: Record<EngramKey, string> = {
   statusActive: '对外开放',
   statusArchived: '展厅陈列',
   statusForgotten: '已闭馆',
-  kindFact: '事实层',
-  kindPreference: '偏好层',
-  kindDecision: '决策层',
-  kindEpisode: '事件层',
-  kindSkill: '技能层',
+  kindFact: '事实厅',
+  kindPreference: '偏好阁',
+  kindDecision: '决策堂',
+  kindEpisode: '往事廊',
+  kindSkill: '技法坊',
   labelContent: '铭牌',
-  labelKind: '楼层',
-  labelStatus: '房门状态',
+  labelKind: '房间',
+  labelStatus: '状态',
   labelScope: '宫殿归属',
   importance: '地标亮度',
   confidence: '考据可靠度',
@@ -227,20 +283,18 @@ export const zh: Record<EngramKey, string> = {
   sourceExplicit: '管理员添置',
   sourceSession: '发掘地 {id}',
   round: '第 {n} 趟',
-  cardActive: '开放 {n}',
   cardRedacted: '涂改 {n}',
-  signalRatio: '走廊清晰度 {n}%',
   detail: '参观',
   edit: '修缮',
   forget: '封门',
   restore: '重开',
-  empty: '宫殿暂无可陈展的房间',
-  emptyHint: '试试调整楼层筛选，或新添一间',
+  empty: '宫殿暂无可陈展的记忆',
+  emptyHint: '试试调整房间筛选，或新添一条',
   loadFailed: '访客受挫：{msg}',
   loading: '导览中…',
-  pagerInfo: '第 {page} / {pages} 层 · 共 {total} 间',
-  prevPage: '上层',
-  nextPage: '下层',
+  pagerInfo: '第 {page} / {pages} 页 · 共 {total} 条',
+  prevPage: '上一页',
+  nextPage: '下一页',
   cancel: '作罢',
   saveWithHint: '修缮（旧铭牌归展厅）',
   detailAttributes: '铭牌',
@@ -253,12 +307,25 @@ export const zh: Record<EngramKey, string> = {
   relRelated: '相邻',
   headerTitle: '记忆宫殿',
   headerSubtitle: '跨会话长期记忆宫殿',
+  tabToday: '今日管家',
   tabLibrary: '宫殿陈展',
-  tabObservability: '导览管家',
-  tabLibraryCount: '{n} 间',
+  tabCorridor: '走廊巡游',
+  tabLog: '管家日志',
+  tabLibraryCount: '{n} 条',
+  roomsTitle: '房间目录',
+  roomsHint: '每间满 9 个桩位后开新间',
+  reviewQueueHint: '只给线索：先在脑中复述，再揭示核对',
+  healthEvaluatedAt: '诊脉于 {time}',
+  logFilterAll: '全部',
+  logFilterWrite: '落成类',
+  logFilterIngest: '发掘',
+  logFilterRetrieve: '检索',
+  logFilterOrganize: '整理',
+  logCount: '{n} 条 · 两库合并倒序',
+  benchTitle: '检索实验台',
   drawerClose: '归殿',
-  drawerTitle: '房间铭牌',
-  kpiTotal: '房间',
+  drawerTitle: '记忆铭牌',
+  kpiTotal: '记忆',
   kpiActive: '开放',
   kpiForgotten: '闭馆',
   kpiSignal: '清晰度',
@@ -273,38 +340,31 @@ export const zh: Record<EngramKey, string> = {
   opOutcomeReport: '管家验证',
   opSearchRewrite: '路线改写',
   opCompressRequest: '导览压缩',
-  opDistillRequest: '重塑楼层',
+  opDistillRequest: '合并房间',
   selectAll: '本页全选',
   deselectAll: '取消全选',
-  selectedCount: '已选 {n} 间',
+  selectedCount: '已选 {n} 条',
   batchForget: '批量封门（{n}）',
-  batchForgetConfirm: '确认封门 {n} 间？',
+  batchForgetConfirm: '确认封门 {n} 条？',
   batchRestore: '批量重开（{n}）',
   clearSelection: '清空所选',
-  sectionBench: '试走一遍',
   sectionCorridor: '走廊鸟瞰',
-  corridorEmpty: '走廊空空如也，落成几间房间后这里会出现鸟瞰图。',
+  corridorEmpty: '走廊空空如也，落成几条记忆后这里会出现鸟瞰图。',
   corridorFailed: '走廊加载失败',
   corridorLoad: '加载走廊鸟瞰…',
-  healthTitle: '宫殿健康分',
+  corridorAria: '走廊鸟瞰图',
+  corridorSummary: '{nodes} 条记忆 · {edges} 条走廊',
+  edgeSupersedes: '推陈出新',
+  edgeContradicts: '互斥',
+  edgeOther: '相邻 / 支持 / 提炼',
   healthLoading: '正在诊脉…',
-  healthFailed: '诊脉失败',
-  healthMetricSignal: '走廊清晰度',
-  healthMetricActive: '对外开放率',
-  healthMetricCorridors: '走廊密度',
-  healthMetricRedaction: '涂改缓解',
-  healthMetricDecay: '衰减覆盖',
-  teleTitle: '管家日报',
   teleFailed: '遥测加载失败',
   teleLoading: '聚合管家记录中…',
-  teleGroupScale: '规模',
   teleGroupRecent: '近 7 天',
   telePrivacyHint: '数据仅在本机聚合 · 不外传',
   telePrivacyTip: '所有 op_log 与遥测计数只在当前进程的 SQLite 里聚合，从未发送至任何外部服务；本机重启或卸载插件即清空。',
   teleWrites: '落成',
-  teleForgets: '闭馆',
   teleIngest: '发掘',
-  teleDistill: '蒸馏',
   teleConsolidate: '整理',
   benchPlaceholder: '说出要找的房间关键词或语义…',
   benchRun: '出发',
@@ -319,12 +379,11 @@ export const zh: Record<EngramKey, string> = {
   viaEdgeLabel: '邻接走廊',
   benchRewrite: '路线改写为 {n} 段',
   benchCompress: '铭牌压缩 {n} 条',
-  sectionActivity: '管家日志',
   activityEmpty: '暂无管家活动',
   detailRevisions: '陈展沿革',
   tourProposalTitle: '入殿导航',
   tourProposalEmpty: '宫殿尚空，建议先放第一段记忆（调用 engram_save）',
-  tourProposalHint: '点击房间可展开抽屉查看铭牌',
+  tourProposalHint: '点击记忆可展开抽屉查看铭牌',
   tourFocusAll: '全部',
   refurbTitle: '翻新清单',
   refurbEmpty: '所有房间状态健康，无翻新建议',
@@ -335,8 +394,8 @@ export const zh: Record<EngramKey, string> = {
   refurbActionSplit: '拆分',
   refurbCount: '{n} 条建议',
   refurbExecute: '执行',
-  refurbConfirmDemote: '确认降级此房间？执行后状态转 archived，可在统计页恢复。',
-  refurbConfirmMerge: '确认合并 {n} 间相似房间？将触发 engram_distill 把多间归纳为 1 条高层规律。',
+  refurbConfirmDemote: '确认降级这条记忆？执行后状态转 archived，可在统计页恢复。',
+  refurbConfirmMerge: '确认合并 {n} 条相似记忆？将触发 engram_distill 把它们归纳为 1 条高层规律。',
   refurbDemoteDone: '已降级',
   refurbMergeDone: '合并任务已派发',
   refurbActionFailed: '执行失败：{msg}',
@@ -354,9 +413,52 @@ export const zh: Record<EngramKey, string> = {
   sortTime: '按时间',
   sortTour: '按巡游路线',
   dueBadgeLabel: '今日待回忆 {n} 段，点击前往',
+  tabBackfill: '历史回填',
+  backfillIntro: '把 dsh 的历史会话逐轮提炼进宫殿：每条会话写进它自己 cwd 对应的项目库；已摄取过的轮次按幂等键自动跳过，中断后再次开始即可续做。回填的条目不会进入今日复习队列。',
+  backfillRulesTitle: '导入规则',
+  backfillDays: '时间窗',
+  backfillDaysAll: '不限',
+  backfillDaysUnit: '{n} 天',
+  backfillMaxTurns: '单会话最多轮数',
+  backfillMaxTotal: '本次总轮数上限',
+  backfillModel: '辅助模型',
+  backfillModelAuto: '自动（用当前在用的模型）',
+  backfillIncludeSubagents: '包含子代理会话',
+  backfillIncludeSeeded: '包含种子会话',
+  backfillIncludeNoCwd: '包含无 cwd 会话（只能进私人宫殿）',
+  backfillReestimate: '重新估算',
+  backfillEstimateTitle: '估算',
+  backfillCandidates: '候选会话 {n}',
+  backfillPendingTurns: '待处理 {n} 轮',
+  backfillAlready: '已摄取跳过 {n} 轮',
+  backfillSkippedDetail: '已排除：子代理 {subagent} · 种子 {seeded} · 无 cwd {noCwd} · 超时间窗 {tooOld} · 日志不可读 {unreadable}',
+  backfillTruncated: '候选超出总轮数上限：本次只处理最近的一部分会话，可调大上限或分几次跑',
+  backfillStart: '开始回填',
+  backfillPause: '暂停',
+  backfillStateRunning: '回填中…',
+  backfillStateDone: '已完成',
+  backfillStateCancelled: '已中止（可再次开始续做）',
+  backfillStateFailed: '失败',
+  backfillProgressSessions: '会话 {done}/{total}',
+  backfillProgressTurns: '轮次 {done}/{total}',
+  backfillWritten: '写入 {n} 条',
+  backfillTurnsSkipped: '跳过 {n} 轮',
+  backfillTurnsFailed: '失败 {n} 轮',
+  backfillFailures: '失败明细',
+  backfillEstimating: '正在估算…',
+  backfillSkipReasons: '跳过原因',
+  backfillRouteHint: '失败多半是因为历史会话当时用的模型在当前环境不可用：可在 cordis.yml 配置 provider/model，或先用目标模型跑一轮会话（回填会复用当前在用的模型）再重试——已完成的轮次会自动跳过。',
+  skipLowActivity: '低活动轮',
+  skipChitchat: '寒暄轮',
+  skipForbidden: '显式禁记',
+  skipNoContent: '无用户内容',
+  skipAlready: '已摄取',
+  skipNoTurn: '无此轮',
+  skipNoRoute: '日志无路由',
+  skipUnparsable: '提炼输出不可解析',
 }
 
-/** 英文词典。整页采用「Memory Palace」语言：palace / room / floor / placard / tour / curator / corridor。
+/** 英文词典。整页采用「Memory Palace」语言：palace / room (kind group) / memory / placard / tour / curator / corridor。
    数据层英文枚举（status/kind/op）不在此映射，文案键保持稳定。 */
 export const en: Record<EngramKey, string> = {
   nav: 'Memory Palace',
@@ -370,9 +472,9 @@ export const en: Record<EngramKey, string> = {
   exportMirror: 'Mirror tree',
   exportMdHint: 'Single file, easy to share',
   exportJsonHint: 'Structured full dump for scripts',
-  exportMirrorHint: 'One .md per room, roamable in Obsidian',
-  allStatuses: 'All rooms',
-  allKinds: 'All floors',
+  exportMirrorHint: 'One .md per memory, roamable in Obsidian',
+  allStatuses: 'All statuses',
+  allKinds: 'All rooms',
   redactedAll: 'All placards',
   redactedOnly: 'Redacted',
   redactedNone: 'Unredacted',
@@ -383,14 +485,14 @@ export const en: Record<EngramKey, string> = {
   statusActive: 'open to public',
   statusArchived: 'on display',
   statusForgotten: 'closed',
-  kindFact: 'Fact Floor',
-  kindPreference: 'Preference Floor',
-  kindDecision: 'Decision Floor',
-  kindEpisode: 'Episode Floor',
-  kindSkill: 'Skill Floor',
+  kindFact: 'Fact Hall',
+  kindPreference: 'Preference Pavilion',
+  kindDecision: 'Decision Chamber',
+  kindEpisode: 'Episode Gallery',
+  kindSkill: 'Skill Workshop',
   labelContent: 'Placard',
-  labelKind: 'Floor',
-  labelStatus: 'Door',
+  labelKind: 'Room',
+  labelStatus: 'Status',
   labelScope: 'Palace',
   importance: 'Beacon',
   confidence: 'Provenance',
@@ -403,20 +505,18 @@ export const en: Record<EngramKey, string> = {
   sourceExplicit: 'Curator placed',
   sourceSession: 'Excavated at {id}',
   round: 'pass {n}',
-  cardActive: '{n} open',
   cardRedacted: '{n} redacted',
-  signalRatio: 'corridor clarity {n}%',
   detail: 'Tour',
   edit: 'Renovate',
   forget: 'Close',
   restore: 'Reopen',
-  empty: 'No exhibits to display',
-  emptyHint: 'Adjust the floors above, or place a new room',
+  empty: 'No memories to display',
+  emptyHint: 'Adjust the rooms above, or place a new memory',
   loadFailed: 'Tour halted: {msg}',
   loading: 'Guiding…',
-  pagerInfo: 'Floor {page} / {pages} · {total} rooms',
-  prevPage: 'Floor up',
-  nextPage: 'Floor down',
+  pagerInfo: 'Page {page} / {pages} · {total} memories',
+  prevPage: 'Previous page',
+  nextPage: 'Next page',
   cancel: 'Cancel',
   saveWithHint: 'Renovate (archive old placard)',
   detailAttributes: 'Placard',
@@ -429,12 +529,25 @@ export const en: Record<EngramKey, string> = {
   relRelated: 'Adjacent',
   headerTitle: 'Memory Palace',
   headerSubtitle: 'Cross-session long-term memory palace',
+  tabToday: 'Today',
   tabLibrary: 'Palace',
-  tabObservability: 'Tour butler',
-  tabLibraryCount: '{n} rooms',
+  tabCorridor: 'Corridor tour',
+  tabLog: 'Curator log',
+  tabLibraryCount: '{n} memories',
+  roomsTitle: 'Room directory',
+  roomsHint: 'A new room opens once 9 slots fill',
+  reviewQueueHint: 'Cues only: recall first, then reveal to check',
+  healthEvaluatedAt: 'Scored {time}',
+  logFilterAll: 'All',
+  logFilterWrite: 'Writes',
+  logFilterIngest: 'Capture',
+  logFilterRetrieve: 'Retrieval',
+  logFilterOrganize: 'Organize',
+  logCount: '{n} entries · both stores merged, newest first',
+  benchTitle: 'Retrieval bench',
   drawerClose: 'Return',
-  drawerTitle: 'Room placard',
-  kpiTotal: 'Rooms',
+  drawerTitle: 'Memory placard',
+  kpiTotal: 'Memories',
   kpiActive: 'Open',
   kpiForgotten: 'Closed',
   kpiSignal: 'Clarity',
@@ -449,38 +562,31 @@ export const en: Record<EngramKey, string> = {
   opOutcomeReport: 'curator report',
   opSearchRewrite: 'route rewritten',
   opCompressRequest: 'placard compressed',
-  opDistillRequest: 'floor remodelled',
-  selectAll: 'Select all on floor',
+  opDistillRequest: 'rooms merged',
+  selectAll: 'Select all on page',
   deselectAll: 'Deselect all',
-  selectedCount: '{n} rooms',
+  selectedCount: '{n} memories',
   batchForget: 'Close selected ({n})',
-  batchForgetConfirm: 'Close {n} rooms?',
+  batchForgetConfirm: 'Close {n} memories?',
   batchRestore: 'Reopen selected ({n})',
   clearSelection: 'Clear selection',
-  sectionBench: 'Take a walk',
   sectionCorridor: 'Corridor overview',
-  corridorEmpty: 'No rooms yet — the bird’s-eye view appears after a few rooms open.',
+  corridorEmpty: 'No memories yet — the bird’s-eye view appears after a few memories arrive.',
   corridorFailed: 'Failed to load corridor',
   corridorLoad: 'Loading corridor overview…',
-  healthTitle: 'Palace health',
+  corridorAria: 'Corridor overview map',
+  corridorSummary: '{nodes} memories · {edges} corridors',
+  edgeSupersedes: 'supersedes',
+  edgeContradicts: 'contradicts',
+  edgeOther: 'related / supports / refines',
   healthLoading: 'Taking pulse…',
-  healthFailed: 'Pulse failed',
-  healthMetricSignal: 'Corridor clarity',
-  healthMetricActive: 'Open ratio',
-  healthMetricCorridors: 'Corridor density',
-  healthMetricRedaction: 'Redaction relief',
-  healthMetricDecay: 'Decay coverage',
-  teleTitle: 'Curator log',
   teleFailed: 'Telemetry failed',
   teleLoading: 'Aggregating curator events…',
-  teleGroupScale: 'Scale',
   teleGroupRecent: 'Last 7 days',
   telePrivacyHint: 'Local aggregation only · never transmitted',
   telePrivacyTip: 'All op_log and telemetry counters are aggregated in this process\u2019s SQLite only; nothing is sent to any external service. Clearing the plugin or restarting the host wipes the data.',
   teleWrites: 'Opened',
-  teleForgets: 'Closed',
   teleIngest: 'Excavated',
-  teleDistill: 'Distilled',
   teleConsolidate: 'Consolidated',
   benchPlaceholder: 'Name a room by keyword or meaning…',
   benchRun: 'Walk',
@@ -495,12 +601,11 @@ export const en: Record<EngramKey, string> = {
   viaEdgeLabel: 'corridor',
   benchRewrite: 'route split into {n}',
   benchCompress: 'compressed {n} overflow placards',
-  sectionActivity: 'Curator log',
   activityEmpty: 'No curator activity yet',
   detailRevisions: 'Exhibit history',
   tourProposalTitle: 'Tour proposal',
-  tourProposalEmpty: 'The palace is empty — place a first room via engram_save',
-  tourProposalHint: 'Click a room to open its placard',
+  tourProposalEmpty: 'The palace is empty — place a first memory via engram_save',
+  tourProposalHint: 'Click a memory to open its placard',
   tourFocusAll: 'All',
   refurbTitle: 'Refurb suggestions',
   refurbEmpty: 'All rooms are healthy — no suggestions',
@@ -511,8 +616,8 @@ export const en: Record<EngramKey, string> = {
   refurbActionSplit: 'split',
   refurbCount: '{n} suggestions',
   refurbExecute: 'Apply',
-  refurbConfirmDemote: 'Demote this room? Status will become archived; you can reopen it later.',
-  refurbConfirmMerge: 'Merge {n} similar rooms? This triggers engram_distill to fold them into one higher-level pattern.',
+  refurbConfirmDemote: 'Demote this memory? Status will become archived; you can reopen it later.',
+  refurbConfirmMerge: 'Merge {n} similar memories? This triggers engram_distill to fold them into one higher-level pattern.',
   refurbDemoteDone: 'Demoted',
   refurbMergeDone: 'Merge dispatched',
   refurbActionFailed: 'Action failed: {msg}',
@@ -530,4 +635,47 @@ export const en: Record<EngramKey, string> = {
   sortTime: 'By time',
   sortTour: 'By tour route',
   dueBadgeLabel: '{n} due for review — click to open',
+  tabBackfill: 'History backfill',
+  backfillIntro: 'Distils past dsh sessions into the palace, turn by turn: each session is written into the project store matching its own cwd. Turns already captured are skipped by idempotency key, so starting again resumes where it stopped. Backfilled memories never enter the due-today queue.',
+  backfillRulesTitle: 'Import rules',
+  backfillDays: 'Time window',
+  backfillDaysAll: 'All',
+  backfillDaysUnit: '{n} days',
+  backfillMaxTurns: 'Max turns per session',
+  backfillMaxTotal: 'Total turn budget',
+  backfillModel: 'Auxiliary model',
+  backfillModelAuto: 'Auto (model currently in use)',
+  backfillIncludeSubagents: 'Include subagent sessions',
+  backfillIncludeSeeded: 'Include seeded sessions',
+  backfillIncludeNoCwd: 'Include sessions without cwd (private palace only)',
+  backfillReestimate: 'Re-estimate',
+  backfillEstimateTitle: 'Estimate',
+  backfillCandidates: '{n} candidate sessions',
+  backfillPendingTurns: '{n} turns pending',
+  backfillAlready: '{n} turns already captured',
+  backfillSkippedDetail: 'Excluded: subagent {subagent} · seeded {seeded} · no cwd {noCwd} · outside window {tooOld} · unreadable {unreadable}',
+  backfillTruncated: 'Candidates exceed the total turn budget: only the most recent sessions run this time — raise the budget or run in batches',
+  backfillStart: 'Start backfill',
+  backfillPause: 'Pause',
+  backfillStateRunning: 'Running…',
+  backfillStateDone: 'Finished',
+  backfillStateCancelled: 'Stopped (start again to resume)',
+  backfillStateFailed: 'Failed',
+  backfillProgressSessions: 'Sessions {done}/{total}',
+  backfillProgressTurns: 'Turns {done}/{total}',
+  backfillWritten: '{n} memories written',
+  backfillTurnsSkipped: '{n} turns skipped',
+  backfillTurnsFailed: '{n} turns failed',
+  backfillFailures: 'Failures',
+  backfillEstimating: 'Estimating…',
+  backfillSkipReasons: 'Skipped',
+  backfillRouteHint: 'Failures are usually because the model a past session used is not available here: set provider/model in cordis.yml, or run one turn with the target model first (backfill reuses the model currently in use) and retry — finished turns are skipped automatically.',
+  skipLowActivity: 'low activity',
+  skipChitchat: 'chitchat',
+  skipForbidden: 'capture forbidden',
+  skipNoContent: 'no user content',
+  skipAlready: 'already captured',
+  skipNoTurn: 'no such turn',
+  skipNoRoute: 'no route in log',
+  skipUnparsable: 'unparsable output',
 }

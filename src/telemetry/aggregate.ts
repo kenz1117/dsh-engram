@@ -1,6 +1,6 @@
 /**
  * 宫殿遥测聚合：从 op_log 实时聚合最近 N 天的关键指标，全部数据本地保留、不外传。
- * 暴露给路由 /api/engram/telemetry，供面板「管家日报」展示趋势。
+ * 暴露给路由 /api/engram/telemetry，供面板「今日速览」与「管家日志」展示计数。
  * @module @kenz1117/dsh-engram/telemetry/aggregate
  */
 
@@ -28,7 +28,7 @@ export interface TelemetrySnapshot {
     readonly consumptions: number
     readonly consolidations: number
   }
-  /** 各 scope 的活跃房间数与开放率（signal ratio）。 */
+  /** 各 scope 的活跃记忆数与开放率（signal ratio）。 */
   readonly scopes: ReadonlyArray<{
     readonly scope: 'user' | 'project' | 'shared'
     readonly active: number

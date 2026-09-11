@@ -1,5 +1,5 @@
 /**
- * 新手脚手架：宫殿为空时调用，把 4 间示例房间写入 user 库，引导用户上手。
+ * 新手脚手架：宫殿为空时调用，把 4 条示例记忆写入 user 库，引导用户上手。
  * 幂等：检测到 user 库已有 active 条目则跳过，避免覆盖真实数据。
  * @module @kenz1117/dsh-engram/palace-sample
  */
@@ -7,8 +7,8 @@
 import type { EngramStore } from './store/interface.ts'
 import type { ImageryLabel } from './types.ts'
 
-/** 4 间示例房间：覆盖 4 种 kind 各一。 */
-const SAMPLE_ROOMS: readonly { kind: 'fact' | 'preference' | 'decision' | 'episode'; content: string; importance: number; imagery: ImageryLabel }[] = [
+/** 4 条示例记忆：覆盖 4 种 kind 各一。 */
+const SAMPLE_MEMORIES: readonly { kind: 'fact' | 'preference' | 'decision' | 'episode'; content: string; importance: number; imagery: ImageryLabel }[] = [
   {
     kind: 'preference',
     content: '我喜欢简洁的命令行界面与键盘流胜过鼠标点击。',
@@ -36,21 +36,21 @@ const SAMPLE_ROOMS: readonly { kind: 'fact' | 'preference' | 'decision' | 'episo
 ]
 
 /**
- * 若 user 库 active 为空，写入 4 间示例并返回写入的房间 id 列表；
+ * 若 user 库 active 为空，写入 4 条示例并返回写入的记忆 id 列表；
  * 已存在条目则直接返回空数组（不覆盖）。
  */
 export async function initPalaceSample(store: EngramStore): Promise<readonly string[]> {
   const stats = await store.stats()
   if (stats.active > 0) return []
   const ids: string[] = []
-  for (const room of SAMPLE_ROOMS) {
+  for (const memory of SAMPLE_MEMORIES) {
     const record = await store.write({
       scope: 'user',
-      kind: room.kind,
-      content: room.content,
-      importance: room.importance,
+      kind: memory.kind,
+      content: memory.content,
+      importance: memory.importance,
       sourceSessionId: null,
-      imagery: room.imagery,
+      imagery: memory.imagery,
     })
     ids.push(record.id)
   }

@@ -25,6 +25,7 @@ import {
 } from '../retrieve/rewrite.ts'
 import { enforceBudget, truncateItem } from '../retrieve/budget.ts'
 import { placardImprovementHint } from '../imagery/score.ts'
+import type { HistoryBackfillRules, HistoryEstimate, HistoryRunResult } from '../ingest/history.ts'
 
 /** 工具依赖：分库打开器、嵌入器承诺、辅助 LLM 调用与导出目录。 */
 export interface ToolDeps {
@@ -40,9 +41,53 @@ export interface ToolDeps {
   readonly queryRewrite: boolean
   /** 导出文件目录（engram_export 写入）。 */
   readonly exportDir: string
+  /** 历史回填（可选：缺省时不注册 engram_ingest_history，表示环境不支持读取历史会话）。 */
+  readonly historyBackfill?: {
+    /** 估算：候选会话数 / 规则内轮数 / 真正待处理轮数。 */
+    readonly estimate: (rules: HistoryBackfillRules) => Promise<HistoryEstimate>
+    /** 执行：逐会话逐轮摄取（同步等待，受调用方 signal 约束）。 */
+    readonly run: (rules: HistoryBackfillRules, signal: AbortSignal) => Promise<HistoryRunResult>
+  }
 }
 
 const KINDS = ['fact', 'preference', 'decision', 'episode', 'skill'] as const
+
+/** 历史回填估算的模型可读文本（零成本，先看数再决定跑不跑）。 */
+function renderHistoryEstimate(estimate: HistoryEstimate): string {
+  if (estimate.unavailable !== undefined) return `历史回填不可用：${estimate.unavailable}`
+  const rules = estimate.rules
+  const window = rules.days === 0 ? '不限' : `${String(rules.days)} 天`
+  const lines = [
+    `历史回填估算：候选 ${String(estimate.candidates)} 个会话 · 规则内 ${String(estimate.eligibleTurns)} 轮 · 待处理 ${String(estimate.pendingTurns)} 轮（此前已摄取 ${String(estimate.alreadyIngested)} 轮会自动跳过）。`,
+    `规则：时间窗 ${window} · 单会话≤${String(rules.maxTurnsPerSession)} 轮 · 总轮数≤${String(rules.maxTotalTurns)} · 含子代理 ${rules.includeSubagents ? '是' : '否'} · 含种子 ${rules.includeSeeded ? '是' : '否'} · 含无 cwd ${rules.includeNoCwd ? '是' : '否'}`,
+    `已排除：子代理 ${String(estimate.skipped.subagent)} · 种子 ${String(estimate.skipped.seeded)} · 无 cwd ${String(estimate.skipped.noCwd)} · 超时间窗 ${String(estimate.skipped.tooOld)} · 日志不可读 ${String(estimate.skipped.unreadable)}`,
+  ]
+  if (estimate.truncated) {
+    lines.push('注意：候选超出总轮数上限，本次只会处理最近的一部分会话；可调大 maxTotalTurns 或缩小时间窗分几次跑。')
+  }
+  lines.push('实际 LLM 调用次数不超过待处理轮数（低活动/寒暄/显式禁记的轮次会被节流跳过）。确认要真正回填请再传 dryRun=false。')
+  return lines.join('\n')
+}
+
+/** 历史回填执行结果的模型可读文本。 */
+function renderHistoryRun(result: HistoryRunResult): string {
+  const state = result.state === 'done' ? '完成' : result.state === 'cancelled' ? '已中止（可重跑续做）' : '失败'
+  const lines = [
+    `历史回填${state}：处理 ${String(result.sessionsDone)}/${String(result.sessionsTotal)} 个会话 · ${String(result.turnsDone)} 轮 → 写入 ${String(result.memoriesWritten)} 条记忆；跳过 ${String(result.turnsSkipped)} 轮 · 失败 ${String(result.turnsFailed)} 轮。`,
+  ]
+  const reasons = Object.entries(result.skipReasons).sort(([, a], [, b]) => b - a)
+  if (reasons.length > 0) {
+    lines.push(`跳过原因：${reasons.map(([reason, count]) => `${reason} ${String(count)}`).join(' · ')}`)
+  }
+  if (result.failures.length > 0) {
+    const shown = result.failures.slice(0, 3).map(failure => `${failure.sessionId.slice(-12)} 第 ${String(failure.turn)} 轮：${failure.reason}`)
+    lines.push(`失败明细（前 ${String(shown.length)} 条）：${shown.join('；')}`)
+    // 最常见的一种失败：历史会话记录的路由在当前环境没有对应模型配置。
+    lines.push('若失败原因是历史会话记录的路由在当前环境不可用，可在 cordis.yml 配 provider/model，或让一个会话先用目标模型跑一轮（回填会优先复用当前在用的路由）后重跑——已完成的轮次会自动跳过。')
+  }
+  lines.push('同一批可重复执行：已完成的轮次按幂等键跳过，只补未完成的部分。')
+  return lines.join('\n')
+}
 
 /** 从模型参数收敛 scope（非法值或缺失回退 fallback）。 */
 function scopeOf(raw: unknown, fallback: EngramScope): EngramScope {
@@ -97,8 +142,8 @@ async function rewriteQueries(deps: ToolDeps, exec: ToolRunContext, query: strin
 }
 
 /**
- * 构造 15 个工具定义（engram_save/search/timeline/update/forget/report/review/review_queue/
- * stats/export/distill/examine/neighbors/audit_forgotten/tour）。
+ * 构造 16 个工具定义（engram_save/search/timeline/update/forget/report/review/review_queue/
+ * stats/export/distill/examine/neighbors/audit_forgotten/tour/ingest_history）。
  * @param deps - 分库打开器、嵌入器、辅助 LLM、导出目录。
  * @returns 可直接 register 的工具定义数组。
  */
@@ -403,20 +448,22 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
 
   const timeline = defineTool({
     name: 'engram_timeline',
-    description: '按时间范围与主题浏览记忆（时间倒序，最近 20 条）。无参数直接列出最近记录。',
+    description: '按时间范围与主题浏览记忆（默认时间倒序，最近 20 条）。order=tour 时改按固定巡游路线的桩位顺序走（未上路线者排末尾），输出附宫殿坐标——适合按宫殿固定路线复述；多作用域按 user→project→shared 顺序拼接（桩位顺序只在各自库内有意义）。无参数直接列出最近记录。',
     parameters: {
       scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
       topic: { type: 'string', description: '主题子串' },
       since: { type: 'string', description: '起始时间（ISO 或可解析日期）' },
       until: { type: 'string', description: '结束时间' },
+      order: { type: 'string', enum: ['time', 'tour'], description: "排序：缺省 'time' 按创建时间倒序；'tour' 按固定巡游路线桩位顺序" },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
       render: (_args, value) => [{ type: 'text', text: value.text }],
     },
     async execute(args) {
-      const input = args as { scope?: unknown; topic?: string; since?: string; until?: string }
+      const input = args as { scope?: unknown; topic?: string; since?: string; until?: string; order?: unknown }
       const scopes = scopesOf(input.scope)
+      const order = input.order === 'tour' ? 'tour' : 'time'
       const parseTime = (raw: string | undefined, field: string): number | undefined => {
         if (raw === undefined) return undefined
         const ms = Date.parse(raw)
@@ -425,20 +472,28 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       }
       const since = parseTime(input.since, 'since')
       const until = parseTime(input.until, 'until')
-      const rows = (await Promise.all(scopes.map(async (scope) => {
+      const results = await Promise.all(scopes.map(async (scope) => {
         const store = await deps.openStore(scope)
         return store.timeline({
           scopes: [scope],
           ...(input.topic === undefined ? {} : { topic: input.topic }),
           ...(since === undefined ? {} : { since }),
           ...(until === undefined ? {} : { until }),
+          order,
           limit: 20,
         })
-      }))).flat().sort((a, b) => b.createdAt - a.createdAt).slice(0, 20)
+      }))
+      // time 序跨作用域有共同尺度（时间），全局重排；tour 序的桩位只在各自库内可比，按 scope 顺序拼接。
+      const rows = order === 'tour'
+        ? results.flat().slice(0, 20)
+        : results.flat().sort((a, b) => b.createdAt - a.createdAt).slice(0, 20)
       // 输出包协议标签：记忆正文是不可信历史上下文；timeline 无查询参数，当前请求以占位句代替。
-      const body = enforceBudget(rows.map(record =>
-        `${new Date(record.createdAt).toISOString()} [${record.scope}/${record.kind}] ${truncateItem(record.content)}（id=${record.id}）`))
-      return { text: renderMemoryPacket(body.join('\n') || '时间线为空', 'tool_timeline', input.topic ?? '（对话继续）') }
+      const body = enforceBudget(rows.map(record => {
+        const slot = order === 'tour' && record.slot !== undefined ? ` ${record.slot.room}#${record.slot.index}` : ''
+        return `${new Date(record.createdAt).toISOString()}${slot} [${record.scope}/${record.kind}] ${truncateItem(record.content)}（id=${record.id}）`
+      }))
+      const tail = order === 'tour' ? '\n（按固定巡游路线桩位顺序；未上路线者按创建时间排末尾）' : ''
+      return { text: renderMemoryPacket(`${body.join('\n') || '时间线为空'}${tail}`, 'tool_timeline', input.topic ?? '（对话继续）') }
     },
   })
 
@@ -496,7 +551,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { id: { type: 'string', required: true } } },
-      render: (_args, value) => [{ type: 'text', text: `房间 ${value.id} 已闭馆（软删，可恢复），墓志铭已刻入操作日志。` }],
+      render: (_args, value) => [{ type: 'text', text: `记忆 ${value.id} 已闭馆（软删，可恢复），墓志铭已刻入操作日志。` }],
     },
     async execute(args) {
       const input = args as { id: string; scope?: unknown; reason: unknown; affects: unknown; stillUseful: unknown }
@@ -510,6 +565,57 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       const store = await deps.openStore(scope)
       const record = await store.forgetWithTombstone(input.id as never, { reason, affects, stillUseful })
       return { id: record.id }
+    },
+  })
+
+  /**
+   * 历史回填：把 dsh 历史会话逐轮提炼进宫殿（按会话 cwd 分库、已有幂等键的轮次跳过）。
+   * dryRun 默认 true——避免模型顺手触发成百次辅助调用；显式传 false 才真正写入。
+   */
+  const ingestHistory = defineTool({
+    name: 'engram_ingest_history',
+    description: '历史会话回填：把 dsh 的历史会话逐轮提炼进记忆宫殿（写进各会话自己 cwd 对应的项目库；此前已摄取的轮次自动跳过，中断后可重跑续做）。dryRun 缺省 true，只返回估算（候选会话数 / 规则内轮数 / 待处理轮数）而不调 LLM、不写库；确认后再传 dryRun=false 执行。大批量回填建议用设置页「历史回填」tab（有规则选择、进度与暂停）；本工具适合先估算或小批量执行。',
+    parameters: {
+      dryRun: { type: 'boolean', description: '只估算不执行（默认 true；显式 false 才真正回填）' },
+      days: { type: 'number', description: '时间窗天数，0 = 不限；缺省用部署配置值' },
+      maxTurnsPerSession: { type: 'number', description: '单个会话最多摄取轮数；缺省用部署配置值' },
+      maxTotalTurns: { type: 'number', description: '本次最多处理的总轮数（只能调低配置硬上限）' },
+      includeSubagents: { type: 'boolean', description: '是否包含子代理会话（默认 false）' },
+      includeSeeded: { type: 'boolean', description: '是否包含种子会话（默认 false）' },
+      includeNoCwd: { type: 'boolean', description: '是否包含无 cwd 会话（默认 false；这类会话只能写进 user 库）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args, exec) {
+      const input = args as {
+        dryRun?: unknown
+        days?: unknown
+        maxTurnsPerSession?: unknown
+        maxTotalTurns?: unknown
+        includeSubagents?: unknown
+        includeSeeded?: unknown
+        includeNoCwd?: unknown
+      }
+      const history = deps.historyBackfill
+      if (history === undefined) {
+        return { text: '历史回填不可用：当前组合未挂载会话持久化服务（会话日志不可读，例如 headless profile）。' }
+      }
+      const rules: HistoryBackfillRules = {
+        ...(typeof input.days === 'number' ? { days: input.days } : {}),
+        ...(typeof input.maxTurnsPerSession === 'number' ? { maxTurnsPerSession: input.maxTurnsPerSession } : {}),
+        ...(typeof input.maxTotalTurns === 'number' ? { maxTotalTurns: input.maxTotalTurns } : {}),
+        ...(typeof input.includeSubagents === 'boolean' ? { includeSubagents: input.includeSubagents } : {}),
+        ...(typeof input.includeSeeded === 'boolean' ? { includeSeeded: input.includeSeeded } : {}),
+        ...(typeof input.includeNoCwd === 'boolean' ? { includeNoCwd: input.includeNoCwd } : {}),
+      }
+      // 缺省 dryRun=true：估算零成本，执行有 LLM 成本，必须显式确认。
+      if (input.dryRun !== false) {
+        return { text: renderHistoryEstimate(await history.estimate(rules)) }
+      }
+      const result = await history.run(rules, exec.signal)
+      return { text: renderHistoryRun(result) }
     },
   })
 
@@ -733,9 +839,9 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
 
   const exportTool = defineTool({
     name: 'engram_export',
-    description: '把记忆库导出为文件（Markdown / JSON / 镜像目录），返回文件路径。redactedView=true 时输出脱敏视图（内容二次清洗并截断为 40 字预览，可安全分享）。format=markdown-mirror 时每个房间一个 .md + frontmatter，附楼层清单 _meta.json 与全宫殿入口 _index.md，可直接用 Obsidian / git 漫游。',
+    description: '把记忆库导出为文件（Markdown / JSON / 镜像目录），返回文件路径。redactedView=true 时输出脱敏视图（内容二次清洗并截断为 40 字预览，可安全分享）。format=markdown-mirror 时按房间（kind）分目录、每条记忆一个 .md + frontmatter，附房间清单 _meta.json 与全宫殿入口 _index.md，可直接用 Obsidian / git 漫游。',
     parameters: {
-      format: { type: 'string', enum: ['markdown', 'json', 'markdown-mirror'], description: '导出格式：markdown 单文件、json 单文件、markdown-mirror 每房间一文件（默认 markdown）' },
+      format: { type: 'string', enum: ['markdown', 'json', 'markdown-mirror'], description: '导出格式：markdown 单文件、json 单文件、markdown-mirror 每条记忆一文件（按房间分目录，默认 markdown）' },
       scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
       redactedView: { type: 'boolean', description: '脱敏视图：内容二次脱敏并截断为预览（默认 false 完整导出；镜像模式忽略此参数）' },
     },
@@ -762,7 +868,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
           const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
           const mirrorRoot = join(deps.exportDir, `mirror-${scope}-${stamp}`)
           const report = await writeMirror(mirrorRoot, data)
-          written.push(`${mirrorRoot}（${report.fileCount} 个文件，${data.records.length} 间房间，${report.floors.length} 个楼层）`)
+          written.push(`${mirrorRoot}（${report.fileCount} 个文件，${data.records.length} 条记忆，${report.rooms.length} 个房间）`)
           continue
         }
         const payload = redactedView
@@ -828,14 +934,14 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
   })
 
   /**
-   * 渐进式披露 — 房间铭牌批量访客：拿到一组 id 后才决定进哪几间。
+   * 渐进式披露 — 记忆铭牌批量访客：拿到一组 id 后才决定取哪几条。
    * 与 engram_search 配合使用：search 只返门牌号摘要，examine 才进房看铭牌。
    */
   const examine = defineTool({
     name: 'engram_examine',
-    description: '渐进式披露：按 id 批量拉取房间完整铭牌（content + 楼层 + 状态 + 边关系）。仅在已通过 engram_search/timeline/neighbors 拿到候选 id 后调用，避免一次性吞全文。建议 ≤16 个 id，超出会按入参顺序保留前 N 条。',
+    description: '渐进式披露：按 id 批量拉取记忆完整铭牌（content + 房间 + 状态 + 边关系）。仅在已通过 engram_search/timeline/neighbors 拿到候选 id 后调用，避免一次性吞全文。建议 ≤16 个 id，超出会按入参顺序保留前 N 条。',
     parameters: {
-      ids: { type: 'array', items: { type: 'string' }, description: '房间 id 列表' },
+      ids: { type: 'array', items: { type: 'string' }, description: '记忆 id 列表' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -862,13 +968,13 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
 
   /**
    * 渐进式披露 — 走廊漫步：从一间出发走 related/supersedes/contradicts 走廊边，
-   * 找到与之相关的邻居房间简表（仅 id + 一句话摘要，不返全文）。
+   * 找到与之相关的邻居记忆简表（仅 id + 一句话摘要，不返全文）。
    */
   const neighborsTool = defineTool({
     name: 'engram_neighbors',
-    description: '走廊漫步：从某间出发走 1-3 跳内的 related/supersedes/contradicts 边，返回邻居房间简表（仅 id + scope + kind + status + content），便于判断下一站。',
+    description: '走廊漫步：从某条记忆出发走 1-3 跳内的 related/supersedes/contradicts 边，返回邻居记忆简表（仅 id + scope + kind + status + content），便于判断下一站。',
     parameters: {
-      id: { type: 'string', description: '起点房间 id' },
+      id: { type: 'string', description: '起点记忆 id' },
       depth: { type: 'integer', description: '跳数（默认 1，最多 3，由执行器夹逼）' },
     },
     output: {
@@ -887,14 +993,14 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       const seedScope = seedRow.scope
       const scopeStore = seedScope === 'user' ? userStore : projectStore
       const neighbors = await scopeStore.neighbors(seed, depth)
-      if (neighbors.length === 0) return { text: `从 ${seed}（${seedScope}）出发，${depth} 跳内无邻居房间。` }
+      if (neighbors.length === 0) return { text: `从 ${seed}（${seedScope}）出发，${depth} 跳内无邻居记忆。` }
       const lines = neighbors.map((record, index) => `${index + 1}. [${record.scope}/${record.kind}/${record.status}] ${record.content.slice(0, 80)}${record.content.length > 80 ? '…' : ''}（id=${record.id}）`)
-      return { text: `起点 ${seed}（${seedScope}）→ ${depth} 跳走廊共访 ${neighbors.length} 间：\n${lines.join('\n')}` }
+      return { text: `起点 ${seed}（${seedScope}）→ ${depth} 跳走廊共访 ${neighbors.length} 条：\n${lines.join('\n')}` }
     },
   })
 
   /**
-   * P0-2 巡游路由：把检索结果重组为有序 3-7 间房间路径，附回声触发器与入选理由。
+   * P0-2 巡游路由：把检索结果重组为有序 3-7 条记忆路径，附回声触发器与入选理由。
    * 与 engram_search 复用底层查询，避免重复 IO。
    */
   const tour = defineTool({
@@ -978,7 +1084,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     },
   })
 
-  return [save, search, timeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten]
+  return [save, search, timeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten, ingestHistory]
 }
 
 // ===== P0-2 巡游路由：engram_tour =====
@@ -1005,7 +1111,7 @@ export interface TourRoute {
 /**
  * 构造巡游路径：在 search 命中的基础上按路径策略重排。
  * 1) 起点簇：取命中中 kind 出现频次最高的前 N 个同 kind 节点（同类巩固）。
- * 2) 走廊扩展：从起点簇每个节点的 1-跳 neighbors 中挑 active 且 score > 0 的房间。
+ * 2) 走廊扩展：从起点簇每个节点的 1-跳 neighbors 中挑 active 且 score > 0 的记忆。
  * 3) 反差收束：从剩余命中挑一个 emotionalValence ≥ 0.7 的做收束（强反差唤醒）。
  * 命中不足时按可用性回退；命中为 0 时返回空 stops。
  */
