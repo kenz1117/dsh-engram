@@ -134,9 +134,9 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .segScope { padding: 3px; border-radius: 10px; }
 
 /* ---------- 双列工作台（今日视图：左窄放导航入口，右宽放目录与待办三块；≤960px 回落单列） ---------- */
-.layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: var(--space-5); align-items: start; }
-.mainCol { min-width: 0; display: flex; flex-direction: column; gap: var(--space-4); }
-.sideCol { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; position: sticky; top: var(--space-3); }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: var(--space-5); align-items: start; margin-top: var(--space-5); }
+.mainCol { min-width: 0; display: flex; flex-direction: column; gap: var(--space-5); }
+.sideCol { display: flex; flex-direction: column; gap: var(--space-5); min-width: 0; position: sticky; top: var(--space-3); }
 /* 窄屏：双列回落单列，侧栏取消 sticky 顺流排布。 */
 @media (max-width: 960px) {
   .layout { grid-template-columns: 1fr; gap: var(--space-4); }
@@ -443,9 +443,9 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 }
 
 /* ---------- 区域与卡片（重设计：标题出卡，卡片只装内容） ---------- */
-/* 原标题在卡内（.panelCardTitle）；现在改为区域标题 + 内容卡，减少描边堆叠。 */
-.section { margin-bottom: var(--space-5); }
-.section:last-child { margin-bottom: 0; }
+/* 区域之间的距离由父容器的 gap 统一给出（.mainCol / .sideCol / .corridorLayout），
+   这里不再叠 margin-bottom——否则会出现「上方贴死、下方过松」的不对称间距。 */
+.section { min-width: 0; }
 .sectionHead { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-3); }
 .sectionTitle { margin: 0; font-size: var(--fs-ctrl); font-weight: 600; color: var(--dsw-alias-label-primary); }
 .sectionHint { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); line-height: 1.4; }
