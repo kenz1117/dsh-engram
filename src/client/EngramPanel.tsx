@@ -506,6 +506,26 @@ const LOG_FILTER_KEY: Readonly<Record<LogFilter, EngramKey>> = {
   retrieve: 'logFilterRetrieve',
   organize: 'logFilterOrganize',
 }
+/** 分组 → 行首色点类（与工具条计数、筛选分组同色）。 */
+const LOG_DOT: Readonly<Record<'write' | 'ingest' | 'retrieve' | 'organize', string>> = {
+  write: 'logDotWrite',
+  ingest: 'logDotIngest',
+  retrieve: 'logDotRetrieve',
+  organize: 'logDotOrganize',
+}
+/** op 枚举 → 所属筛选分组（未归类返回 all）。 */
+function logGroupOf(op: string): LogFilter {
+  for (const group of ['write', 'ingest', 'retrieve', 'organize'] as const) {
+    if (LOG_GROUPS[group]?.includes(op) === true) return group
+  }
+  return 'all'
+}
+/** 行首色点类名：未归类的 op 用中性灰点，避免出现无颜色的空列。 */
+function logDotClass(op: string): string {
+  const group = logGroupOf(op)
+  const base = styles.logDot ?? ''
+  return group === 'all' ? base : `${base} ${styles[LOG_DOT[group]] ?? ''}`
+}
 
 /**
  * 管家日志整页视图：顶部近 7 天三个计数，下面是两库合并的完整 op_log
@@ -525,50 +545,45 @@ function LogPanel({ t, telemetry }: { t: T; telemetry: TelemetrySnapshot | null 
   const visible = (rows ?? []).filter(row => allow === null || allow.includes(row.op))
   const counts = telemetry?.counts
   return (
-    <>
-      <section className={styles.section}>
-        <div className={styles.panelCard}>
-          <div className={styles.heroMetrics}>
-            <Metric label={t('teleWrites')} value={counts?.writes ?? 0} tail={t('teleGroupRecent')} />
-            <Metric label={t('teleIngest')} value={counts?.ingestDones ?? 0} tail={t('teleGroupRecent')} />
-            <Metric label={t('teleConsolidate')} value={counts?.consolidations ?? 0} tail={t('teleGroupRecent')} />
-          </div>
+    <section className={styles.section}>
+      {/* 一条工具条：标题 + 条数 + 近 7 天三类计数（带类别色点）+ 类别筛选，
+          取代原先「独立计数卡 + 筛选行」两段式。 */}
+      <div className={styles.logToolbar}>
+        <h4 className={styles.sectionTitle}>{t('tabLog')}</h4>
+        <span className={styles.sectionHint}>{t('logCount', { n: visible.length })}</span>
+        <span className={styles.logCounts}>
+          <span><i className={`${styles.logDot} ${styles.logDotWrite}`} aria-hidden="true" />{t('teleWrites')} <b>{counts?.writes ?? 0}</b></span>
+          <span><i className={`${styles.logDot} ${styles.logDotIngest}`} aria-hidden="true" />{t('teleIngest')} <b>{counts?.ingestDones ?? 0}</b></span>
+          <span><i className={`${styles.logDot} ${styles.logDotOrganize}`} aria-hidden="true" />{t('teleConsolidate')} <b>{counts?.consolidations ?? 0}</b></span>
+        </span>
+        <div className={styles.segGroup} role="tablist">
+          {(['all', 'write', 'ingest', 'retrieve', 'organize'] as const).map(option => (
+            <button key={option} type="button" role="tab" aria-selected={filter === option}
+              className={filter === option ? `${styles.segItem} ${styles.on}` : styles.segItem}
+              onClick={() => { setFilter(option) }}>{t(LOG_FILTER_KEY[option])}</button>
+          ))}
         </div>
-      </section>
-      <section className={styles.section}>
-        <div className={styles.sectionHead}>
-          <h4 className={styles.sectionTitle}>{t('tabLog')}</h4>
-          <span className={styles.sectionHint}>{t('logCount', { n: visible.length })}</span>
-        </div>
-        <div className={styles.filters} role="tablist">
-          <div className={styles.segGroup}>
-            {(['all', 'write', 'ingest', 'retrieve', 'organize'] as const).map(option => (
-              <button key={option} type="button" role="tab" aria-selected={filter === option}
-                className={filter === option ? `${styles.segItem} ${styles.on}` : styles.segItem}
-                onClick={() => { setFilter(option) }}>{t(LOG_FILTER_KEY[option])}</button>
-            ))}
-          </div>
-        </div>
-        <div className={styles.panelCard}>
-          {rows === null
-            ? <div className={styles.expandLoading}>{t('loading')}</div>
-            : visible.length === 0
-              ? <div className={styles.expandLoading}>{t('activityEmpty')}</div>
-              : (
-                <div className={styles.logList}>
-                  {visible.map((op, index) => (
-                    <div key={index} className={styles.logRow}>
-                      <span className={styles.logTime}>{relTime(t, op.at)}</span>
-                      <span className={styles.logOp}>{opLabel(t, op.op)}</span>
-                      <span className={styles.logScope}>{op.scope === 'user' ? t('scopeUser') : t('scopeProject')}</span>
-                      <span className={styles.logDetail} title={op.detail ?? ''}>{activityDetail(t, op.detail)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-        </div>
-      </section>
-    </>
+      </div>
+      <div className={styles.panelCard}>
+        {rows === null
+          ? <div className={styles.expandLoading}>{t('loading')}</div>
+          : visible.length === 0
+            ? <div className={styles.expandLoading}>{t('activityEmpty')}</div>
+            : (
+              <div className={styles.logList}>
+                {visible.map((op, index) => (
+                  <div key={index} className={styles.logRow}>
+                    <i className={logDotClass(op.op)} aria-hidden="true" />
+                    <span className={styles.logTime}>{relTime(t, op.at)}</span>
+                    <span className={styles.logOp}>{opLabel(t, op.op)}</span>
+                    <span className={styles.logScope}>{op.scope === 'user' ? t('scopeUser') : t('scopeProject')}</span>
+                    <span className={styles.logDetail} title={op.detail ?? ''}>{activityDetail(t, op.detail)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+      </div>
+    </section>
   )
 }
 
@@ -691,11 +706,11 @@ function TourProposalCard({ t, scope, onSelect }: { t: T; scope: 'user' | 'proje
   if (proposal === null) return <div className={styles.expandLoading}>{t('loading')}</div>
   return (
     <div className={styles.tourProposal}>
-      <div className={styles.tourFocusRow} role="tablist" aria-label="focus-kind">
+      <div className={styles.chipRow} role="tablist" aria-label="focus-kind">
         {KINDS_FOCUS.map(kind => (
           <button key={kind || 'all'} type="button" role="tab"
             aria-selected={focusKind === kind}
-            className={focusKind === kind ? `${styles.tourFocusChip} ${styles.tourFocusChipOn}` : styles.tourFocusChip}
+            className={focusKind === kind ? `${styles.chip} ${styles.chipOn}` : styles.chip}
             onClick={() => { setFocusKind(kind) }}>
             {labelKind(kind)}
           </button>
@@ -1593,7 +1608,10 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
           <div className={styles.sectionHead}>
             <h4 className={styles.sectionTitle}>{t('tabLibrary')}</h4>
           </div>
-          <div className={styles.filters}>
+          {/* 工具行：搜索占主宽，状态与排序靠右；房间筛选另起一行 chips，避免六项分段挤断换行。 */}
+          <div className={styles.toolbarRow}>
+            <input className={`${styles.input} ${styles.search}`} placeholder={t('searchPlaceholder')} value={q}
+              onChange={event => { setQ(event.target.value.trim()); setOffset(0); setExpanded(null); clearSelection() }} />
             <div className={styles.segGroup}>
               {([
                 ['all', t('allStatuses')],
@@ -1609,18 +1627,6 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
               ))}
             </div>
             <div className={styles.segGroup}>
-              {([
-                ['all', t('allKinds')],
-                ...KINDS.map(option => [option, kindLabel(t, option)] as const),
-              ] as const).map(([value, label]) => (
-                <button key={value} type="button"
-                  className={kind === value ? `${styles.segItem} ${styles.on}` : styles.segItem}
-                  onClick={() => { setKind(value); setOffset(0); setExpanded(null); clearSelection() }}>
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className={styles.segGroup}>
               {([['time', t('sortTime')], ['tour', t('sortTour')]] as const).map(([value, label]) => (
                 <button key={value} type="button"
                   className={sort === value ? `${styles.segItem} ${styles.on}` : styles.segItem}
@@ -1629,8 +1635,18 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
                 </button>
               ))}
             </div>
-            <input className={`${styles.input} ${styles.search}`} placeholder={t('searchPlaceholder')} value={q}
-              onChange={event => { setQ(event.target.value.trim()); setOffset(0); setExpanded(null); clearSelection() }} />
+          </div>
+          <div className={styles.chipRow}>
+            {([
+              ['all', t('allKinds')],
+              ...KINDS.map(option => [option, kindLabel(t, option)] as const),
+            ] as const).map(([value, label]) => (
+              <button key={value} type="button" aria-pressed={kind === value}
+                className={kind === value ? `${styles.chip} ${styles.chipOn}` : styles.chip}
+                onClick={() => { setKind(value); setOffset(0); setExpanded(null); clearSelection() }}>
+                {label}
+              </button>
+            ))}
           </div>
 
           {selected.size > 0 && (
@@ -1783,6 +1799,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
 
       {activeTab === 'corridor' && (
         <div className={styles.tabPanel}>
+          {/* 纵向堆叠：先看走廊结构（鸟瞰），再进检索实验台；两块都吃满宽度，图与命中行不被压窄。 */}
           <div className={styles.mainCol}>
             <section className={styles.section}>
               <div className={styles.sectionHead}>
