@@ -1738,7 +1738,27 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
           {/* 今日速览：主指标 + 健康环，替代原常驻日报条。 */}
           <TodayHero t={t} overview={overview} />
           <div className={styles.layout}>
+            {/* 左：入殿导航（进宫的入口）；右：房间目录 + 今日待回忆 + 翻新清单（要看的与要做的）。 */}
             <div className={styles.mainCol}>
+              <section className={styles.section}>
+                <div className={styles.sectionHead}>
+                  <h4 className={styles.sectionTitle}>{t('tourProposalTitle')}</h4>
+                </div>
+                <div className={styles.panelCard}>
+                  <TourProposalCard t={t} scope={scope} onSelect={openReview} />
+                </div>
+              </section>
+            </div>
+            <aside className={styles.sideCol}>
+              <section className={styles.section}>
+                <div className={styles.sectionHead}>
+                  <h4 className={styles.sectionTitle}>{t('roomsTitle')}</h4>
+                  <span className={styles.sectionHint}>{t('roomsHint')}</span>
+                </div>
+                <div className={styles.panelCard}>
+                  <RoomDirectory t={t} byKind={overview.byKind} />
+                </div>
+              </section>
               <section className={styles.section} id="engram-review-due">
                 <div className={styles.sectionHead}>
                   <h4 className={styles.sectionTitle}>{t('reviewQueueTitle')}</h4>
@@ -1754,25 +1774,6 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
                 </div>
                 <div className={styles.panelCard}>
                   <RefurbCard t={t} scope={scope} onSelect={openReview} onAfterAction={reload} toast={toast} />
-                </div>
-              </section>
-            </div>
-            <aside className={styles.sideCol}>
-              <section className={styles.section}>
-                <div className={styles.sectionHead}>
-                  <h4 className={styles.sectionTitle}>{t('roomsTitle')}</h4>
-                  <span className={styles.sectionHint}>{t('roomsHint')}</span>
-                </div>
-                <div className={styles.panelCard}>
-                  <RoomDirectory t={t} byKind={overview.byKind} />
-                </div>
-              </section>
-              <section className={styles.section}>
-                <div className={styles.sectionHead}>
-                  <h4 className={styles.sectionTitle}>{t('tourProposalTitle')}</h4>
-                </div>
-                <div className={styles.panelCard}>
-                  <TourProposalCard t={t} scope={scope} onSelect={openReview} />
                 </div>
               </section>
             </aside>
