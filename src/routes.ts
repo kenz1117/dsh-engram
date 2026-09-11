@@ -7,11 +7,19 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { EngramKind, EngramScope, EngramStatus, ListFilter } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
+import type { EngramEmbedder } from './embedder/interface.ts'
+import { writeMirror } from './mirror/markdown.ts'
+import { createBackup, restoreBackup, BACKUP_SCHEMA_VERSION } from './backup/tar.ts'
+import { runConsolidation } from './consolidation/run.ts'
+import { aggregateTelemetry } from './telemetry/aggregate.ts'
+import { buildTourProposal } from './tour-proposal.ts'
+import { gatherRefurbSuggestions, DEFAULT_REFURB_OPTIONS } from './refurb.ts'
 
 /** 回环 peer：IPv4 127/8、IPv6 ::1、IPv4-mapped IPv6。 */
 function isLoopbackPeer(req: IncomingMessage): boolean {
@@ -90,13 +98,22 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 
 /** 从 URL searchParams 收敛 scope（缺省 user）。 */
 function scopeOf(raw: string | null, fallback: EngramScope): EngramScope {
-  return raw === 'user' || raw === 'project' ? raw : fallback
+  if (raw === 'user' || raw === 'project' || raw === 'shared') return raw
+  return fallback
 }
 
 /** 管理面板的路由依赖。 */
 export interface RouteDeps {
   readonly openStore: (scope: EngramScope) => Promise<EngramStore>
   readonly exportDir: string
+  /** 嵌入器承诺（search-test 的语义道）；undefined = 纯关键词。 */
+  readonly embedder: Promise<EngramEmbedder | undefined>
+  /** 镜像根目录（默认 `${exportDir}/palaces`），面板「打开镜像目录」按钮会用到。 */
+  readonly mirrorDir: string
+  /** 备份目录（与 dbDir 同源），用于打包 .db 成 tar.gz。 */
+  readonly dbDir: string
+  /** 当前插件版本，写进备份 _meta.json 供恢复端校验。 */
+  readonly pluginVersion: string
 }
 
 /**
@@ -139,15 +156,59 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             json(res, 200, await (await deps.openStore(scope)).list(filter))
             return
           }
+          if (req.method === 'GET' && route === 'search-test') {
+            // 召回测试台：跑真实检索（含命中强化），供面板核对召回质量与命中原委。
+            const q = url.searchParams.get('q')
+            if (q === null || q.trim() === '') { json(res, 400, { error: 'q required' }); return }
+            const scopeParam = url.searchParams.get('scope')
+            const scopes: EngramScope[] = scopeParam === 'all' || scopeParam === null || scopeParam === ''
+              ? ['user', 'project']
+              : [scopeOf(scopeParam, 'user')]
+            const kind = url.searchParams.get('kind')
+            const limit = Math.min(20, Math.max(1, Number(url.searchParams.get('limit') ?? 10) || 10))
+            const embedder = deps.embedder === undefined ? undefined : await deps.embedder
+            const vector = embedder === undefined ? undefined : (await embedder.embed([q.trim()]))[0]
+            const results = await Promise.all(scopes.map(async scope => {
+              const store = await deps.openStore(scope)
+              return store.search({ text: q, scopes: [scope], limit }, vector)
+            }))
+            const degraded = results.some(result => result.degraded)
+            let hits = results.flatMap(result => result.hits)
+            if (kind !== null && kind !== '' && kind !== 'all') hits = hits.filter(hit => hit.record.kind === kind)
+            json(res, 200, {
+              degraded,
+              hits: hits.map(hit => ({
+                id: hit.record.id,
+                score: hit.score,
+                via: hit.via,
+                ...(hit.viaEdge === undefined ? {} : { viaEdge: hit.viaEdge }),
+                scope: hit.record.scope,
+                kind: hit.record.kind,
+                status: hit.record.status,
+                content: hit.record.content,
+                createdAt: hit.record.createdAt,
+              })),
+            })
+            return
+          }
+          if (req.method === 'GET' && route === 'activity') {
+            // 最近活动：合并两库 op_log 倒序（摄取/检索改写/压缩/蒸馏/条目操作全貌）。
+            const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
+            const scopes: EngramScope[] = ['user', 'project']
+            const merged = (await Promise.all(scopes.map(async scope => {
+              const ops = await (await deps.openStore(scope)).recentOps(limit)
+              return ops.map(op => ({ ...op, scope }))
+            }))).flat().sort((a, b) => b.at - a.at).slice(0, limit)
+            json(res, 200, { operations: merged })
+            return
+          }
           if (req.method === 'GET' && route === 'review') {
             const scope = scopeOf(url.searchParams.get('scope'), 'user')
             const id = url.searchParams.get('id')
             if (id === null || id === '') { json(res, 400, { error: 'id required' }); return }
             const store = await deps.openStore(scope)
             const view = await store.review(id as never)
-            const operations = view === undefined ? [] : view.operations
             if (view === undefined) { json(res, 404, { error: `未找到条目 ${id}` }); return }
-            void operations
             json(res, 200, view)
             return
           }
@@ -173,6 +234,194 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               'content-disposition': `attachment; filename="engram-${scope}-${stamp}.${format}"`,
             })
             res.end(body)
+            return
+          }
+          if (req.method === 'GET' && route === 'mirror') {
+            // 镜像导出：与 engram_export format=markdown-mirror 同语义，HTTP 路由版（面板「导出镜像」按钮直接 GET）。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const data = await (await deps.openStore(scope)).exportAll()
+            const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
+            const mirrorRoot = join(deps.mirrorDir, scope, stamp)
+            const report = await writeMirror(mirrorRoot, data)
+            json(res, 200, { ...report, scope, roomCount: data.records.length, edgeCount: data.edges.length })
+            return
+          }
+          if (req.method === 'GET' && route === 'health') {
+            // 健康评分（Memory Prize scorecard）：5 维 0-100，越高宫殿越稳。
+            //   - 信噪比 (0-40)：命中强化 / 候选数，0-1 线性
+            //   - 活跃率 (0-25)：active / total，越接近目标活跃率越满分（user/project=0.85；shared=0.7）
+            //   - 走廊密度 (0-15)：edges / active，封顶 0.5
+            //   - 涂改率惩罚 (0-10)：redacted 占比反向
+            //   - 衰减覆盖 (0-10)：archived / total 落入区间给满分（user/project=[0.15, 0.45]；
+            //     shared=[0.25, 0.5]，更严因为公开过期的风险更高）
+            // scope 查询参数：限定只看某一库（不传 = 现 user+project 合并，向后兼容）。
+            const rawScope = url.searchParams.get('scope')
+            const scopes: EngramScope[] = rawScope === 'user' || rawScope === 'project' || rawScope === 'shared'
+              ? [rawScope]
+              : ['user', 'project']
+            const parts = await Promise.all(scopes.map(async scope => {
+              const store = await deps.openStore(scope)
+              const s = await store.stats()
+              const edgeCount = (await store.exportAll()).edges.length
+              const total = Math.max(s.total, 1)
+              const signal = s.signalRatio
+              const activeRatio = s.active / total
+              const corridorRatio = Math.min(0.5, edgeCount / Math.max(s.active, 1)) / 0.5
+              const redactedPenalty = Math.max(0, 1 - s.redacted / total)
+              const archivedRatio = s.archived / total
+              // shared 库的「最优活跃率」与「衰减区间」与 user/project 不同：公开意味着大部分应当有效，
+              // 过期可见会让其他 agent 学到错误信息；门槛更高。
+              const isShared = scope === 'shared'
+              const targetActive = isShared ? 0.7 : 0.85
+              const decayLow = isShared ? 0.25 : 0.15
+              const decayHigh = isShared ? 0.5 : 0.45
+              const decayWindow = isShared ? 0.25 : 0.3
+              const decayCoverage = archivedRatio >= decayLow && archivedRatio <= decayHigh
+                ? 1
+                : Math.max(0, 1 - Math.min(Math.abs(archivedRatio - decayLow), Math.abs(archivedRatio - decayHigh)) / decayWindow)
+              const score = Math.round(
+                signal * 40
+                + (1 - Math.abs(activeRatio - targetActive) / targetActive) * 25
+                + corridorRatio * 15
+                + redactedPenalty * 10
+                + decayCoverage * 10,
+              )
+              return { scope, score: Math.min(100, Math.max(0, score)), signal, activeRatio, edgeCount, redacted: s.redacted, archivedRatio }
+            }))
+            const overall = Math.round(parts.reduce((sum, part) => sum + part.score, 0) / parts.length)
+            json(res, 200, { overall, parts, evaluatedAt: Date.now() })
+            return
+          }
+          if (req.method === 'GET' && route === 'corridor') {
+            // 走廊图：节点 = 房间（按楼层分簇），边 = related/supersedes/contradicts/refines/supports。
+            // 同一作用域只读一份；面板组件默认只画 active 房间的子图，避免闭馆节点遮蔽。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const includeStatuses = new Set(['active'])
+            const rawStatus = url.searchParams.get('status')
+            if (rawStatus !== null && rawStatus !== '' && rawStatus !== 'all') {
+              for (const s of rawStatus.split(',')) {
+                if (s === 'active' || s === 'archived' || s === 'forgotten') includeStatuses.add(s)
+              }
+            }
+            const data = await (await deps.openStore(scope)).exportAll()
+            const nodes = data.records
+              .filter(r => includeStatuses.has(r.status))
+              .map(r => ({
+                id: r.id,
+                scope: r.scope,
+                kind: r.kind,
+                status: r.status,
+                importance: r.importance,
+                confidence: r.confidence,
+                title: r.content.length > 40 ? `${r.content.slice(0, 40)}…` : r.content,
+                content: r.content,
+              }))
+            const allowedIds = new Set(nodes.map(n => n.id))
+            const edges = data.edges
+              .filter(e => allowedIds.has(e.from) && allowedIds.has(e.to))
+              .map(e => ({ id: `${e.from}-${e.to}-${e.type}`, from: e.from, to: e.to, type: e.type }))
+            json(res, 200, { scope, nodes, edges })
+            return
+          }
+          if (req.method === 'GET' && route === 'telemetry') {
+            // 宫殿遥测：本地聚合 op_log 近 N 天的关键指标，全部数据本地保留。
+            // 可选 scope 查询：限定只看某一库（不传 = 三库聚合，向后兼容）。
+            const windowDays = Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 7) || 7))
+            const rawScope = url.searchParams.get('scope')
+            const scopeFilter: 'user' | 'project' | 'shared' | undefined =
+              rawScope === 'user' ? 'user' : rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : undefined
+            const snapshot = await aggregateTelemetry(deps.openStore, windowDays, scopeFilter)
+            json(res, 200, snapshot)
+            return
+          }
+          if (req.method === 'GET' && route === 'tour-proposal') {
+            // 入殿导航：会话首轮时的开场建议（基于当前 scope 的 active 房间）。
+            // 仅取 active（greeting 区分空宫殿与多房间两种文案），suggestedStops ≤ 5。
+            const rawScope = url.searchParams.get('scope')
+            const scope: EngramScope = rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : 'user'
+            const store = await deps.openStore(scope)
+            const filter = await store.list({ scope, status: 'active', limit: 200, offset: 0 })
+            const focusKind = url.searchParams.get('focusKind')
+            const proposal = buildTourProposal(scope, filter.records, focusKind ?? undefined)
+            json(res, 200, {
+              scope: proposal.empty ? 'empty' : scope,
+              greeting: proposal.greeting,
+              activeCount: proposal.activeCount,
+              empty: proposal.empty,
+              suggestedStops: proposal.suggestedStops.map(record => ({
+                id: record.id,
+                kind: record.kind,
+                content: record.content,
+                importance: record.importance,
+                confidence: record.confidence,
+              })),
+            })
+            return
+          }
+          if (req.method === 'GET' && route === 'refurb') {
+            // 翻新清单：扫描当前 scope 的 active 条目，按规则生成 merge/demote/review/split 建议。
+            const rawScope = url.searchParams.get('scope')
+            const scope: EngramScope = rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : 'user'
+            const store = await deps.openStore(scope)
+            const filter = await store.list({ scope, status: 'active', limit: 500, offset: 0 })
+            const suggestions = gatherRefurbSuggestions(filter.records, DEFAULT_REFURB_OPTIONS)
+            json(res, 200, {
+              scope,
+              count: suggestions.length,
+              suggestions: suggestions.map(suggestion => ({
+                action: suggestion.action,
+                primaryId: suggestion.primaryId,
+                candidates: [...suggestion.candidates],
+                scope: suggestion.scope,
+                reason: suggestion.reason,
+                confidence: suggestion.confidence,
+              })),
+            })
+            return
+          }
+          if (req.method === 'POST' && route === 'consolidate') {
+            // 闭馆整理手动触发：面板「管家整理」按钮；嵌入不可用时仅归档 + 启发式去重。
+            // 可选 candidates：仅把指定 ids 当作合并阶段种子（其它条目仅在与种子相似时被并入）。
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            const rawScope = typeof body?.scope === 'string' ? body.scope : 'user'
+            const scope: 'user' | 'project' | 'shared' = rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : 'user'
+            const candidates = Array.isArray(body?.candidates)
+              ? body.candidates.filter((value: unknown): value is string => typeof value === 'string')
+              : undefined
+            const store = await deps.openStore(scope)
+            const report = await runConsolidation(store, deps.embedder, candidates === undefined
+              ? { scope }
+              : { scope, mergeCandidateIds: candidates })
+            json(res, 200, report)
+            return
+          }
+          if (req.method === 'POST' && route === 'backup') {
+            if (!guardWrite(req, res)) return
+            const result = await createBackup(deps.dbDir, deps.pluginVersion)
+            json(res, 200, { archivePath: result.archivePath, bytes: result.bytes, meta: result.meta, schemaVersion: BACKUP_SCHEMA_VERSION })
+            return
+          }
+          if (req.method === 'POST' && route === 'restore-backup') {
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            if (body === null || typeof body.archivePath !== 'string' || body.archivePath === '') {
+              json(res, 400, { error: 'archivePath required' })
+              return
+            }
+            // 路径安全：必须在 dbDir 子树内（防止任意文件覆盖）。
+            const normalized = join(deps.dbDir, body.archivePath.replace(/^\/+/, ''))
+            if (!normalized.startsWith(deps.dbDir + '/') && normalized !== deps.dbDir) {
+              json(res, 400, { error: 'archivePath 必须在 dbDir 内' })
+              return
+            }
+            try {
+              const result = await restoreBackup(normalized, deps.dbDir)
+              json(res, 200, { restored: result.restored, meta: result.archiveMeta })
+            } catch (restoreError: unknown) {
+              const message = restoreError instanceof Error ? restoreError.message : String(restoreError)
+              json(res, 400, { error: `恢复失败：${message}` })
+            }
             return
           }
           if (req.method === 'POST' && (route === 'update' || route === 'forget' || route === 'restore')) {

@@ -12,8 +12,13 @@ export function asMemoryId(raw: string): MemoryId {
   return raw as MemoryId
 }
 
-/** 记忆作用域：user 全局共享；project 按工作目录分库。 */
-export type EngramScope = 'user' | 'project'
+/** 记忆作用域：user 私人宫殿；project 项目宫殿；shared 跨 agent 共享宫殿（公开可读）。 */
+export type EngramScope = 'user' | 'project' | 'shared'
+
+/** 是否为公开可读的 shared scope。 */
+export function isSharedScope(scope: EngramScope): boolean {
+  return scope === 'shared'
+}
 
 /** 记忆种类：fact 事实 / preference 偏好 / decision 决策 / episode 经历 / skill 方法。 */
 export type EngramKind = 'fact' | 'preference' | 'decision' | 'episode' | 'skill'
@@ -23,6 +28,28 @@ export type EngramStatus = 'active' | 'archived' | 'forgotten'
 
 /** 关系边类型。supersedes 语义：from 取代 to。 */
 export type EngramEdgeType = 'supports' | 'contradicts' | 'refines' | 'related' | 'supersedes'
+
+/** 记忆使用效果（奖励信号）：success 用后有效提权，failure 用后无效降权；缺省未验证。 */
+export type MemoryOutcome = 'success' | 'failure'
+
+/** 感官印记五维：味/声/触/色/温。古典记忆术要求意象挂上感官钩以提高召回。 */
+export type SensoryChannel = 'taste' | 'sound' | 'touch' | 'sight' | 'temperature'
+/** 单个感官铭牌（如「海腥」「钟声回响」「粗麻布」「深绛红」「金属凉」）。 */
+export type SensoryToken = string
+/** 情绪强度：0-1，借鉴情绪记忆抗遗忘曲线——高强度优先参与巡游。 */
+export type EmotionalValence = number
+
+/** 意象铭牌：把抽象条目映射到一个具象挂念（「沾墨竹简」而非「用户偏好」）。古典记忆术核心：越具体越记得住。 */
+export interface ImageryLabel {
+  /** 一句具象描述（≤30 字），如「沾墨竹简」「落雨铜铃」。缺省 = null = 未铭刻。 */
+  readonly caption: string | null
+  /** 感官挂念列表（每条对应 SensoryChannel 之一，可选多维同感）。 */
+  readonly sensoryTags: readonly SensoryToken[]
+  /** 情感权重 0-1，0 表示中性陈述。 */
+  readonly emotionalValence: EmotionalValence
+  /** 是否由 LLM 推测生成（true = 候选铭牌，用户未确认）。 */
+  readonly provisional: boolean
+}
 
 /** 一条记忆。来源链：v0.0.1 记 sourceSessionId；v0.2.0 起自动摄取补 sourceRound/sourceSeq。 */
 export interface MemoryRecord {
@@ -35,6 +62,8 @@ export interface MemoryRecord {
   /** 0-1：置信度，命中强化提升、蒸馏失败回退。 */
   readonly confidence: number
   readonly status: EngramStatus
+  /** 最近一次使用效果回报（engram_report 写入；未回报过为 undefined）。 */
+  readonly outcome?: MemoryOutcome
   readonly createdAt: number
   readonly lastAccessedAt: number
   readonly accessCount: number
@@ -43,6 +72,8 @@ export interface MemoryRecord {
   readonly sourceRound: number | null
   /** 来源事件 seq（自动摄取写入；显式保存为 null）。 */
   readonly sourceSeq: number | null
+  /** 意象铭牌（schema v5 起；未铭刻时缺省）。 */
+  readonly imagery?: ImageryLabel
 }
 
 /** 记忆关系边。 */
@@ -65,6 +96,8 @@ export interface WriteInput {
   readonly sourceSeq?: number
   /** 内容向量（调用方经嵌入器算好）；缺省时该条目不参与向量检索。 */
   readonly embedding?: Float32Array
+  /** 意象铭牌（schema v5 起；缺省表示未铭刻）。 */
+  readonly imagery?: ImageryLabel
 }
 
 /** 检索请求。 */
@@ -109,13 +142,25 @@ export interface UpdateInput {
   readonly importance?: number
   /** 新内容向量；缺省时继承旧条目向量。 */
   readonly embedding?: Float32Array
+  /** 意象铭牌替换；缺省继承旧条目。 */
+  readonly imagery?: ImageryLabel
 }
 
 /** 一条操作日志（审计视图行）。 */
 export interface OperationLogRow {
   readonly at: number
   readonly op: string
+  /** 操作对象（条目 id 或 AUX）；全库活动视图按此展示归属。 */
+  readonly targetId: string
   readonly detail: string | null
+}
+
+/** 一条修订历史：update 归档旧条目时的旧内容快照（内容不变性审计）。 */
+export interface MemoryRevision {
+  readonly content: string
+  readonly kind: string
+  readonly importance: number
+  readonly supersededAt: number
 }
 
 /** 审计视图：条目 + 来源链 + 关系邻居 + 操作日志。 */
@@ -127,6 +172,8 @@ export interface ReviewView {
   readonly supersedes: readonly MemoryId[]
   readonly contradicts: readonly MemoryId[]
   readonly related: readonly MemoryId[]
+  /** 修订历史（旧内容快照，按被取代时间倒序）。 */
+  readonly revisions: readonly MemoryRevision[]
   /** 最近 20 条涉及此条目的操作日志（时间倒序）。 */
   readonly operations: readonly OperationLogRow[]
 }
@@ -156,6 +203,29 @@ export interface ExportData {
 export interface DecayOptions {
   readonly importanceBelow: number
   readonly olderThanDays: number
+}
+
+/** 闭馆三问的答案（墓志铭）。写入 op_log 的 forget 详情，方便 engram_audit_forgotten 考古。 */
+export interface ForgettingTombstone {
+  /** 为什么关：可能是被取代、过期、与现实不符、隐私等。 */
+  readonly reason: string
+  /** 影响谁：影响哪些条目/人/项目；空串 = 不适用。 */
+  readonly affects: string
+  /** 还有用吗：明确遗留价值（可考古、可复习、可回滚时的语义）。 */
+  readonly stillUseful: string
+}
+
+/** 闭馆考古视图：forgotten 条目 + 墓志铭（来自 op_log）。 */
+export interface ForgottenAuditRow {
+  readonly id: MemoryId
+  readonly scope: EngramScope
+  readonly kind: EngramKind
+  readonly content: string
+  readonly importance: number
+  readonly lastAccessedAt: number
+  readonly tombstone: ForgettingTombstone | null
+  /** op_log 时间戳（闭馆瞬间）。 */
+  readonly forgottenAt: number
 }
 
 /** 管理列表过滤条件（管理面板用；可看全部状态）。 */

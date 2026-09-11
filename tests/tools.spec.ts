@@ -173,6 +173,24 @@ describe('engram tools', () => {
     expect(body).toContain('/srv/app/config/settings.yaml')
   })
 
+  it('engram_report 回报效果并回显 confidence', async () => {
+    const saved = await tools.get('engram_save')!.execute(
+      { content: '构建前先 pnpm typecheck', kind: 'skill', scope: 'user' }, fakeExec) as { id: string }
+    const result = await tools.get('engram_report')!.execute(
+      { id: saved.id, outcome: 'success', scope: 'user' }, fakeExec) as { id: string; outcome: string; confidence: number }
+    expect(result.id).toBe(saved.id)
+    expect(result.outcome).toBe('success')
+    expect(result.confidence).toBeCloseTo(0.55, 5)
+    const stored = await store.get(saved.id as never)
+    expect(stored?.outcome).toBe('success')
+  })
+
+  it('engram_report 不存在的 id loud 失败', async () => {
+    await expect(tools.get('engram_report')!.execute(
+      { id: 'mem-missing', outcome: 'failure', scope: 'user' }, fakeExec))
+      .rejects.toThrow(/不存在/)
+  })
+
   it('engram_search 多查询改写走融合路径并审计', async () => {
     await store.write({ scope: 'user', kind: 'fact', content: '部署在 4000 端口' })
     const rewrittenTools = new Map<string, ExecutableTool>(
@@ -222,7 +240,9 @@ describe('engram tools', () => {
 
   it('engram_forget 后 engram_search 不再命中', async () => {
     const saved = await store.write({ scope: 'user', kind: 'fact', content: '临时令牌 abc123' })
-    await tools.get('engram_forget')!.execute({ id: saved.id, scope: 'user' }, fakeExec)
+    await tools.get('engram_forget')!.execute(
+      { id: saved.id, scope: 'user', reason: '测试需要遗忘', affects: '无', stillUseful: '单元测试验证' }, fakeExec,
+    )
     const result = await tools.get('engram_search')!.execute({ query: '令牌', scope: 'user' }, fakeExec) as { text: string }
     expect(result.text).not.toContain('abc123')
   })
@@ -267,10 +287,11 @@ describe('engram tools', () => {
     expect(result.text).toContain('记忆甲内容')
   })
 
-  it('工具集恰为 9 个且名字正确', () => {
+  it('工具集恰为 14 个且名字正确', () => {
     expect([...tools.keys()].sort()).toEqual([
-      'engram_distill', 'engram_export', 'engram_forget', 'engram_review', 'engram_save',
-      'engram_search', 'engram_stats', 'engram_timeline', 'engram_update',
+      'engram_audit_forgotten', 'engram_distill', 'engram_examine', 'engram_export', 'engram_forget',
+      'engram_neighbors', 'engram_report', 'engram_review', 'engram_save', 'engram_search',
+      'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
     ])
   })
 })

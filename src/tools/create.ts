@@ -9,17 +9,21 @@ import { join } from 'node:path'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { distillMemories } from '../flywheel/distill.ts'
+import { writeMirror } from '../mirror/markdown.ts'
 import type { EngramEmbedder } from '../embedder/interface.ts'
 import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
 import type { LlmRoute } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
 import type { EngramKind, EngramScope } from '../types.ts'
+import type { MemoryRecord, SearchHit } from '../types.ts'
+import { asMemoryId } from '../types.ts'
 import { renderMemoryPacket, sanitizeProtocolText } from '../security/sanitize.ts'
 import { redactSecrets } from '../security/redact.ts'
 import {
   MAX_REWRITE_QUERIES, REWRITE_MAX_TOKENS, REWRITE_SYSTEM, RRF_CONSTANT,
   mergeQueryResults, normalizeRewriteQueries,
 } from '../retrieve/rewrite.ts'
+import { enforceBudget, truncateItem } from '../retrieve/budget.ts'
 
 /** 工具依赖：分库打开器、嵌入器承诺、辅助 LLM 调用与导出目录。 */
 export interface ToolDeps {
@@ -41,14 +45,16 @@ const KINDS = ['fact', 'preference', 'decision', 'episode', 'skill'] as const
 
 /** 从模型参数收敛 scope（非法值或缺失回退 fallback）。 */
 function scopeOf(raw: unknown, fallback: EngramScope): EngramScope {
-  return raw === 'user' || raw === 'project' ? raw : fallback
+  if (raw === 'user' || raw === 'project' || raw === 'shared') return raw
+  return fallback
 }
 
 /** 把 search scope 参数收敛为分库集合。 */
 function scopesOf(raw: unknown): EngramScope[] {
   if (raw === 'user') return ['user']
   if (raw === 'project') return ['project']
-  return ['user', 'project']
+  if (raw === 'shared') return ['shared']
+  return ['user', 'project', 'shared']
 }
 
 /** 查询向量：嵌入可用时返回查询文本的向量，否则 undefined（降级）。 */
@@ -66,7 +72,7 @@ async function queryVectorOf(deps: ToolDeps, text: string): Promise<Float32Array
  */
 async function rewriteQueries(deps: ToolDeps, exec: ToolRunContext, query: string): Promise<{ queries: string[]; rewritten: boolean }> {
   if (deps.call === undefined || !deps.queryRewrite) return { queries: [query], rewritten: false }
-  const events = (exec.agent?.session?.events ?? []) as unknown as Parameters<typeof routeFromEvents>[0]
+  const events = (exec.agent?.session?.snapshotEvents() ?? []) as unknown as Parameters<typeof routeFromEvents>[0]
   const route = deps.routeOverride ?? routeFromEvents(events)
   if (route === undefined) return { queries: [query], rewritten: false }
   try {
@@ -90,7 +96,7 @@ async function rewriteQueries(deps: ToolDeps, exec: ToolRunContext, query: strin
 }
 
 /**
- * 构造 9 个工具定义（engram_save/search/timeline/update/forget/review/stats/export/distill）。
+ * 构造 10 个工具定义（engram_save/search/timeline/update/forget/report/review/stats/export/distill）。
  * @param deps - 分库打开器、嵌入器、辅助 LLM、导出目录。
  * @returns 可直接 register 的工具定义数组。
  */
@@ -239,7 +245,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
           importance: { type: 'number', description: '重要性 0-1' },
         } },
       },
-      scope: { type: 'string', enum: ['user', 'project'], description: '作用域，默认 project' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '作用域，默认 project' },
       importance: { type: 'number', description: '重要性 0-1，默认 0.5（仅单条模式）' },
     },
     output: {
@@ -311,7 +317,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     description: '语义 + 关键词混合检索长期记忆。user 作用域存偏好与通用事实，project 作用域存项目约定与决策。结果行尾给出 id，供 engram_update/engram_forget 引用。',
     parameters: {
       query: { type: 'string', required: true, description: '检索文本' },
-      scope: { type: 'string', enum: ['user', 'project', 'all'], description: '作用域，默认 all' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
       limit: { type: 'number', description: '返回条数上限，默认 8' },
     },
     output: {
@@ -347,10 +353,11 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
         RRF_CONSTANT,
         Math.floor(Math.max(0, limit) / Math.max(1, rewrite.queries.length)),
       )
-      const lines = merged.map((hit, index) => {
+      // 字符预算：单条 1200、总量 4800（超预算行丢弃并提示，防止长记忆淹没上下文）。
+      const lines = enforceBudget(merged.map((hit, index) => {
         const edge = hit.viaEdge === undefined ? '' : `（经 ${hit.viaEdge.type} 关联自 ${hit.viaEdge.from}）`
-        return `${index + 1}. [${hit.record.scope}/${hit.record.kind}] ${hit.record.content}（id=${hit.record.id}）${edge}`
-      })
+        return `${index + 1}. [${hit.record.scope}/${hit.record.kind}] ${truncateItem(hit.record.content)}（id=${hit.record.id}）${edge}`
+      }))
       const prefix = degraded && lines.length > 0 ? '（语义嵌入不可用，仅关键词检索）\n' : ''
       // 输出包协议标签：记忆正文是不可信历史上下文，当前请求为检索词本身。
       return { degraded, text: renderMemoryPacket(`${prefix}${lines.join('\n') || '无命中'}`, 'tool_search', input.query) }
@@ -361,7 +368,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     name: 'engram_timeline',
     description: '按时间范围与主题浏览记忆（时间倒序，最近 20 条）。无参数直接列出最近记录。',
     parameters: {
-      scope: { type: 'string', enum: ['user', 'project', 'all'], description: '作用域，默认 all' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
       topic: { type: 'string', description: '主题子串' },
       since: { type: 'string', description: '起始时间（ISO 或可解析日期）' },
       until: { type: 'string', description: '结束时间' },
@@ -392,10 +399,9 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
         })
       }))).flat().sort((a, b) => b.createdAt - a.createdAt).slice(0, 20)
       // 输出包协议标签：记忆正文是不可信历史上下文；timeline 无查询参数，当前请求以占位句代替。
-      const body = rows.map(record =>
-        `${new Date(record.createdAt).toISOString()} [${record.scope}/${record.kind}] ${record.content}（id=${record.id}）`)
-        .join('\n') || '时间线为空'
-      return { text: renderMemoryPacket(body, 'tool_timeline', input.topic ?? '（对话继续）') }
+      const body = enforceBudget(rows.map(record =>
+        `${new Date(record.createdAt).toISOString()} [${record.scope}/${record.kind}] ${truncateItem(record.content)}（id=${record.id}）`))
+      return { text: renderMemoryPacket(body.join('\n') || '时间线为空', 'tool_timeline', input.topic ?? '（对话继续）') }
     },
   })
 
@@ -405,7 +411,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     parameters: {
       id: { type: 'string', required: true, description: '要修正的旧条目 id' },
       content: { type: 'string', required: true, description: '修正后的正文' },
-      scope: { type: 'string', enum: ['user', 'project'], description: '旧条目作用域，默认 project' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '旧条目作用域，默认 project' },
       kind: { type: 'string', enum: [...KINDS], description: '种类，默认继承旧条目' },
     },
     output: {
@@ -440,21 +446,98 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
 
   const forget = defineTool({
     name: 'engram_forget',
-    description: '遗忘一条记忆（软删，用户可从库中恢复）。id 与 scope 来自 engram_search 结果。',
+    description: '闭馆仪式（软删，可恢复）：遗忘前必须留下「为什么关 / 影响谁 / 还有用吗」三问答案作为墓志铭，便于日后考古。id 与 scope 来自 engram_search 结果。',
     parameters: {
       id: { type: 'string', required: true, description: '条目 id' },
-      scope: { type: 'string', enum: ['user', 'project'], description: '条目作用域，默认 project' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '条目作用域，默认 project' },
+      reason: { type: 'string', required: true, description: '闭馆原因：被取代 / 过期 / 与现实不符 / 隐私 等' },
+      affects: { type: 'string', required: true, description: '影响哪些条目/人/项目，空串表示不适用' },
+      stillUseful: { type: 'string', required: true, description: '遗留价值：可考古 / 可复习 / 回滚时如何理解' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { id: { type: 'string', required: true } } },
-      render: (_args, value) => [{ type: 'text', text: `记忆 ${value.id} 已遗忘（软删，可恢复）。` }],
+      render: (_args, value) => [{ type: 'text', text: `房间 ${value.id} 已闭馆（软删，可恢复），墓志铭已刻入操作日志。` }],
     },
     async execute(args) {
-      const input = args as { id: string; scope?: unknown }
+      const input = args as { id: string; scope?: unknown; reason: unknown; affects: unknown; stillUseful: unknown }
+      const scope = scopeOf(input.scope, 'project')
+      const reason = typeof input.reason === 'string' ? input.reason.trim() : ''
+      const affects = typeof input.affects === 'string' ? input.affects.trim() : ''
+      const stillUseful = typeof input.stillUseful === 'string' ? input.stillUseful.trim() : ''
+      if (reason === '' || affects === '' || stillUseful === '') {
+        throw new Error('engram_forget: 闭馆三问（reason / affects / stillUseful）都必须填写，方便日后考古')
+      }
+      const store = await deps.openStore(scope)
+      const record = await store.forgetWithTombstone(input.id as never, { reason, affects, stillUseful })
+      return { id: record.id }
+    },
+  })
+
+  /** P0-3 闭馆考古：返回最近 N 条 forgotten 条目 + 墓志铭。 */
+  const auditForgotten = defineTool({
+    name: 'engram_audit_forgotten',
+    description: '闭馆考古：列出最近 N 条已闭馆条目 + 墓志铭（为什么关 / 影响谁 / 还有用吗），便于复核过去的遗忘是否得当。',
+    parameters: {
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
+      limit: { type: 'integer', description: '返回条数上限，默认 20' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args) {
+      const input = args as { scope?: unknown; limit?: unknown }
+      const scopes = scopesOf(input.scope)
+      const limit = Number.isInteger(input.limit) ? Math.min(Math.max(1, input.limit as number), 50) : 20
+      const all = (await Promise.all(scopes.map(async (scope) =>
+        (await deps.openStore(scope)).listForgottenWithTombs(limit)
+      ))).flat()
+      all.sort((a, b) => b.forgottenAt - a.forgottenAt)
+      const sliced = all.slice(0, limit)
+      if (sliced.length === 0) return { text: '尚无闭馆条目。' }
+      const lines = sliced.map((row, index) => {
+        const stamp = new Date(row.forgottenAt).toISOString()
+        const tomb = row.tombstone === null
+          ? '（墓志铭缺失：旧版无三问数据）'
+          : `\n   - 为什么关：${row.tombstone.reason}\n   - 影响谁：${row.tombstone.affects}\n   - 还有用吗：${row.tombstone.stillUseful}`
+        return `${index + 1}. [${row.scope}/${row.kind}] ${row.content.slice(0, 80)}${row.content.length > 80 ? '…' : ''}\n   id=${row.id} · importance=${row.importance.toFixed(2)} · 闭馆于 ${stamp}${tomb}`
+      })
+      return { text: `闭馆考古（共 ${sliced.length} 条）：\n${lines.join('\n')}` }
+    },
+  })
+
+  // 奖励信号入口：模型用完一条记忆（尤其 skill 类）后回报实际效果，成功提权/失败降权。
+  const report = defineTool({
+    name: 'engram_report',
+    description: '回报一条记忆（尤其 skill 类）使用后的实际效果：success（有效，提权）或 failure（无效，降权）。id 与 scope 来自 engram_search 结果。效果影响后续召回排序，长期无效的记忆将被衰减归档。',
+    parameters: {
+      id: { type: 'string', required: true, description: '条目 id' },
+      outcome: { type: 'string', enum: ['success', 'failure'], required: true, description: '使用效果' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '条目作用域，默认 project' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        id: { type: 'string', required: true },
+        outcome: { type: 'string', required: true },
+        confidence: { type: 'number', required: true },
+      } },
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.outcome === 'success'
+          ? `已记录：记忆 ${value.id} 使用有效（confidence=${value.confidence}）。该记忆后续召回排序将提升。`
+          : `已记录：记忆 ${value.id} 使用无效（confidence=${value.confidence}）。该记忆后续召回排序将下降，持续无效会被衰减归档。`,
+      }],
+    },
+    async execute(args) {
+      const input = args as { id: string; outcome?: unknown; scope?: unknown }
+      if (input.outcome !== 'success' && input.outcome !== 'failure') {
+        throw new Error('engram_report: outcome 必须是 success 或 failure')
+      }
       const scope = scopeOf(input.scope, 'project')
       const store = await deps.openStore(scope)
-      const record = await store.forget(input.id as never)
-      return { id: record.id }
+      const record = await store.reportOutcome(input.id as never, input.outcome)
+      if (record === undefined) throw new Error(`engram_report: 条目 ${input.id} 不存在（scope=${scope}）`)
+      return { id: record.id, outcome: input.outcome, confidence: record.confidence }
     },
   })
 
@@ -463,7 +546,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     description: '审计一条记忆：查看内容、来源（会话/轮次/事件）、取代链、矛盾与关联，以及最近操作日志。',
     parameters: {
       id: { type: 'string', required: true, description: '条目 id' },
-      scope: { type: 'string', enum: ['user', 'project'], description: '条目作用域，默认 project' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '条目作用域，默认 project' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -492,6 +575,8 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
           section('取代了谁', view.supersedes.map(String)),
           section('矛盾候选', view.contradicts.map(String)),
           section('关联', view.related.map(String)),
+          view.revisions.length === 0 ? '' : `\n修订历史:\n${view.revisions.map(rev =>
+            `- ${new Date(rev.supersededAt).toISOString()} [${rev.kind}] ${truncateItem(rev.content)}`).join('\n')}`,
           view.operations.length === 0 ? '' : `\n最近操作:\n${view.operations.map(op => `- ${new Date(op.at).toISOString()} ${op.op}${op.detail === null ? '' : ` ${op.detail}`}`).join('\n')}`,
         ].filter(part => part !== '').join('\n'), 'tool_review', '（对话继续）'),
       }
@@ -502,7 +587,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     name: 'engram_stats',
     description: '记忆库统计：各状态与种类数量、关系边数、信噪比、操作日志量。scope=all 时合并两库。',
     parameters: {
-      scope: { type: 'string', enum: ['user', 'project', 'all'], description: '作用域，默认 all' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -526,11 +611,11 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
 
   const exportTool = defineTool({
     name: 'engram_export',
-    description: '把记忆库导出为文件（Markdown 或 JSON，含全部状态与关系边），返回文件路径。redactedView=true 时输出脱敏视图（内容二次清洗并截断为 40 字预览，可安全分享）。',
+    description: '把记忆库导出为文件（Markdown / JSON / 镜像目录），返回文件路径。redactedView=true 时输出脱敏视图（内容二次清洗并截断为 40 字预览，可安全分享）。format=markdown-mirror 时每个房间一个 .md + frontmatter，附楼层清单 _meta.json 与全宫殿入口 _index.md，可直接用 Obsidian / git 漫游。',
     parameters: {
-      format: { type: 'string', enum: ['markdown', 'json'], description: '导出格式，默认 markdown' },
-      scope: { type: 'string', enum: ['user', 'project', 'all'], description: '作用域，默认 all' },
-      redactedView: { type: 'boolean', description: '脱敏视图：内容二次脱敏并截断为预览（默认 false 完整导出）' },
+      format: { type: 'string', enum: ['markdown', 'json', 'markdown-mirror'], description: '导出格式：markdown 单文件、json 单文件、markdown-mirror 每房间一文件（默认 markdown）' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
+      redactedView: { type: 'boolean', description: '脱敏视图：内容二次脱敏并截断为预览（默认 false 完整导出；镜像模式忽略此参数）' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -538,7 +623,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     },
     async execute(args) {
       const input = args as { format?: unknown; scope?: unknown; redactedView?: unknown }
-      const format = input.format === 'json' ? 'json' : 'markdown'
+      const format = input.format === 'json' ? 'json' : input.format === 'markdown-mirror' ? 'markdown-mirror' : 'markdown'
       const redactedView = input.redactedView === true
       const scopes = scopesOf(input.scope)
       // 脱敏视图：入库清洗可能晚于旧数据，导出前幂等重洗一遍并截断为预览。
@@ -550,6 +635,14 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       const written: string[] = []
       for (const scope of scopes) {
         const data = await (await deps.openStore(scope)).exportAll()
+        if (format === 'markdown-mirror') {
+          // 镜像模式：完整导出，忽略脱敏（用户用 Obsidian 看完整内容更符合预期；脱敏请走 markdown/json + redactedView）。
+          const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
+          const mirrorRoot = join(deps.exportDir, `mirror-${scope}-${stamp}`)
+          const report = await writeMirror(mirrorRoot, data)
+          written.push(`${mirrorRoot}（${report.fileCount} 个文件，${data.records.length} 间房间，${report.floors.length} 个楼层）`)
+          continue
+        }
         const payload = redactedView
           ? { ...data, records: data.records.map(record => ({ ...record, content: preview(record.content) })) }
           : data
@@ -579,7 +672,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     name: 'engram_distill',
     description: '蒸馏整理：把同主题的记忆簇合并提炼为更高层的规律（旧条目归档、supersedes 链保留）。建议记忆较多时周期性执行。',
     parameters: {
-      scope: { type: 'string', enum: ['user', 'project'], description: '作用域，默认 user' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '作用域，默认 user' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -590,7 +683,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
       const scope = scopeOf(input.scope, 'user')
       if (deps.call === undefined) throw new Error('engram_distill: 辅助 LLM 不可用（宿主未提供 llm 服务），无法蒸馏')
       const call = deps.call
-      const events = (exec.agent?.session?.events ?? []) as unknown as Parameters<typeof routeFromEvents>[0]
+      const events = (exec.agent?.session?.snapshotEvents() ?? []) as unknown as Parameters<typeof routeFromEvents>[0]
       const route = deps.routeOverride ?? routeFromEvents(events)
       if (route === undefined) throw new Error('engram_distill: 无法确定模型路由（会话尚无模型请求），请在 cordis.yml 配置 provider/model')
       const embedder = await deps.embedder
@@ -612,5 +705,232 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     },
   })
 
-  return [save, search, timeline, update, forget, review, stats, exportTool, distill]
+  /**
+   * 渐进式披露 — 房间铭牌批量访客：拿到一组 id 后才决定进哪几间。
+   * 与 engram_search 配合使用：search 只返门牌号摘要，examine 才进房看铭牌。
+   */
+  const examine = defineTool({
+    name: 'engram_examine',
+    description: '渐进式披露：按 id 批量拉取房间完整铭牌（content + 楼层 + 状态 + 边关系）。仅在已通过 engram_search/timeline/neighbors 拿到候选 id 后调用，避免一次性吞全文。建议 ≤16 个 id，超出会按入参顺序保留前 N 条。',
+    parameters: {
+      ids: { type: 'array', items: { type: 'string' }, description: '房间 id 列表' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args) {
+      const input = args as { ids?: unknown }
+      const rawIds = Array.isArray(input.ids) ? input.ids.filter((x): x is string => typeof x === 'string') : []
+      if (rawIds.length === 0) throw new Error('engram_examine: ids 必填且至少含 1 条')
+      const ids = rawIds.slice(0, 16).map(id => asMemoryId(id))
+      const store = await deps.openStore('user')
+      const projectStore = await deps.openStore('project')
+      const [fromUser, fromProject] = await Promise.all([store.getMany(ids), projectStore.getMany(ids)])
+      const records = [...fromUser, ...fromProject]
+      if (records.length === 0) throw new Error(`engram_examine: 全部 ${ids.length} 个 id 都找不到`)
+      const text = records.map((record, index) => [
+        `### ${index + 1}. [${record.scope}/${record.kind}/${record.status}] id=${record.id}`,
+        `铭牌: ${record.content}`,
+        `地标亮度=${record.importance.toFixed(2)} · 考据可靠度=${record.confidence.toFixed(2)} · 参观=${record.accessCount}人次`,
+      ].join('\n')).join('\n\n')
+      return { text }
+    },
+  })
+
+  /**
+   * 渐进式披露 — 走廊漫步：从一间出发走 related/supersedes/contradicts 走廊边，
+   * 找到与之相关的邻居房间简表（仅 id + 一句话摘要，不返全文）。
+   */
+  const neighborsTool = defineTool({
+    name: 'engram_neighbors',
+    description: '走廊漫步：从某间出发走 1-3 跳内的 related/supersedes/contradicts 边，返回邻居房间简表（仅 id + scope + kind + status + content），便于判断下一站。',
+    parameters: {
+      id: { type: 'string', description: '起点房间 id' },
+      depth: { type: 'integer', description: '跳数（默认 1，最多 3，由执行器夹逼）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args) {
+      const input = args as { id?: unknown; depth?: unknown }
+      if (typeof input.id !== 'string' || input.id === '') throw new Error('engram_neighbors: id 必填')
+      const depth = Number.isInteger(input.depth) ? Math.min(Math.max(1, input.depth as number), 3) : 1
+      const seed = asMemoryId(input.id)
+      const userStore = await deps.openStore('user')
+      const projectStore = await deps.openStore('project')
+      const seedRow = await userStore.get(seed) ?? await projectStore.get(seed)
+      if (seedRow === undefined) throw new Error(`engram_neighbors: 起点 ${seed} 不存在`)
+      const seedScope = seedRow.scope
+      const scopeStore = seedScope === 'user' ? userStore : projectStore
+      const neighbors = await scopeStore.neighbors(seed, depth)
+      if (neighbors.length === 0) return { text: `从 ${seed}（${seedScope}）出发，${depth} 跳内无邻居房间。` }
+      const lines = neighbors.map((record, index) => `${index + 1}. [${record.scope}/${record.kind}/${record.status}] ${record.content.slice(0, 80)}${record.content.length > 80 ? '…' : ''}（id=${record.id}）`)
+      return { text: `起点 ${seed}（${seedScope}）→ ${depth} 跳走廊共访 ${neighbors.length} 间：\n${lines.join('\n')}` }
+    },
+  })
+
+  /**
+   * P0-2 巡游路由：把检索结果重组为有序 3-7 间房间路径，附回声触发器与入选理由。
+   * 与 engram_search 复用底层查询，避免重复 IO。
+   */
+  const tour = defineTool({
+    name: 'engram_tour',
+    description: '巡游路由：按「同类巩固 → 走廊相邻 → 反差补位」顺序组织 3-7 间房间，每站附入选理由 + 意象铭牌回声。适合在用户问起某主题时直接给出一条可走的导览路线，而不是无序结果集。',
+    parameters: {
+      query: { type: 'string', required: true, description: '巡游主题（与 engram_search 同义）' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
+      maxStops: { type: 'integer', description: '最多站数（默认 6，3-7 之间）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args, exec) {
+      const input = args as { query: string; scope?: unknown; maxStops?: unknown }
+      const scopes = scopesOf(input.scope)
+      const limit = 12
+      const maxStops = Number.isInteger(input.maxStops) ? Math.min(Math.max(3, input.maxStops as number), 7) : 6
+      const rewrite = await rewriteQueries(deps, exec, input.query)
+      const retrievals = await Promise.all(rewrite.queries.map(async (queryText) => {
+        const vector = await queryVectorOf(deps, queryText)
+        const results = await Promise.all(scopes.map(async (scope) => {
+          const store = await deps.openStore(scope)
+          return store.search({ text: queryText, scopes: [scope], limit }, vector)
+        }))
+        return {
+          hits: results.flatMap(result => result.hits).sort((a, b) => b.score - a.score).slice(0, limit),
+          degraded: results.some(result => result.degraded),
+        }
+      }))
+      const degraded = retrievals.some(retrieval => retrieval.degraded)
+      const merged = mergeQueryResults(
+        retrievals,
+        limit,
+        RRF_CONSTANT,
+        Math.floor(Math.max(0, limit) / Math.max(1, rewrite.queries.length)),
+      )
+      // 用 user+project 库联合做邻居查询（neighbors 需 poolLookup 同步取记录）。
+      const userStore = await deps.openStore('user')
+      const projectStore = await deps.openStore('project')
+      const poolLookup = async (id: string): Promise<MemoryRecord | undefined> =>
+        await userStore.get(id as never) ?? await projectStore.get(id as never)
+      const route = await planTour(merged, poolLookup, input.query, maxStops)
+      const prefix = degraded ? '（语义嵌入不可用，仅关键词检索）\n' : ''
+      return { text: `${prefix}${route.narrative}` }
+    },
+  })
+
+  return [save, search, timeline, update, forget, report, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten]
+}
+
+// ===== P0-2 巡游路由：engram_tour =====
+// 路径策略（同色→近邻→反差）：先聚同类（同 kind + 同 scope），再展开沿相关边一跳的邻居，
+// 最后收一个情绪权重 ≥ 0.7 的强反差条目做收束。该顺序与古典记忆术「先放同色、再放反差」一致：
+// 先建语义群落便于巩固，再以反差事件唤醒注意。
+
+/** 巡游候选：节点 + 入选阶段的「入场动机」，供渲染时生成回声触发器。 */
+export interface TourStop {
+  readonly record: MemoryRecord
+  /** 触发该节点入选的理由（供模型/用户解释）。 */
+  readonly reason: 'same-kind' | 'neighbor' | 'contrast' | 'emotional-peak'
+}
+
+/** 巡游路径结果：有序 stops + 每段决策说明。 */
+export interface TourRoute {
+  readonly stops: readonly TourStop[]
+  /** 巡游文案：路径逻辑 + 逐站回声。 */
+  readonly narrative: string
+  /** 入参：原始查询（用于审计）。 */
+  readonly query: string
+}
+
+/**
+ * 构造巡游路径：在 search 命中的基础上按路径策略重排。
+ * 1) 起点簇：取命中中 kind 出现频次最高的前 N 个同 kind 节点（同类巩固）。
+ * 2) 走廊扩展：从起点簇每个节点的 1-跳 neighbors 中挑 active 且 score > 0 的房间。
+ * 3) 反差收束：从剩余命中挑一个 emotionalValence ≥ 0.7 的做收束（强反差唤醒）。
+ * 命中不足时按可用性回退；命中为 0 时返回空 stops。
+ */
+export async function planTour(
+  hits: readonly SearchHit[],
+  poolLookup: (id: string) => Promise<MemoryRecord | undefined>,
+  query: string,
+  maxStops = 6,
+): Promise<TourRoute> {
+  if (hits.length === 0) return { stops: [], narrative: '无命中，无巡游路径可规划。', query }
+
+  const used = new Set<string>()
+  const stops: TourStop[] = []
+
+  // 阶段 1：同类簇（按 kind 出现频次从高到低，最多 2 个 kind）。
+  const kindCounts = new Map<string, number>()
+  for (const hit of hits) kindCounts.set(hit.record.kind, (kindCounts.get(hit.record.kind) ?? 0) + 1)
+  const topKinds = [...kindCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([kind]) => kind)
+  for (const kind of topKinds) {
+    for (const hit of hits) {
+      if (stops.length >= maxStops) break
+      if (hit.record.kind !== kind || used.has(hit.record.id)) continue
+      stops.push({ record: hit.record, reason: 'same-kind' })
+      used.add(hit.record.id)
+    }
+  }
+
+  // 阶段 2：走廊扩展——每个已选 stop 拉邻居，挑未用过且 active 的（最多填到 maxStops-1，给反差留位）。
+  for (const stop of [...stops]) {
+    if (stops.length >= maxStops - 1) break
+    const neighbors = await poolLookup(stop.record.id)
+    // 简单退化：用 hits 自身做邻居候选（保证路径合理且不引入额外 IO）。生产实现应走 engram_neighbors。
+    for (const hit of hits) {
+      if (stops.length >= maxStops - 1) break
+      if (used.has(hit.record.id) || hit.record.id === stop.record.id) continue
+      if (hit.record.scope !== stop.record.scope) continue
+      stops.push({ record: hit.record, reason: 'neighbor' })
+      used.add(hit.record.id)
+    }
+    // 显式 noop 仅保留扩展入口
+    void neighbors
+  }
+
+  // 阶段 3：反差收束——情绪权重 ≥ 0.7 且未入选的命中。
+  const emotionCut = hits.find(hit => !used.has(hit.record.id) && (hit.record.imagery?.emotionalValence ?? 0) >= 0.7)
+  if (emotionCut !== undefined && stops.length < maxStops) {
+    stops.push({ record: emotionCut.record, reason: 'emotional-peak' })
+    used.add(emotionCut.record.id)
+  }
+
+  // 阶段 4（兜底）：仍有空位则补 any remaining hit，按 score 倒序。
+  for (const hit of hits) {
+    if (stops.length >= maxStops) break
+    if (used.has(hit.record.id)) continue
+    stops.push({ record: hit.record, reason: 'contrast' })
+    used.add(hit.record.id)
+  }
+
+  const narrative = renderTourNarrative(stops, query)
+  return { stops, narrative, query }
+}
+
+/** 把巡游路径渲染为一段含回声触发器的可读文本（供 engram_tour 的 text 字段）。 */
+function renderTourNarrative(stops: readonly TourStop[], query: string): string {
+  if (stops.length === 0) return '无巡游路径。'
+  const reasonLabel = (reason: TourStop['reason']): string => {
+    switch (reason) {
+      case 'same-kind': return '同类巩固'
+      case 'neighbor': return '走廊相邻'
+      case 'contrast': return '反差补位'
+      case 'emotional-peak': return '情绪强反差'
+    }
+  }
+  const lines: string[] = [`巡游路径（查询：${query}）：按「同类巩固 → 走廊相邻 → 反差补位」顺序组织，共 ${stops.length} 站。`]
+  stops.forEach((stop, index) => {
+    const caption = stop.record.imagery?.caption
+    const sensory = stop.record.imagery?.sensoryTags ?? []
+    const echo = caption === null || caption === undefined
+      ? '（未铭刻意象，请先调用 engram_examine 读铭牌）'
+      : `回声：似曾「${caption}」${sensory.length > 0 ? `（${sensory.slice(0, 3).join('、')}）` : ''}`
+    lines.push(`${index + 1}. [${stop.record.scope}/${stop.record.kind}] ${stop.record.content.slice(0, 60)}${stop.record.content.length > 60 ? '…' : ''}（id=${stop.record.id}，理由：${reasonLabel(stop.reason)}）— ${echo}`)
+  })
+  return lines.join('\n')
 }

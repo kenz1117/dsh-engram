@@ -1,10 +1,11 @@
 /**
  * dsh-engram：DeepSeek Harness 跨会话长期记忆插件（host 半）。
- * 注册 9 个 engram_ 工具、会话开始注入用户画像、自动摄取上一轮对话、
+ * 注册 10 个 engram_ 工具、会话开始注入用户画像、自动摄取上一轮对话、
  * 蒸馏/衰减飞轮与审计能力。
  * @module @kenz1117/dsh-engram
  */
 
+import { createHash } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -15,19 +16,24 @@ import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { createLocalEmbedder } from './embedder/local.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import { FINAL_INGEST_TIMEOUT_MS, ingestFinalTurn, ingestPreviousTurn, replayPendingIngests } from './ingest/hook.ts'
+import { runConsolidation } from './consolidation/run.ts'
 import type { IngestRequestEventData } from './ingest/hook.ts'
-import { streamText } from './llm/client.ts'
-import type { SessionEventLike } from './llm/client.ts'
+import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
+import type { LlmRoute, SessionEventLike } from './llm/client.ts'
 import { registerEngramRoutes } from './routes.ts'
 import { migrateProjectDb, resolveProjectIdentity } from './project/identity.ts'
 import { openEngramStore } from './store/sqlite.ts'
 import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
 import { currentUserRequestText, renderMemoryPacket } from './security/sanitize.ts'
+import { wrapWithRationale } from './selection-rationale.ts'
 import type { EngramScope } from './types.ts'
 
 /** Cordis 插件名（loader 诊断与注入 source 使用）。 */
 export const name = 'dsh-engram'
+
+/** 插件版本（与 package.json 同步，写进备份 _meta.json）。 */
+export const VERSION = '0.7.0'
 
 /** 必需服务：工具注册表与 LLM 流式端点（摄取/蒸馏的辅助调用）。 */
 export const inject = ['tools', 'llm']
@@ -36,18 +42,24 @@ export const inject = ['tools', 'llm']
 export { Config } from './config.ts'
 export type { EngramConfig } from './config.ts'
 
+/** 画像渲染结果：text 为注入文本；overflow 为未获得整行的条目（压缩候选）。 */
+export interface ProfileRender {
+  readonly text: string
+  readonly overflow: readonly { id: string; kind: string; content: string }[]
+}
+
 /**
  * 会话开始注入的画像渲染：按重要性降序在 token 预算内整行装填（估算 ceil(len/4)，
  * 超预算的行跳过不截断、继续试更短行）；装不下的条目降级为索引行（#id + 前 40 字），
  * 索引行也装不下的折成末尾 `+N more; use engram_search` 计数行。
  * @param records - 候选条目（调用方已按重要性排序、按条数截断）。
  * @param tokenBudget - 整段画像的 token 预算（含首尾固定行）。
- * @returns 注入文本。
+ * @returns 渲染文本与溢出条目（调用方可用辅助 LLM 压缩后重渲染）。
  */
-export function renderProfile(
+export function renderProfileDetailed(
   records: readonly { id: string; kind: string; content: string }[],
   tokenBudget: number,
-): string {
+): ProfileRender {
   const estimate = (text: string): number => Math.ceil(text.length / 4)
   const header = 'User memory profile (dsh-engram, cross-session):'
   const footer = 'Use engram_search to recall details; use engram_save to persist new facts.'
@@ -76,20 +88,90 @@ export function renderProfile(
     }
   }
   if (more > 0) lines.push(`+${more} more; use engram_search`)
-  return [header, ...lines, footer].join('\n')
+  return { text: [header, ...lines, footer].join('\n'), overflow }
 }
 
 /**
- * agent/pre-step waterfall：每轮第一步注入画像；同时 fire-and-forget 触发
- * 上一轮的自动摄取（不阻塞请求）；进程内首次第一步重放待补做的末轮摄取。
- * 必须调用 next() 委托链路；reject 决策原样透传，记忆库为空或非首轮时不追加消息。
+ * 会话开始注入的画像渲染（只取文本；溢出明细见 renderProfileDetailed）。
+ * @param records - 候选条目（调用方已按重要性排序、按条数截断）。
+ * @param tokenBudget - 整段画像的 token 预算（含首尾固定行）。
+ * @returns 注入文本。
+ */
+export function renderProfile(
+  records: readonly { id: string; kind: string; content: string }[],
+  tokenBudget: number,
+): string {
+  return renderProfileDetailed(records, tokenBudget).text
+}
+
+/** 压缩辅助调用的输出 token 上限（40 字 × 若干条，短输出足够）。 */
+const COMPRESS_MAX_TOKENS = 800
+/** 压缩辅助调用超时：压缩在 pre-step 关键路径上，必须限时防阻塞首轮请求。 */
+const COMPRESS_TIMEOUT_MS = 8000
+
+const COMPRESS_SYSTEM = [
+  '把记忆条目压缩为更短的一句话表述（每条不超过 40 个字符），保留可跨会话复用的关键信息（事实、偏好、决策、方法）。',
+  '只输出一个 JSON 数组，每项形如 {"id": "原样返回的id", "content": "压缩后表述"}，条目数量与 id 必须与输入一一对应。',
+  '不要输出 JSON 以外的任何内容。',
+].join('\n')
+
+/**
+ * 画像超预算的辅助压缩：把装不下的条目交给辅助 LLM 压短，返回 id → 压缩文本。
+ * 任何失败（无路由、输出不可解析、超时、调用异常）返回 undefined，调用方
+ * 降级回索引行装填。压缩请求审计到 user 库 op_log（model-visible ⟺ logged：
+ * 压缩产物本身会随注入消息进会话日志）。
+ */
+async function compressProfileOverflow(
+  ctx: Context,
+  agent: Agent,
+  routeOverride: LlmRoute | undefined,
+  overflow: readonly { id: string; kind: string; content: string }[],
+  signal: AbortSignal,
+): Promise<Map<string, string> | undefined> {
+  try {
+    const events = agent.session.snapshotEvents() as unknown as readonly SessionEventLike[]
+    const route = routeOverride ?? routeFromEvents(events)
+    if (route === undefined) return undefined
+    const userText = JSON.stringify(overflow.map(record => ({ id: record.id, content: record.content })))
+    const raw = await streamText(ctx, {
+      route,
+      system: COMPRESS_SYSTEM,
+      userText,
+      maxTokens: COMPRESS_MAX_TOKENS,
+      purpose: 'engram-compress',
+      sessionId: agent.session.id,
+      signal: AbortSignal.any([signal, AbortSignal.timeout(COMPRESS_TIMEOUT_MS)]),
+    })
+    const parsed = parseJsonArray(raw)
+    if (parsed === undefined) return undefined
+    const ids = new Set(overflow.map(record => record.id))
+    const compressed = new Map<string, string>()
+    for (const item of parsed) {
+      const entry = item as { id?: unknown; content?: unknown }
+      if (typeof entry.id !== 'string' || typeof entry.content !== 'string') continue
+      // 只接受输入清单里的 id 与非空且确实更短的压缩结果。
+      if (!ids.has(entry.id) || entry.content.trim() === '' || entry.content.length >= overflow.find(record => record.id === entry.id)!.content.length) continue
+      compressed.set(entry.id, entry.content.trim())
+    }
+    return compressed.size > 0 ? compressed : undefined
+  } catch {
+    // 压缩是增强路径：失败一律降级回现有索引行装填。
+    return undefined
+  }
+}
+
+/**
+ * agent/pre-step waterfall：每轮第一步注入画像（内容与上次相同则跳过重复注入）；
+ * 同时 fire-and-forget 触发上一轮的自动摄取（不阻塞请求）；进程内首次第一步
+ * 重放待补做的末轮摄取。必须调用 next() 委托链路；reject 决策原样透传，
+ * 记忆库为空或非首轮时不追加消息。
  */
 async function preStep(
   ctx: Context,
   openStore: (scope: EngramScope) => Promise<EngramStore>,
   resolved: ResolvedEngramConfig,
   embedder: Promise<EngramEmbedder | undefined>,
-  state: { pendingReplayed: boolean },
+  state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null },
   logRequest: (data: IngestRequestEventData) => void,
   { agent, step, turn, signal }: { agent: Agent; step: number; turn: number; signal: AbortSignal },
   next: () => Promise<PreStepDecision>,
@@ -117,7 +199,7 @@ async function preStep(
     // 自动摄取：新一轮第一步读上一轮日志。异步执行，失败仅告警计数。
     if (turn > 1) {
       void ingestPreviousTurn({
-        events: agent.session.events as unknown as readonly SessionEventLike[],
+        events: agent.session.snapshotEvents() as unknown as readonly SessionEventLike[],
         sessionId: String(agent.id),
         turn,
         openStore: () => openStore('user'),
@@ -136,7 +218,30 @@ async function preStep(
   const store = await openStore('user')
   const top = await store.topActive('user', resolved.profileTopN)
   if (top.length === 0) return decision
-  const text = renderProfile(top, resolved.injectTokenBudget)
+  const detailed = renderProfileDetailed(top, resolved.injectTokenBudget)
+  let text = detailed.text
+  // 超预算压缩：装不下的条目交给辅助 LLM 压短后重渲染；失败保持索引行降级不变。
+  if (detailed.overflow.length > 0) {
+    const compressed = await compressProfileOverflow(ctx, agent, resolved.routeOverride, detailed.overflow, signal)
+    if (compressed !== undefined) {
+      // 辅助请求审计（压缩产物随注入消息进会话日志；请求本身落 op_log 供归因）。
+      void openStore('user').then(auditStore => auditStore.audit('compress-request', 'AUX', JSON.stringify({ count: detailed.overflow.length }))).catch(() => { /* 审计失败不影响注入 */ })
+      text = renderProfileDetailed(
+        top.map(record => {
+          const shorter = compressed.get(record.id)
+          return shorter === undefined ? record : { ...record, content: shorter }
+        }),
+        resolved.injectTokenBudget,
+      ).text
+    }
+  }
+  // 注入去重：同一会话内画像文本与上次相同时跳过（上一轮注入仍在上下文里）；
+  // 新会话（lastProfileAgent 不同）必须注入，即使文本与上个会话相同。
+  const textWithRationale = wrapWithRationale(text, top)
+  const hash = createHash('sha256').update(textWithRationale).digest('hex')
+  if (state.lastProfileAgent === String(agent.id) && hash === state.lastProfileHash) return decision
+  state.lastProfileAgent = String(agent.id)
+  state.lastProfileHash = hash
   // 画像包协议标签：记忆条目是不可信历史上下文；当前请求取本轮 admitted 消息的最后一个文本块。
   const packet = renderMemoryPacket(text, 'turn_start', currentUserRequestText(decision.messages))
   return {
@@ -159,7 +264,7 @@ async function preStep(
 function makeEventResolver(ctx: Context, agent: Agent): (sessionId: string) => Promise<readonly SessionEventLike[] | undefined> {
   return async sessionId => {
     if (sessionId === String(agent.id)) {
-      return agent.session.events as unknown as readonly SessionEventLike[]
+      return agent.session.snapshotEvents() as unknown as readonly SessionEventLike[]
     }
     // 可选服务，engram 不硬依赖：缺席时跨会话 pending 保留到该会话被恢复。
     const persistence = ctx.get('sessionPersistence' as never) as
@@ -175,7 +280,7 @@ function makeEventResolver(ctx: Context, agent: Agent): (sessionId: string) => P
 }
 
 /**
- * 插件体：预热分库与嵌入器，注册 9 个工具、画像注入、自动摄取与衰减调度。
+ * 插件体：预热分库与嵌入器，注册 10 个工具、画像注入、自动摄取与衰减调度。
  * @param ctx - host 上下文。
  * @param config - cordis.yml 传入的可选配置；非法值在加载时 loud 失败。
  */
@@ -204,7 +309,11 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   const openStore = (scope: EngramScope): Promise<EngramStore> => {
     const existing = stores.get(scope)
     if (existing !== undefined) return existing
-    const path = scope === 'user' ? join(resolved.dbDir, 'user.db') : join(resolved.dbDir, identity.dbName)
+    const path = scope === 'user'
+      ? join(resolved.dbDir, 'user.db')
+      : scope === 'shared'
+        ? join(resolved.dbDir, 'shared.db')
+        : join(resolved.dbDir, identity.dbName)
     const created = openEngramStore(path, rankBoost)
     stores.set(scope, created)
     return created
@@ -235,7 +344,14 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   ctx.inject(['webServer'], (webCtx) => {
     // 必须用注入回调的子 ctx：ctx.webServer 属性代理拓扑敏感，
     // 外层 ctx 未依赖 webServer 时属性不可用。
-    registerEngramRoutes(webCtx, { openStore, exportDir: `${resolved.dbDir}/exports` })
+    registerEngramRoutes(webCtx, {
+      openStore,
+      exportDir: `${resolved.dbDir}/exports`,
+      mirrorDir: `${resolved.dbDir}/palaces`,
+      dbDir: resolved.dbDir,
+      pluginVersion: VERSION,
+      embedder,
+    })
   })
 
   // 辅助请求写 engram 自己的操作日志（下游插件禁止向会话日志写未知事件类型）。
@@ -244,7 +360,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   }
 
   if (resolved.injectProfile || resolved.ingest !== 'off') {
-    const state = { pendingReplayed: false }
+    const state = { pendingReplayed: false, lastProfileAgent: null, lastProfileHash: null }
     ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, resolved, embedder, state, logIngestRequest, payload, next), { prepend: true })
   }
 
@@ -255,7 +371,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       const mode = resolved.ingest
       if (mode === 'off') return
       void ingestFinalTurn({
-        events: session.events as unknown as readonly SessionEventLike[],
+        events: session.snapshotEvents() as unknown as readonly SessionEventLike[],
         sessionId: String(session.id),
         turn: 0,
         slice: 'last',
@@ -293,5 +409,27 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       return () => { clearInterval(timer) }
     },
     'dsh-engram: decay timer',
+  )
+
+  // 闭馆整理调度：启动一次 + 每日一次；嵌入不可用时仅归档 + 启发式去重，整理结果写 op_log 'consolidation'。
+  const runConsolidateOnce = async (): Promise<void> => {
+    try {
+      const store = await openStore('user')
+      const report = await runConsolidation(store, embedder, {
+        olderThanDays: resolved.decayAfterDays,
+        importanceBelow: resolved.decayImportanceBelow,
+      })
+      console.log(`[dsh-engram] 闭馆整理完成：归档 ${String(report.archived)}，合并 ${String(report.merged)}，跳过 ${String(report.skipped)}（${String(report.tookMs)} ms）`)
+    } catch (error) {
+      console.warn('[dsh-engram] 闭馆整理失败（不影响对话）：', error)
+    }
+  }
+  void runConsolidateOnce()
+  ctx.effect(
+    () => {
+      const timer = setInterval(() => { void runConsolidateOnce() }, 24 * 60 * 60 * 1000)
+      return () => { clearInterval(timer) }
+    },
+    'dsh-engram: consolidation timer',
   )
 }

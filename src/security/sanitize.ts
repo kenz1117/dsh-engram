@@ -11,6 +11,9 @@ export const MEMORY_CONTEXT_TAG = 'engram_memory_context'
 /** 当前用户请求协议标签。 */
 export const CURRENT_USER_REQUEST_TAG = 'current_user_request'
 
+/** 用户显式禁记标签：在对话中用 <no-palace>...</no-palace> 包裹的整段不会被记忆。 */
+export const NO_PALACE_TAG = 'no-palace'
+
 /**
  * 入库剥离时识别的记忆上下文标签集合：不区分来源——历史正文可能携带
  * 其他记忆插件（如 memmy/memos）的包裹标签，一律按不可信协议块剥离。
@@ -32,7 +35,7 @@ export type MemoryPacketSource = 'turn_start' | 'tool_search' | 'tool_timeline' 
  * @returns 可安全入库/复用的正文。
  */
 export function sanitizeProtocolText(value: string): string {
-  return normalizeWhitespace(unwrapCurrentUserRequestBlocks(stripMemoryContextBlocks(value)))
+  return normalizeWhitespace(unwrapCurrentUserRequestBlocks(stripMemoryContextBlocks(stripNoPalaceBlocks(value))))
 }
 
 /**
@@ -86,6 +89,11 @@ function stripMemoryContextBlocks(value: string): string {
     text = replaceTaggedBlocks(text, tag, () => '', { removeUnclosedTail: true })
   }
   return text
+}
+
+/** 剥离 <no-palace>...</no-palace> 整段：用户显式禁记（默认整段移除，不留存任何痕迹）。 */
+function stripNoPalaceBlocks(value: string): string {
+  return replaceTaggedBlocks(value, NO_PALACE_TAG, () => '', { removeUnclosedTail: true })
 }
 
 /** 解包 current_user_request 块，保留内部文本（当前请求是可信正文，只是去除标签）。 */

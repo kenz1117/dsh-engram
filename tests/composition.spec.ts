@@ -2,7 +2,7 @@
  * REAL-composition coverage：测试用 cordis.yml 经真实 Loader 装载
  * webserver + system-prompt + tools + llm 替身 + dsh-engram，HTTP 断言
  * 管理页与 /api/engram/* 全链路（列表/统计/修正/遗忘/导出/回环写守卫），
- * 以及 9 个工具注册与 fiber 卸载（HMR 安全）。替身只用于外部网络
+ * 以及 10 个工具注册与 fiber 卸载（HMR 安全）。替身只用于外部网络
  *（fetch 一律拒绝，嵌入器立即降级——降级路径本身是被测行为的一部分）
  * 与 llm 辅助调用端点。
  */
@@ -55,8 +55,9 @@ const llmDouble = {
 }
 
 const EXPECTED_TOOLS = [
-  'engram_distill', 'engram_export', 'engram_forget', 'engram_review', 'engram_save',
-  'engram_search', 'engram_stats', 'engram_timeline', 'engram_update',
+  'engram_audit_forgotten', 'engram_distill', 'engram_examine', 'engram_export', 'engram_forget',
+  'engram_neighbors', 'engram_report', 'engram_review', 'engram_save', 'engram_search',
+  'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
 ]
 
 /** 在宿主打开分库前写入种子记忆（同进程先后连接，时序安全）。 */
@@ -130,7 +131,7 @@ async function call(port: number, method: 'GET' | 'POST', path: string, body?: u
 }
 
 describe('dsh-engram real Loader composition', () => {
-  it('装载后 9 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
+  it('装载后 10 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
     const names = () => loaded.tools.schemas().map(schema => schema.name)
     for (const expected of EXPECTED_TOOLS) {
@@ -179,7 +180,10 @@ describe('dsh-engram real Loader composition', () => {
     expect((afterUpdate.json as { total: number }).total).toBe(1)
 
     // 遗忘/恢复。
-    const forgotten = await call(port, 'POST', '/api/engram/forget', { id: dropped!.id, scope: 'user' })
+    const forgotten = await call(port, 'POST', '/api/engram/forget', {
+      id: dropped!.id, scope: 'user',
+      reason: '种子数据清理', affects: '无', stillUseful: '单元测试用例',
+    })
     expect(forgotten.status).toBe(200)
     const restored = await call(port, 'POST', '/api/engram/restore', { id: dropped!.id, scope: 'user' })
     expect((restored.json as { record: { status: string } }).record.status).toBe('active')
@@ -197,7 +201,8 @@ describe('dsh-engram real Loader composition', () => {
 
     // 回环写守卫：跨站 Origin 的 POST 被 403 拒绝。
     const evil = await call(port, 'POST', '/api/engram/forget',
-      { id: dropped!.id, scope: 'user' }, { origin: 'https://evil.example' })
+      { id: dropped!.id, scope: 'user', reason: 'x', affects: 'x', stillUseful: 'x' },
+      { origin: 'https://evil.example' })
     expect(evil.status).toBe(403)
   })
 

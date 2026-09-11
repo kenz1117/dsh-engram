@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
-  INGEST_DONE_OP, INGEST_PENDING_OP, encodeTurnKey, ingestFinalTurn, ingestPreviousTurn,
-  lastTurnSlice, markPendingIngest, previousTurnSlice, replayPendingIngests, turnSlice,
+  ACTIVITY_THRESHOLD, INGEST_DONE_OP, INGEST_PENDING_OP, activityScore, encodeTurnKey, ingestFinalTurn,
+  ingestPreviousTurn, isChitchat, forbidsCapture, lastTurnSlice, markPendingIngest, previousTurnSlice,
+  replayPendingIngests, throttleDecision, turnSlice, turnSignals,
 } from '../src/ingest/hook.ts'
 import type { IngestRequestEventData } from '../src/ingest/hook.ts'
 import { openEngramStore } from '../src/store/sqlite.ts'
@@ -41,6 +42,12 @@ const assistantMsg = (text: string, seq: number) => ({
   time: Date.now(),
   seq,
 })
+const toolCall = (callId: string, name: string, seq: number) => ({
+  type: 'tool/call', data: { callId, name, arguments: '{}' }, time: Date.now(), seq,
+})
+const toolResult = (callId: string, seq: number) => ({
+  type: 'tool/result', data: { callId, isError: false }, time: Date.now(), seq,
+})
 const routeHeader = (seq: number) => ({
   type: 'request/header',
   data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4-flash' } } },
@@ -48,19 +55,28 @@ const routeHeader = (seq: number) => ({
   seq,
 })
 
+/** 长填充文本：把用户消息垫到 ≥150 字符（活动评分 userChars 满档 3 分）。 */
+const PAD = '上下文填充。'.repeat(30)
+
+/** 一轮「有实质活动」的上一轮事件（活动评分 6 分，越过摄取门槛）。 */
+const substantiveTurn1 = () => [
+  turnStart(1),
+  userMsg(`我最喜欢 TypeScript。${PAD}`, 3),
+  toolCall('c1', 'fs_read', 4),
+  toolResult('c1', 5),
+  toolCall('c2', 'web_search', 6),
+  toolResult('c2', 7),
+  assistantMsg('助手的完整回答', 8),
+  routeHeader(9),
+]
+
 const VALID_LLM_OUTPUT = JSON.stringify([
   { content: '用户最喜欢的编程语言是 TypeScript', kind: 'preference', importance: 0.8 },
   { content: '用户在开发 dsh-engram 记忆插件', kind: 'fact', importance: 0.7 },
 ])
 
 const baseDeps = (overrides?: Partial<Parameters<typeof ingestPreviousTurn>[0]>) => ({
-  events: [
-    turnStart(1),
-    userMsg('我最喜欢 TypeScript', 3),
-    routeHeader(4),
-    turnStart(2),
-    userMsg('现在的问题', 200),
-  ],
+  events: [...substantiveTurn1(), turnStart(2), userMsg('现在的问题', 200)],
   sessionId: 'sess-ingest-1',
   turn: 2,
   openStore: async () => store,
@@ -117,9 +133,13 @@ describe('ingestPreviousTurn', () => {
       events: [
         turnStart(1),
         pluginMsg('User memory profile (dsh-engram):', 2),
-        userMsg('真实用户输入', 3),
+        userMsg(`真实用户输入。${PAD}`, 3),
         assistantMsg('助手长回答内容', 4),
-        routeHeader(5),
+        toolCall('c1', 'fs_read', 5),
+        toolResult('c1', 6),
+        toolCall('c2', 'web_search', 7),
+        toolResult('c2', 8),
+        routeHeader(9),
         turnStart(2),
         userMsg('现在的问题', 200),
       ],
@@ -139,9 +159,13 @@ describe('ingestPreviousTurn', () => {
       mode: 'eager',
       events: [
         turnStart(1),
-        userMsg('用户输入', 2),
+        userMsg(`用户输入。${PAD}`, 2),
         assistantMsg('助手关键结论', 3),
-        routeHeader(4),
+        toolCall('c1', 'fs_read', 4),
+        toolResult('c1', 5),
+        toolCall('c2', 'web_search', 6),
+        toolResult('c2', 7),
+        routeHeader(8),
         turnStart(2),
         userMsg('现在的问题', 200),
       ],
@@ -155,7 +179,17 @@ describe('ingestPreviousTurn', () => {
 
   it('日志无路由时跳过', async () => {
     const outcome = await ingestPreviousTurn(baseDeps({
-      events: [turnStart(1), userMsg('内容', 2), turnStart(2), userMsg('现在', 200)],
+      events: [
+        turnStart(1),
+        userMsg(`内容。${PAD}`, 2),
+        assistantMsg('回答内容', 3),
+        toolCall('c1', 'fs_read', 4),
+        toolResult('c1', 5),
+        toolCall('c2', 'web_search', 6),
+        toolResult('c2', 7),
+        turnStart(2),
+        userMsg('现在', 200),
+      ],
     }))
     expect(outcome.skipped).toBe('no-route-in-log')
     expect(outcome.written).toBe(0)
@@ -225,6 +259,87 @@ describe('ingestPreviousTurn', () => {
     const outcome = await ingestPreviousTurn(baseDeps({ events: resumed, turn: 3 }))
     expect(outcome.skipped).toBe('already-ingested')
     expect(outcome.written).toBe(0)
+  })
+})
+
+describe('摄取节流', () => {
+  it('activityScore 四信号计分与封顶', () => {
+    expect(activityScore({ userChars: 0, completedTurns: 0, toolResults: 0, toolNames: new Set() })).toBe(0)
+    expect(activityScore({ userChars: 300, completedTurns: 1, toolResults: 10, toolNames: new Set(['a', 'b', 'c']) })).toBe(8)
+    // userChars 封顶 3 分（150 字符即满档），toolResults 封顶 2 分（10 条即满档），多样性 1-2 种工具 1 分。
+    expect(activityScore({ userChars: 150, completedTurns: 0, toolResults: 10, toolNames: new Set(['a', 'b']) })).toBe(6)
+    expect(activityScore({ userChars: 149, completedTurns: 0, toolResults: 4, toolNames: new Set(['a']) })).toBe(3)
+  })
+
+  it('isChitchat 只匹配纯寒暄，forbidsCapture 匹配显式禁记', () => {
+    expect(isChitchat('你好')).toBe(true)
+    expect(isChitchat('Hello!')).toBe(true)
+    expect(isChitchat('谢谢，辛苦了')).toBe(false)
+    expect(isChitchat('你好，帮我看看这个报错')).toBe(false)
+    expect(forbidsCapture('这些是临时调试信息，不要记住这一轮的内容')).toBe(true)
+    expect(forbidsCapture('don\'t save that it is sensitive')).toBe(true)
+    expect(forbidsCapture('请记住我的部署端口是 4000')).toBe(false)
+  })
+
+  it('throttleDecision：低活动/寒暄/禁记分别命中对应原因，实质轮放行', () => {
+    // 低活动：短消息 + 无工具 + 无助手回复。
+    const low = [turnStart(1), userMsg('我最喜欢 TypeScript', 2), turnStart(2)]
+    expect(throttleDecision(low)).toBe('low-activity')
+    // 寒暄：活动分足够（助手 1 + 10 次工具结果 2 + 3 种工具 2 = 5 分），但用户文本是纯问候。
+    const greeting = [
+      turnStart(1),
+      userMsg('你好', 2),
+      assistantMsg('你好！有什么可以帮你？', 3),
+      toolCall('c1', 'fs_read', 4), toolResult('c1', 5),
+      toolCall('c2', 'fs_read', 6), toolResult('c2', 7),
+      toolCall('c3', 'web_search', 8), toolResult('c3', 9),
+      toolCall('c4', 'shell_run', 10), toolResult('c4', 11),
+      toolCall('c5', 'shell_run', 12), toolResult('c5', 13),
+      toolCall('c6', 'shell_run', 14), toolResult('c6', 15),
+      toolCall('c7', 'web_search', 16), toolResult('c7', 17),
+      toolCall('c8', 'fs_read', 18), toolResult('c8', 19),
+      toolCall('c9', 'web_search', 20), toolResult('c9', 21),
+      toolCall('c10', 'fs_read', 22), toolResult('c10', 23),
+      turnStart(2),
+    ]
+    expect(throttleDecision(greeting)).toBe('chitchat')
+    // 禁记：活动分足够，用户显式要求不要记。
+    const forbidden = [
+      turnStart(1),
+      userMsg(`临时调试输出，不要记住这些内容。${PAD}`, 2),
+      assistantMsg('好的，已忽略。', 3),
+      toolCall('c1', 'fs_read', 4), toolResult('c1', 5),
+      toolCall('c2', 'web_search', 6), toolResult('c2', 7),
+      turnStart(2),
+    ]
+    expect(throttleDecision(forbidden)).toBe('capture-forbidden')
+    // 实质轮放行。
+    expect(throttleDecision(substantiveTurn1())).toBeNull()
+  })
+
+  it('集成：低活动轮摄取直接跳过且不写库、不调 LLM', async () => {
+    let called = 0
+    const outcome = await ingestPreviousTurn(baseDeps({
+      events: [turnStart(1), userMsg('我最喜欢 TypeScript', 2), turnStart(2), userMsg('现在的问题', 200)],
+      call: async () => { called += 1; return VALID_LLM_OUTPUT },
+    }))
+    expect(outcome.skipped).toBe('low-activity')
+    expect(outcome.written).toBe(0)
+    expect(called).toBe(0)
+    expect(await store.topActive('user', 10)).toHaveLength(0)
+  })
+
+  it('活动门槛常量为 5（协议内定值）', () => {
+    expect(ACTIVITY_THRESHOLD).toBe(5)
+  })
+
+  it('turnSignals 统计用户字符与工具信号，跳过插件注入快照', () => {
+    const signals = turnSignals(substantiveTurn1())
+    expect(signals.completedTurns).toBe(1)
+    expect(signals.toolResults).toBe(2)
+    expect(signals.toolNames).toEqual(new Set(['fs_read', 'web_search']))
+    const withPlugin = turnSignals([pluginMsg('注入快照'.repeat(50), 1), ...substantiveTurn1()])
+    expect(withPlugin.userChars).toBe(signals.userChars)
   })
 })
 

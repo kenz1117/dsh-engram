@@ -32,6 +32,10 @@ describe('sanitizeProtocolText', () => {
 
   it('无标签文本原样返回（仅去首尾空白）', () => {
     expect(sanitizeProtocolText('  普通记忆正文  ')).toBe('普通记忆正文')
+    // no-palace 块：用户显式禁记，块内文字整段移除（不留痕）。
+    expect(sanitizeProtocolText('前面 <no-palace>这是私密的</no-palace> 后面')).toBe('前面  后面')
+    expect(sanitizeProtocolText('A<no-palace>x</no-palace>B<no-palace>y</no-palace>C')).toBe('ABC')
+    expect(sanitizeProtocolText('未闭合<no-palace>丢弃尾部')).toBe('未闭合')
   })
 })
 
@@ -160,21 +164,27 @@ describe('摄取管线安全集成', () => {
   const userMsg = (text: string, seq: number) => ({
     type: 'user/message', data: { content: [{ type: 'text', text }] }, time: Date.now(), seq,
   })
+  const assistantMsg = (text: string, seq: number) => ({
+    type: 'assistant/message', data: { content: [{ type: 'text', text }] }, time: Date.now(), seq,
+  })
   const routeHeader = (seq: number) => ({
     type: 'request/header',
     data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4-flash' } } },
     time: Date.now(), seq,
   })
+  /** 长填充文本：把用户消息垫到 ≥150 字符，使活动评分越过摄取门槛（userChars 满档 3 分）。 */
+  const PAD = '上下文填充。'.repeat(30)
 
   it('userText 附召回附注，且交给模型的内容已脱敏', async () => {
     const captured: IngestRequestEventData[] = []
     const outcome = await ingestPreviousTurn({
       events: [
         turnStart(1),
-        userMsg('把我的 sk-abc123def456ghi789jk 记一下', 3),
+        userMsg(`把我的 sk-abc123def456ghi789jk 记一下。${PAD}`, 3),
         toolCall('c1', 'engram_search', 4),
         toolResult('c1', '既有记忆内容', 5),
-        routeHeader(6),
+        assistantMsg('好的，我已注意到相关背景。', 6),
+        routeHeader(7),
         turnStart(2),
         userMsg('继续', 200),
       ],
@@ -197,7 +207,16 @@ describe('摄取管线安全集成', () => {
 
   it('模型输出候选入库前剥离协议块并脱敏', async () => {
     await ingestPreviousTurn({
-      events: [turnStart(1), userMsg('正常对话', 3), routeHeader(4), turnStart(2), userMsg('继续', 200)],
+      events: [
+        turnStart(1),
+        userMsg(`正常对话。${PAD}`, 3),
+        toolCall('c1', 'fs_read', 4),
+        toolResult('c1', '文件内容', 5),
+        assistantMsg('回答内容。', 6),
+        routeHeader(7),
+        turnStart(2),
+        userMsg('继续', 200),
+      ],
       sessionId: 'sess-sec-2',
       turn: 2,
       openStore: async () => store,

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 记忆宫殿大图标：256×256，正面立柱，渲染端用作市场卡片与详情页头图。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Memory Palace">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5b8def" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#5b8def" stop-opacity="0.04"/>
+    </linearGradient>
+    <linearGradient id="roof" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5b8def" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#5b8def" stop-opacity="0.65"/>
+    </linearGradient>
+    <linearGradient id="floor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5b8def" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#5b8def" stop-opacity="0.35"/>
+    </linearGradient>
+  </defs>
+  <!-- 圆角背板 -->
+  <rect x="8" y="8" width="240" height="240" rx="32" fill="url(#bg)" stroke="#5b8def" stroke-opacity="0.25" stroke-width="2"/>
+  <!-- 三层阶梯 -->
+  <rect x="48" y="200" width="160" height="8" rx="2" fill="url(#floor)"/>
+  <rect x="58" y="208" width="140" height="8" rx="2" fill="url(#floor)"/>
+  <rect x="68" y="216" width="120" height="8" rx="2" fill="url(#floor)"/>
+  <!-- 三角顶 -->
+  <path d="M44 120 L128 56 L212 120 Z" fill="url(#roof)"/>
+  <!-- 立柱与墙身 -->
+  <rect x="60" y="120" width="136" height="80" rx="3" fill="#fff" stroke="#5b8def" stroke-width="3"/>
+  <line x1="60" y1="120" x2="196" y2="120" stroke="#5b8def" stroke-width="3"/>
+  <!-- 左窗 -->
+  <rect x="76" y="136" width="28" height="28" rx="3" fill="none" stroke="#5b8def" stroke-width="3"/>
+  <line x1="90" y1="136" x2="90" y2="164" stroke="#5b8def" stroke-width="2"/>
+  <line x1="76" y1="150" x2="104" y2="150" stroke="#5b8def" stroke-width="2"/>
+  <!-- 中门 -->
+  <path d="M112 200 L112 156 Q112 144 128 144 Q144 144 144 156 L144 200" fill="#fff" stroke="#5b8def" stroke-width="3"/>
+  <circle cx="138" cy="180" r="2.5" fill="#5b8def"/>
+  <!-- 右窗 -->
+  <rect x="152" y="136" width="28" height="28" rx="3" fill="none" stroke="#5b8def" stroke-width="3"/>
+  <line x1="166" y1="136" x2="166" y2="164" stroke="#5b8def" stroke-width="2"/>
+  <line x1="152" y1="150" x2="180" y2="150" stroke="#5b8def" stroke-width="2"/>
+</svg>

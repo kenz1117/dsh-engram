@@ -136,6 +136,97 @@ function collectTexts(events: readonly SessionEventLike[], includeAssistant: boo
 /** 摄取切片模式：previous = 上一轮（新轮第一步触发）；last = 末轮到日志末尾（session/disposed 触发）；number = 指定轮次（pending 重放）。 */
 export type IngestSlice = 'previous' | 'last' | number
 
+/** 活动评分门槛：低于该值的上一轮不值得起一次辅助 LLM 摄取（四信号公式见 activityScore）。 */
+export const ACTIVITY_THRESHOLD = 5
+
+/** 寒暄正则：整段用户输入只含问候/感谢等无信息内容时跳过摄取。 */
+const CHITCHAT_RE = /^(?:你好|您好|嗨|哈喽|hello|hi|hey|谢谢|感谢|ok|okay|好的|在吗|收到|辛苦了)[!！,.，。?？~\s]*$/iu
+
+/** 显式禁记正则：用户明确要求不要记住本轮内容时跳过摄取（窄匹配整句指令，避免误伤）。 */
+const NO_CAPTURE_RE = /(?:不要|别|不用|无需)(?:把这?[个件些条]?|把上一?轮|把刚才)?(?:记|存)(?:住|录|下来|进去|到记忆|进记忆)|don'?t\s+(?:remember|record|save)\s+(?:this|that|it)/i
+
+/** 上一轮的活动信号（摄取节流的输入）。 */
+export interface TurnSignals {
+  /** 用户消息文本总字符数。 */
+  readonly userChars: number
+  /** 上一轮是否有完成的助手回复（0 或 1）。 */
+  readonly completedTurns: number
+  /** 工具结果数。 */
+  readonly toolResults: number
+  /** 出现过的工具名集合。 */
+  readonly toolNames: ReadonlySet<string>
+}
+
+/** 工具多样性得分：无工具 0；1-2 种 1；≥3 种 2。 */
+function toolDiversity(distinct: number): number {
+  return distinct === 0 ? 0 : distinct <= 2 ? 1 : 2
+}
+
+/**
+ * 活动评分（四信号，< ACTIVITY_THRESHOLD 跳过摄取）：
+ * min(floor(userChars/50), 3) + completedTurns + min(floor(toolResults/5), 2) + toolDiversity。
+ * @param signals - 上一轮活动信号。
+ * @returns 0-8 的整数评分。
+ */
+export function activityScore(signals: TurnSignals): number {
+  return Math.min(Math.floor(signals.userChars / 50), 3)
+    + signals.completedTurns
+    + Math.min(Math.floor(signals.toolResults / 5), 2)
+    + toolDiversity(signals.toolNames.size)
+}
+
+/** 判断用户输入是否为纯寒暄（无信息内容）。 */
+export function isChitchat(text: string): boolean {
+  return CHITCHAT_RE.test(text.trim())
+}
+
+/** 判断用户输入是否显式要求不要记住。 */
+export function forbidsCapture(text: string): boolean {
+  return NO_CAPTURE_RE.test(text)
+}
+
+/** 从事件切片提取活动信号（用户文本排除插件注入的快照消息）。 */
+export function turnSignals(events: readonly SessionEventLike[]): TurnSignals {
+  let userChars = 0
+  let completedTurns = 0
+  let toolResults = 0
+  const toolNames = new Set<string>()
+  for (const event of events) {
+    if (event.type === 'user/message') {
+      const data = event.data as { source?: { kind?: unknown }; content?: { type?: unknown; text?: unknown }[] } | null
+      if (data?.source?.kind === 'plugin') continue
+      for (const block of data?.content ?? []) {
+        if (block?.type === 'text' && typeof block.text === 'string') userChars += block.text.length
+      }
+    } else if (event.type === 'assistant/message') {
+      const data = event.data as { content?: { type?: unknown; text?: unknown }[] } | null
+      if ((data?.content ?? []).some(block => block?.type === 'text' && typeof block.text === 'string' && block.text !== '')) {
+        completedTurns = 1
+      }
+    } else if (event.type === 'tool/result') {
+      toolResults += 1
+    } else if (event.type === 'tool/call') {
+      const name = (event.data as { name?: unknown } | null)?.name
+      if (typeof name === 'string') toolNames.add(name)
+    }
+  }
+  return { userChars, completedTurns, toolResults, toolNames }
+}
+
+/**
+ * 上一轮自动摄取的节流判定（只作用于 previous 切片；末轮/pending 重放补做不受限）。
+ * @returns 跳过原因；null = 允许摄取。
+ */
+export function throttleDecision(events: readonly SessionEventLike[]): string | null {
+  const signals = turnSignals(events)
+  if (activityScore(signals) < ACTIVITY_THRESHOLD) return 'low-activity'
+  const texts = collectTexts(events, false).texts
+  const joined = texts.join(' ')
+  if (joined !== '' && isChitchat(joined)) return 'chitchat'
+  if (forbidsCapture(joined)) return 'capture-forbidden'
+  return null
+}
+
 /** 各 turn/start 事件的下标与轮次号（缺 data.turn 时轮次为 undefined）。 */
 function turnStarts(events: readonly SessionEventLike[]): { index: number; turn: number | undefined }[] {
   const starts: { index: number; turn: number | undefined }[] = []
@@ -204,6 +295,14 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   const doneKey = encodeTurnKey(deps.sessionId, round)
   if (await store.hasAudit(INGEST_DONE_OP, doneKey)) {
     return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: 'already-ingested' }
+  }
+
+  // 节流（只限 previous 自动摄取）：低活动/寒暄/显式禁记的轮次不值得起一次辅助 LLM。
+  if (sliceMode === 'previous') {
+    const throttled = throttleDecision(slice)
+    if (throttled !== null) {
+      return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: throttled }
+    }
   }
 
   // 召回占位先行：切片内召回工具的输出替换为占位文本，阻断记忆内容回流成新记忆。

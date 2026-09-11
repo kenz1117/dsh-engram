@@ -2,7 +2,7 @@
 
 # dsh-engram
 
-<p align="center">Cross-session long-term memory for DeepSeek Harness — the agent remembers your preferences, project conventions, and factual history across sessions and projects, and keeps evolving with use (capture → reinforce → distill → decay). Pure TypeScript: no external processes, no Python dependency.</p>
+<p align="center">Cross-session long-term memory for DeepSeek Harness — a cognitive-science reframe of agent memory under the "memory palace" metaphor: imagery labels, corridor topology, closure questions, consolidation merging, and decay forgetting. The agent remembers your preferences, project conventions, and factual history across sessions and projects, and keeps evolving with use (capture → reinforce → distill → decay). Pure TypeScript: no external processes, no Python dependency.</p>
 
 <p align="center">
   <a href="https://github.com/kenz1117/dsh-engram/blob/main/LICENSE"><img alt="GitHub license" src="https://img.shields.io/github/license/kenz1117/dsh-engram"></a>
@@ -36,8 +36,9 @@ Zero configuration after install (stores and model cache default to `~/.dsh/engr
 - **Knowledge flywheel**: capture/save → contradiction candidates (high-similarity neighbors create `contradicts` edges on write, for the model/user to adjudicate) → hit reinforcement (confidence +0.05) → distillation (topic clusters merge into higher-level rules, supersedes chains, confidence inheritance) → decay (low-importance, long-unaccessed entries archive; restorable).
 - **Automatic capture** (when `ingest` is enabled): each new turn's first step extracts candidate facts from the previous turn out of the session log, and session end captures the final turn too (failures leave a pending key that the next session replays; capture is idempotent per session+turn), written with low confidence and deduplicated by embedding — memories accumulate without you saying "remember this".
 - **Provenance audit**: every memory records its source session, turn, and event seq; `engram_review` traces the full source chain, supersede chain, contradictions, and operation log; all writes/edits/forgets/distills/decays land in the operation log table.
-- **Web management panel**: a "Memory Library" tab in Settings — stat cards, filter by status/kind/content, inline detail and edit (through the supersede chain), forget/restore, Markdown/JSON export. UI copy is bilingual zh/en and follows the host language setting live.
-- **Portable data**: `engram_export` exports Markdown / JSON files in one step.
+- **Web management panel** (v0.7.0+): a "Memory Library" tab in Settings — Tour butler (7 cards: health score, curator log, corridor bird's-eye, recall bench, refurb list, activity log, tour proposal) plus Room exhibition (list & edit). A single 3-pill scope switcher in the header drives every panel; UI copy is bilingual zh/en and follows the host language setting live. Filter by redaction marks (include/exclude `[REDACTED:*]` entries) with amber badges for audit coverage.
+- **Portable data**: `engram_export` exports Markdown / JSON files in one step, with a redacted-view variant (secondary scrubbing + 40-char preview truncation, share-safe). `engram_mirror` writes an Obsidian / Logseq-friendly mirror directory (one Markdown per memory with YAML frontmatter + `[[id]]` backlinks), turning the palace into a human-readable private knowledge base.
+- **AGI Architecture Exploration (dsh-market · AGI Architecture)**: listed in dsh-market's "AGI Architecture Exploration" category as a cognitive-science reframe of agent long-term memory — memory palace (imagery labels + room placards), corridor topology (force-directed graph), closure questions (the ingest prompt nudges the model to ask clarifying questions), consolidation merging (heuristic dedup + cosine similarity) — sitting alongside MemGPT / Letta in the "agent memory architecture" conversation.
 
 ## Tools (9, narrow parameters)
 

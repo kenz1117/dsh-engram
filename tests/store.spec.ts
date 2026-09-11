@@ -49,6 +49,24 @@ describe('EngramStore (sqlite)', () => {
     expect(stats.redacted).toBe(1)
   })
 
+  it('reportOutcome 更新效果并联动 confidence（提权/降权/夹逼）', async () => {
+    const skill = await store.write({ scope: 'user', kind: 'skill', content: '部署前先跑 typecheck 再跑 test', importance: 0.7 })
+    const up = await store.reportOutcome(skill.id, 'success')
+    expect(up?.outcome).toBe('success')
+    expect(up!.confidence).toBeCloseTo(0.55, 5) // 0.5 + 0.05
+    const down = await store.reportOutcome(skill.id, 'failure')
+    expect(down?.outcome).toBe('failure')
+    expect(down!.confidence).toBeCloseTo(0.45, 5) // 0.55 - 0.1
+    // 边界夹逼：连续失败到 0 不为负
+    for (let index = 0; index < 10; index++) {
+      await store.reportOutcome(skill.id, 'failure')
+    }
+    const floor = await store.reportOutcome(skill.id, 'failure')
+    expect(floor!.confidence).toBe(0)
+    // 不存在 id 返回 undefined（不抛错）
+    expect(await store.reportOutcome('mem-missing' as never, 'success')).toBeUndefined()
+  })
+
   it('空 content loud 失败', async () => {
     await expect(store.write({ scope: 'user', kind: 'fact', content: '   ' })).rejects.toThrow(/content/)
   })
@@ -148,8 +166,143 @@ describe('EngramStore (sqlite)', () => {
     await expect(openEngramStore(path)).rejects.toThrow(/schema/i)
   })
 
+  it('v2 旧库打开时自动迁移到最新 schema（保数据）', async () => {
+    const path = join(dir, 'migrate.db')
+    // 先用当前版本建库写入数据，再手工把 schema_version 改回 v2（SQLite 不支持 DROP COLUMN，
+    // 测试通过迁移脚本的 ALTER/CREATE 路径保证 outcome/revisions/imagery_json 都被加上）。
+    const legacy = await openEngramStore(path)
+    const record = await legacy.write({ scope: 'user', kind: 'skill', content: '迁移前写入的技能' })
+    await legacy.close()
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(path)
+    db.prepare("UPDATE meta SET value = '2' WHERE key = 'schema_version'").run()
+    db.close()
+    const migrated = await openEngramStore(path)
+    const fetched = await migrated.get(record.id)
+    expect(fetched?.content).toBe('迁移前写入的技能')
+    expect(fetched?.outcome).toBeUndefined()
+    await migrated.close()
+    const db2 = new DatabaseSync(path)
+    const version = (db2.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value
+    db2.close()
+    expect(version).toBe('5')
+  })
+
+  it('v3 库打开时顺序迁移到 v5（数据保留，修订表可用）', async () => {
+    const path = join(dir, 'migrate-v3.db')
+    const legacy = await openEngramStore(path)
+    const record = await legacy.write({ scope: 'user', kind: 'fact', content: 'v3 时代条目' })
+    await legacy.close()
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(path)
+    // 仅降级 schema_version；不删 outcome 列（v3 已存在 outcome，但少了 revisions/imagery_json）。
+    db.exec('DROP TABLE nodes_revisions')
+    db.prepare("UPDATE meta SET value = '3' WHERE key = 'schema_version'").run()
+    db.close()
+    const migrated = await openEngramStore(path)
+    expect((await migrated.get(record.id))?.content).toBe('v3 时代条目')
+    // 迁移后修订表可用：update 写快照并可回读。
+    await migrated.update({ id: record.id, scope: 'user', kind: 'fact', content: 'v5 修订内容' })
+    const view = await migrated.review(record.id)
+    expect(view?.revisions.map(rev => rev.content)).toEqual(['v3 时代条目'])
+    await migrated.close()
+  })
+
   it('asMemoryId 品牌化 id 可透传 get', async () => {
     const record = await store.write({ scope: 'user', kind: 'fact', content: '品牌 id' })
     expect((await store.get(asMemoryId(record.id)))?.id).toBe(record.id)
+  })
+})
+
+describe('修订历史与操作流（schema v4）', () => {
+  let dir: string
+  let store: EngramStore
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'engram-rev-'))
+    store = await openEngramStore(join(dir, 'user.db'))
+  })
+  afterEach(async () => {
+    await store.close()
+  })
+
+  it('update 归档旧条目前写内容快照，review 返回修订历史', async () => {
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '端口是 3000', importance: 0.6 })
+    const b = await store.update({ id: a.id, scope: 'user', kind: 'fact', content: '端口改为 4000' })
+    const c = await store.update({ id: b.id, scope: 'user', kind: 'fact', content: '端口改为 5000' })
+    // 快照记录的是被取代条目自己的旧内容；链式修订各自留痕。
+    expect((await store.review(a.id))?.revisions.map(rev => rev.content)).toEqual(['端口是 3000'])
+    expect((await store.review(a.id))?.revisions[0]!.kind).toBe('fact')
+    expect((await store.review(a.id))?.revisions[0]!.importance).toBe(0.6)
+    expect((await store.review(a.id))?.revisions[0]!.supersededAt).toBeGreaterThan(0)
+    expect((await store.review(b.id))?.revisions.map(rev => rev.content)).toEqual(['端口改为 4000'])
+    expect((await store.review(c.id))?.revisions).toEqual([])
+    // 链路完整：c 超越 b，b 超越 a。
+    expect((await store.review(c.id))?.supersedes.map(id => String(id))).toEqual([String(b.id)])
+    expect((await store.review(a.id))?.supersededBy.map(id => String(id))).toEqual([String(b.id)])
+  })
+
+  it('未被修订过的条目修订历史为空', async () => {
+    const record = await store.write({ scope: 'user', kind: 'fact', content: '从未修订' })
+    const view = await store.review(record.id)
+    expect(view?.revisions).toEqual([])
+  })
+
+  it('recentOps 返回最近操作（倒序，跨类型）', async () => {
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '操作流条目' })
+    await store.forget(a.id)
+    const ops = await store.recentOps(10)
+    expect(ops.length).toBeGreaterThanOrEqual(2)
+    expect(ops[0]!.op).toBe('forget')
+    expect(ops[0]!.targetId).toBe(a.id)
+    expect(ops[ops.length - 1]!.op).toBe('write')
+    // limit 生效。
+    expect(await store.recentOps(1)).toHaveLength(1)
+  })
+})
+
+describe('渐进式披露：getMany / neighbors', () => {
+  let dir: string
+  let store: EngramStore
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'engram-prog-'))
+    store = await openEngramStore(join(dir, 'user.db'))
+  })
+  afterEach(async () => {
+    await store.close()
+  })
+
+  it('getMany 按入参顺序返回，去重且缺失静默跳过', async () => {
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '甲' })
+    const b = await store.write({ scope: 'user', kind: 'fact', content: '乙' })
+    const c = await store.write({ scope: 'user', kind: 'fact', content: '丙' })
+    const missing = asMemoryId('00000000-0000-0000-0000-000000000000')
+    const result = await store.getMany([c.id, a.id, c.id, missing, b.id])
+    expect(result.map(r => r.content)).toEqual(['丙', '甲', '乙'])
+  })
+
+  it('neighbors 沿 related/supersedes/contradicts 走廊边 BFS 展开并去重起点', async () => {
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '起点房间' })
+    const b = await store.write({ scope: 'user', kind: 'fact', content: '一跳邻居' })
+    const c = await store.write({ scope: 'user', kind: 'fact', content: '两跳邻居' })
+    const d = await store.write({ scope: 'user', kind: 'fact', content: '与起点互斥' })
+    await store.linkEdge(a.id, b.id, 'related')
+    await store.linkEdge(b.id, c.id, 'refines')
+    await store.linkEdge(a.id, d.id, 'contradicts')
+    const ns1 = await store.neighbors(a.id, 1)
+    expect(ns1.map(r => r.content).sort()).toEqual(['一跳邻居', '与起点互斥'])
+    const ns2 = await store.neighbors(a.id, 2)
+    expect(ns2.map(r => r.content)).toEqual(expect.arrayContaining(['一跳邻居', '两跳邻居', '与起点互斥']))
+    expect(ns2).toHaveLength(3)
+    // depth 越界：夹到 1-3（0 → 1、9 → 3）。
+    expect(await store.neighbors(a.id, 0)).toHaveLength(2)
+    expect(await store.neighbors(a.id, 9)).toHaveLength(3)
+  })
+
+  it('无邻居时返回空数组（不报错）', async () => {
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '孤岛房间' })
+    expect(await store.neighbors(a.id, 3)).toEqual([])
+    expect(await store.getMany([])).toEqual([])
   })
 })

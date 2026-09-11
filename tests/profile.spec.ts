@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { renderProfile } from '../src/index.ts'
+import { renderProfile, renderProfileDetailed } from '../src/index.ts'
 
 const HEADER = 'User memory profile (dsh-engram, cross-session):'
 const FOOTER = 'Use engram_search to recall details; use engram_save to persist new facts.'
@@ -54,5 +54,34 @@ describe('renderProfile 预算装填', () => {
     const degraded = renderProfile([mixed], OVERHEAD + 4)
     expect(degraded).not.toContain(line)
     expect(degraded).toContain('+1 more; use engram_search')
+  })
+})
+
+describe('renderProfileDetailed 溢出明细', () => {
+  it('溢出条目在 overflow 中按序返回，文本含计数行', () => {
+    const overflowRecord = record('id-overflow', 'fact', '条目一')
+    const detailed = renderProfileDetailed([overflowRecord], OVERHEAD + 2)
+    expect(detailed.overflow.map(item => item.id)).toEqual(['id-overflow'])
+    expect(detailed.overflow[0]!.kind).toBe('fact')
+    expect(detailed.overflow[0]!.content).toBe('条目一')
+    expect(detailed.text).toContain('+1 more; use engram_search')
+  })
+
+  it('全部装下时 overflow 为空', () => {
+    const detailed = renderProfileDetailed([record('id-1', 'fact', '条目一')], 1024)
+    expect(detailed.overflow).toEqual([])
+    expect(detailed.text).toContain('- [fact] 条目一')
+    expect(detailed.text).not.toContain('more; use engram_search')
+  })
+
+  it('压缩后重渲染：压短的条目整行装入，overflow 清空', () => {
+    const budget = OVERHEAD + 8
+    const first = renderProfileDetailed([record('id-1', 'preference', '很长的原始条目'.repeat(10))], budget)
+    expect(first.overflow).toHaveLength(1)
+    // 模拟辅助 LLM 压缩后的重渲染。
+    const recomposed = first.overflow.map(item => ({ ...item, content: '压缩后的短句' }))
+    const second = renderProfileDetailed(recomposed, budget)
+    expect(second.overflow).toEqual([])
+    expect(second.text).toContain('- [preference] 压缩后的短句')
   })
 })

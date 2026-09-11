@@ -1,7 +1,9 @@
 {
   "name": "@kenz1117/dsh-engram",
-  "description": "Cross-session long-term memory for DeepSeek Harness: dual-scope SQLite memory graph, hybrid retrieval, provenance audit, and a knowledge flywheel.",
-  "version": "0.6.1",
+  "description": "Cross-session long-term memory for DeepSeek Harness (memory palace · AGI Architecture Exploration on dsh-market): dual-scope SQLite memory graph, hybrid retrieval, provenance audit, and a knowledge flywheel.",
+  "version": "0.7.1",
+  "icon": "icon.svg",
+  "logo": "icon-256.svg",
   "publishConfig": {
     "access": "public"
   },
@@ -19,12 +21,17 @@
       "default": "./lib/client.js"
     },
     "./src/*": "./src/*",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./icon": "./icon.svg",
+    "./icon.svg": "./icon.svg",
+    "./logo.svg": "./icon-256.svg"
   },
   "files": [
     "lib/",
     "scripts/",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "icon.svg",
+    "icon-256.svg"
   ],
   "dsh": {
     "bundle": {
@@ -50,10 +57,17 @@
     "dsh-plugin",
     "deepseek-harness",
     "dsh",
+    "dsh-market",
+    "agi-architecture-exploration",
+    "memory-palace",
+    "method-of-loci",
     "memory",
+    "long-term-memory",
     "cross-session",
     "sqlite",
+    "fts5",
     "embeddings",
+    "knowledge-flywheel",
     "agent"
   ],
   "engines": {
