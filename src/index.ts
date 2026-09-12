@@ -32,13 +32,15 @@ import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
 import { currentUserRequestText, renderMemoryPacket } from './security/sanitize.ts'
 import { wrapWithRationale } from './selection-rationale.ts'
+import { evidenceBatches } from './retrieve/evidence.ts'
+import { estimateTokens } from './token.ts'
 import type { EngramScope, Slot } from './types.ts'
 
 /** Cordis 插件名（loader 诊断与注入 source 使用）。 */
 export const name = 'dsh-engram'
 
 /** 插件版本（与 package.json 同步，写进备份 _meta.json）。 */
-export const VERSION = '0.7.2'
+export const VERSION = '0.7.5'
 
 /** 必需服务：工具注册表与 LLM 流式端点（摄取/蒸馏的辅助调用）。 */
 export const inject = ['tools', 'llm']
@@ -54,9 +56,10 @@ export interface ProfileRender {
 }
 
 /**
- * 会话开始注入的画像渲染：按重要性降序在 token 预算内整行装填（估算 ceil(len/4)，
- * 超预算的行跳过不截断、继续试更短行）；装不下的条目降级为索引行（#id + 前 40 字），
- * 索引行也装不下的折成末尾 `+N more; use engram_search` 计数行。
+ * 会话开始注入的画像渲染：按重要性降序在 token 预算内整行装填（估算见
+ * estimateTokens：中文按 1.5 token/字、其余按 4 字符/token，超预算的行跳过不截断、
+ * 继续试更短行）；装不下的条目降级为索引行（#id + 前 40 字），
+ * 索引行也装不下的折成末尾 `+N more; use engram_search` 计数行；计数行同样占用预算。
  * @param records - 候选条目（调用方已按重要性排序、按条数截断）。
  * @param tokenBudget - 整段画像的 token 预算（含首尾固定行）。
  * @returns 渲染文本与溢出条目（调用方可用辅助 LLM 压缩后重渲染）。
@@ -65,7 +68,7 @@ export function renderProfileDetailed(
   records: readonly { id: string; kind: string; content: string; slot?: Slot }[],
   tokenBudget: number,
 ): ProfileRender {
-  const estimate = (text: string): number => Math.ceil(text.length / 4)
+  const estimate = estimateTokens
   // 主厅：常驻核心记忆层（每次会话都在场），行内带宫殿坐标（房间 #桩位）让 agent 有位置感。
   const header = 'User memory profile (dsh-engram, cross-session) — Grand Hall (always present):'
   const footer = 'Use engram_search to recall details (pass room to search inside one room); use engram_save to persist new facts.'
@@ -84,6 +87,9 @@ export function renderProfileDetailed(
     }
   }
   let more = 0
+  // 末尾计数行同样占预算：先按最大位数预留再装索引行，否则补行后总量会超出预算。
+  // 预算小到连预留都放不下时（remaining 转负）不输出计数行，保证总量不超承诺。
+  remaining -= overflow.length === 0 ? 0 : estimate(`+${overflow.length} more; use engram_search`)
   for (const record of overflow) {
     const line = `- [${record.kind}] #${record.id} ${record.content.slice(0, 40)}…`
     const cost = estimate(line)
@@ -94,7 +100,7 @@ export function renderProfileDetailed(
       more += 1
     }
   }
-  if (more > 0) lines.push(`+${more} more; use engram_search`)
+  if (more > 0 && remaining >= 0) lines.push(`+${more} more; use engram_search`)
   return { text: [header, ...lines, footer].join('\n'), overflow }
 }
 
@@ -552,6 +558,11 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   if (resolved.injectProfile || resolved.ingest !== 'off') {
     ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, resolved, embedder, preStepState, logIngestRequest, payload, next), { prepend: true })
   }
+
+  // 会话结束即释放该会话的证据批次（进程内注册表，避免长驻进程累积）。
+  ctx.on('session/disposed', (session) => {
+    evidenceBatches.clear(String(session.id))
+  })
 
   if (resolved.ingest !== 'off') {
     // 末轮摄取闭环：disposed 是 fire-and-forget 观察器（宿主不等待），5 秒超时；

@@ -108,6 +108,22 @@ export type EngramKey =
   | 'opIngestRequest'
   | 'opIngestDone'
   | 'opOutcomeReport'
+  | 'opAssess'
+  | 'opConsolidation'
+  | 'opReviewAnswer'
+  | 'opSlotAssign'
+  | 'opSlotBackfill'
+  | 'opRoomOpen'
+  | 'consolidateArchived'
+  | 'consolidateMerged'
+  | 'consolidateSkipped'
+  | 'decayArchived'
+  | 'slotBackfilled'
+  | 'roomOpened'
+  | 'reviewAnswered'
+  | 'assessAdequate'
+  | 'assessInadequate'
+  | 'assessRefs'
   | 'opSearchRewrite'
   | 'opCompressRequest'
   | 'opDistillRequest'
@@ -338,6 +354,22 @@ export const zh: Record<EngramKey, string> = {
   opIngestRequest: '发掘请求',
   opIngestDone: '发掘完成',
   opOutcomeReport: '管家验证',
+  opAssess: '证据判定',
+  opConsolidation: '闭馆整理',
+  opReviewAnswer: '复习答题',
+  opSlotAssign: '排桩',
+  opSlotBackfill: '批量排桩',
+  opRoomOpen: '开新房',
+  consolidateArchived: '归档 {n}',
+  consolidateMerged: '合并 {n}',
+  consolidateSkipped: '跳过 {n}',
+  decayArchived: '归档 {n}',
+  slotBackfilled: '新排 {n} 个桩位',
+  roomOpened: '开新房 {room}',
+  reviewAnswered: '评分 {grade} · 下次 {days} 天后',
+  assessAdequate: '证据充足',
+  assessInadequate: '证据不足',
+  assessRefs: '{n} 条证据',
   opSearchRewrite: '路线改写',
   opCompressRequest: '导览压缩',
   opDistillRequest: '合并房间',
@@ -560,6 +592,22 @@ export const en: Record<EngramKey, string> = {
   opIngestRequest: 'excavation requested',
   opIngestDone: 'excavated',
   opOutcomeReport: 'curator report',
+  opAssess: 'evidence check',
+  opConsolidation: 'consolidation',
+  opReviewAnswer: 'review answer',
+  opSlotAssign: 'slot assigned',
+  opSlotBackfill: 'slots backfilled',
+  opRoomOpen: 'room opened',
+  consolidateArchived: 'archived {n}',
+  consolidateMerged: 'merged {n}',
+  consolidateSkipped: 'skipped {n}',
+  decayArchived: 'archived {n}',
+  slotBackfilled: '{n} slots assigned',
+  roomOpened: 'opened room {room}',
+  reviewAnswered: 'grade {grade} · next in {days}d',
+  assessAdequate: 'evidence adequate',
+  assessInadequate: 'evidence insufficient',
+  assessRefs: '{n} refs',
   opSearchRewrite: 'route rewritten',
   opCompressRequest: 'placard compressed',
   opDistillRequest: 'rooms merged',

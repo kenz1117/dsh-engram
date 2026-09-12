@@ -32,8 +32,11 @@ afterEach(async () => {
   await store.close()
 })
 
-/** 测试假执行上下文：只填 execute 实际读取的字段（agent id、signal）。 */
-const fakeExec = { agent: { id: 'sess-1' }, signal: new AbortController().signal } as unknown as ToolRunContext
+/** 测试假执行上下文：只填 execute 实际读取的字段（agent id/session、会话事件、signal）。 */
+const fakeExec = {
+  agent: { id: 'sess-1', session: { id: 'sess-1', snapshotEvents: () => [] } },
+  signal: new AbortController().signal,
+} as unknown as ToolRunContext
 
 describe('engram tools', () => {
   it('engram_save 写入并回显来源会话', async () => {
@@ -67,6 +70,40 @@ describe('engram tools', () => {
     const result = await tools.get('engram_search')!.execute({ query: '端口', scope: 'user' }, fakeExec) as { text: string }
     expect(result.text).toContain('<engram_memory_context source="tool_search">')
     expect(result.text).toContain('<current_user_request>\n端口\n</current_user_request>')
+  })
+
+  it('engram_search 注册证据批次，engram_assess 校验 ref 并强制判定', async () => {
+    await store.write({ scope: 'user', kind: 'fact', content: '部署在 4000 端口' })
+    const searched = await tools.get('engram_search')!.execute({ query: '端口', scope: 'user' }, fakeExec) as { text: string }
+    const batchId = /批次 (batch-\d+)/.exec(searched.text)?.[1]
+    const ref = /ref=([^\s）]+)/.exec(searched.text)?.[1]
+    expect(batchId).toBeDefined()
+    expect(ref).toBeDefined()
+
+    // 有效 ref + 声称充足 + answer → 判为充足。
+    const adequate = await tools.get('engram_assess')!.execute(
+      { batchId, sufficient: true, evidenceRefs: [ref], missing: '', nextStrategy: 'answer' }, fakeExec,
+    ) as { sufficient: boolean; text: string }
+    expect(adequate.sufficient).toBe(true)
+    expect(adequate.text).toContain('证据判定：充足')
+
+    // 引用不属于本批次的 ref → 拒绝、判为不足、策略改回检索。
+    const rejected = await tools.get('engram_assess')!.execute(
+      { batchId, sufficient: true, evidenceRefs: ['user/fact#99'], missing: '缺少端口归属', nextStrategy: 'answer' }, fakeExec,
+    ) as { sufficient: boolean; text: string }
+    expect(rejected.sufficient).toBe(false)
+    expect(rejected.text).toContain('无效 ref')
+    expect(rejected.text).toContain('search_keyword')
+
+    // 判定结果写入审计日志（模型可见的判定必须可重建）。
+    const audits = await store.listAuditDetails('assess')
+    expect(audits.some(detail => detail.includes(batchId!))).toBe(true)
+  })
+
+  it('engram_assess 对未知批次直接报错', async () => {
+    await expect(tools.get('engram_assess')!.execute(
+      { batchId: 'batch-999', sufficient: true, evidenceRefs: [], missing: '', nextStrategy: 'answer' }, fakeExec,
+    )).rejects.toThrow('不存在或已过期')
   })
 
   it('engram_save 入库前脱敏密钥并剥离协议块', async () => {
@@ -327,9 +364,9 @@ describe('engram tools', () => {
     expect(result.text).toContain('记忆甲内容')
   })
 
-  it('工具集恰为 16 个且名字正确', () => {
+  it('工具集恰为 17 个且名字正确', () => {
     expect([...tools.keys()].sort()).toEqual([
-      'engram_audit_forgotten', 'engram_distill', 'engram_examine', 'engram_export', 'engram_forget',
+      'engram_assess', 'engram_audit_forgotten', 'engram_distill', 'engram_examine', 'engram_export', 'engram_forget',
       'engram_ingest_history', 'engram_neighbors', 'engram_report', 'engram_review', 'engram_review_queue',
       'engram_save', 'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
     ])

@@ -1,5 +1,5 @@
 /**
- * 15 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
+ * 17 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
  * scope 决定读写哪个分库；嵌入缺失时检索结果显式标记降级。
  * @module @kenz1117/dsh-engram/tools/create
  */
@@ -23,7 +23,11 @@ import {
   MAX_REWRITE_QUERIES, REWRITE_MAX_TOKENS, REWRITE_SYSTEM, RRF_CONSTANT,
   mergeQueryResults, normalizeRewriteQueries,
 } from '../retrieve/rewrite.ts'
-import { enforceBudget, truncateItem } from '../retrieve/budget.ts'
+import { RECALL_TOTAL_CHARS, enforceBudget, fitWithinBudget, truncateItem } from '../retrieve/budget.ts'
+import {
+  MAX_BATCHES_PER_SESSION, MAX_EVIDENCE_REFS, NEXT_STRATEGIES, assessEvidence, evidenceBatches, evidenceRefOf,
+} from '../retrieve/evidence.ts'
+import type { AssessVerdict, NextStrategy } from '../retrieve/evidence.ts'
 import { placardImprovementHint } from '../imagery/score.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunResult } from '../ingest/history.ts'
 
@@ -89,6 +93,34 @@ function renderHistoryRun(result: HistoryRunResult): string {
   return lines.join('\n')
 }
 
+/** 证据门策略的可读提示。 */
+const STRATEGY_HINT: Record<NextStrategy, string> = {
+  answer: '可以据此作答',
+  search_keyword: '换关键词再检索（engram_search）',
+  search_room: '收窄到具体房间再检索（engram_search 带 room）',
+  search_timeline: '按时间线找（engram_timeline）',
+  ask_user: '向用户澄清缺失的信息',
+  stop: '不回答，并向用户说明缺少什么',
+}
+
+/** 证据门判定的模型可读文本（含被拒绝的 ref 与强制改写说明）。 */
+function renderAssessText(verdict: AssessVerdict, batchId: string): string {
+  const lines = [
+    verdict.sufficient
+      ? `证据判定：充足（批次 ${batchId}，${String(verdict.evidenceRefs.length)} 条有效证据）——可以据此作答。`
+      : `证据判定：不足（批次 ${batchId}）。`,
+  ]
+  if (verdict.evidenceRefs.length > 0) lines.push(`有效证据：${verdict.evidenceRefs.join('、')}`)
+  if (verdict.rejectedRefs.length > 0) lines.push(`无效 ref（不属于该批次，已忽略）：${verdict.rejectedRefs.join('、')}`)
+  if (verdict.droppedRefs.length > 0) lines.push(`超出上限被丢弃（单次最多 ${String(MAX_EVIDENCE_REFS)} 条）：${verdict.droppedRefs.join('、')}`)
+  lines.push(`缺口：${verdict.missing === '' ? '（未填写）' : verdict.missing}${verdict.missingTruncated ? '（已截断）' : ''}`)
+  lines.push(`下一步：${verdict.nextStrategy} —— ${STRATEGY_HINT[verdict.nextStrategy]}`)
+  if (verdict.forced) {
+    lines.push('注意：判定由代码修正——sufficient 需同时满足「你声称充足」「至少一条属于本批次的有效证据」「nextStrategy=answer」。')
+  }
+  return lines.join('\n')
+}
+
 /** 从模型参数收敛 scope（非法值或缺失回退 fallback）。 */
 function scopeOf(raw: unknown, fallback: EngramScope): EngramScope {
   if (raw === 'user' || raw === 'project' || raw === 'shared') return raw
@@ -142,7 +174,7 @@ async function rewriteQueries(deps: ToolDeps, exec: ToolRunContext, query: strin
 }
 
 /**
- * 构造 16 个工具定义（engram_save/search/timeline/update/forget/report/review/review_queue/
+ * 构造 17 个工具定义（engram_save/search/assess/timeline/update/forget/report/review/review_queue/
  * stats/export/distill/examine/neighbors/audit_forgotten/tour/ingest_history）。
  * @param deps - 分库打开器、嵌入器、辅助 LLM、导出目录。
  * @returns 可直接 register 的工具定义数组。
@@ -431,18 +463,78 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
         Math.floor(Math.max(0, limit) / Math.max(1, rewrite.queries.length)),
       )
       // 字符预算：单条 1200、总量 4800（超预算行丢弃并提示，防止长记忆淹没上下文）。
-      // 行格式带宫殿坐标（房间 #桩位 + 刻入日期）与编码线索（相邻桩位 id）——提取时重建编码情境。
-      const lines = enforceBudget(merged.map((hit, index) => {
+      // 行格式带宫殿坐标（房间 #桩位 + 刻入日期）、证据 ref 与编码线索（相邻桩位 id）——提取时重建编码情境。
+      const candidates = merged.map((hit, index) => {
+        const ref = evidenceRefOf(hit.record.scope, hit.record.id, hit.record.slot)
         const edge = hit.viaEdge === undefined ? '' : `（经 ${hit.viaEdge.type} 关联自 ${hit.viaEdge.from}）`
         const slot = hit.record.slot === undefined ? '' : ` ${hit.record.slot.room}#${hit.record.slot.index}`
         const date = ` 刻于 ${new Date(hit.record.createdAt).toISOString().slice(0, 10)}`
         const cues = hit.cues === undefined ? '' : ` 相邻桩位: ${hit.cues.neighbors.join(', ')}`
-        return `${index + 1}. [${hit.record.scope}/${hit.record.kind}]${slot}${date} ${truncateItem(hit.record.content)}（id=${hit.record.id}）${edge}${cues}`
-      }))
+        return {
+          ref,
+          line: `${index + 1}. [${hit.record.scope}/${hit.record.kind}]${slot}${date} ${truncateItem(hit.record.content)}（id=${hit.record.id}, ref=${ref}）${edge}${cues}`,
+        }
+      })
+      const { kept, dropped } = fitWithinBudget(candidates, entry => entry.line.length, RECALL_TOTAL_CHARS)
+      const lines = kept.map(entry => entry.line)
+      if (dropped > 0) lines.push(`（另有 ${dropped} 条未展示：缩小查询范围或降低 limit 后重试）`)
+      // 证据门：把本次真正输出的 ref 登记成批次，engram_assess 只能引用这里登记过的 ref。
+      const sessionId = exec.agent === undefined ? undefined : String(exec.agent.session.id)
+      const batch = sessionId === undefined || kept.length === 0
+        ? undefined
+        : evidenceBatches.register(sessionId, kept.map(entry => entry.ref))
       const prefix = degraded && lines.length > 0 ? '（语义嵌入不可用，仅关键词检索）\n' : ''
       const roomNote = rooms === undefined ? '' : `（房间路由：${rooms.join('、')}）\n`
+      const batchNote = batch === undefined
+        ? ''
+        : `\n批次 ${batch.batchId}（${String(batch.refs.size)} 条可引用证据）：作答前用 engram_assess 判定证据是否充分，evidenceRefs 只能引用上面的 ref。`
       // 输出包协议标签：记忆正文是不可信历史上下文，当前请求为检索词本身。
-      return { degraded, text: renderMemoryPacket(`${prefix}${roomNote}${lines.join('\n') || '无命中'}`, 'tool_search', input.query) }
+      return { degraded, text: renderMemoryPacket(`${prefix}${roomNote}${lines.join('\n') || '无命中'}${batchNote}`, 'tool_search', input.query) }
+    },
+  })
+
+  const assess = defineTool({
+    name: 'engram_assess',
+    description: '证据门：检索（engram_search）之后、作答之前，判定「检索到的内容是否足以回答当前问题」。提交 batchId、sufficient、最多 8 条 evidenceRefs（只能引用该批次输出里的 ref=…）、缺口说明 missing（≤160 字符）与下一步 nextStrategy。代码强制校验：sufficient 需同时满足「你声称充足」「至少一条属于本批次的有效证据」「nextStrategy=answer」，否则判为不足并把策略改回继续检索；不属于该批次的 ref 会被拒绝并列出。判词与拒绝明细写入审计日志。',
+    parameters: {
+      batchId: { type: 'string', required: true, description: 'engram_search 输出末尾给出的批次 id（如 batch-3）' },
+      sufficient: { type: 'boolean', required: true, description: '证据是否足以回答当前问题（true 时 nextStrategy 必须为 answer）' },
+      evidenceRefs: { type: 'array', items: { type: 'string' }, description: '引用的证据 ref（最多 8 条，只能取该批次输出里的 ref=…）' },
+      missing: { type: 'string', description: '缺少什么维度的信息（≤160 字符）' },
+      nextStrategy: { type: 'string', enum: [...NEXT_STRATEGIES], description: '下一步：answer 作答 / search_keyword 换关键词 / search_room 换房间 / search_timeline 查时间线 / ask_user 问用户 / stop 不回答' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        sufficient: { type: 'boolean', required: true },
+        nextStrategy: { type: 'string', required: true },
+        text: { type: 'string', required: true },
+      } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args, exec) {
+      const input = args as { batchId?: unknown; sufficient?: unknown; evidenceRefs?: unknown; missing?: unknown; nextStrategy?: unknown }
+      if (typeof input.batchId !== 'string' || input.batchId.trim() === '') throw new Error('engram_assess: batchId 必填（取自 engram_search 输出末尾）')
+      const sessionId = exec.agent === undefined ? undefined : String(exec.agent.session.id)
+      const batch = sessionId === undefined ? undefined : evidenceBatches.get(sessionId, input.batchId.trim())
+      if (batch === undefined) {
+        throw new Error(`engram_assess: 批次 ${input.batchId} 不存在或已过期（每个会话保留最近 ${String(MAX_BATCHES_PER_SESSION)} 个批次）——请重新 engram_search 取新批次`)
+      }
+      const verdict = assessEvidence(batch, {
+        sufficient: input.sufficient === true,
+        evidenceRefs: Array.isArray(input.evidenceRefs) ? input.evidenceRefs.filter((ref): ref is string => typeof ref === 'string') : [],
+        missing: typeof input.missing === 'string' ? input.missing : '',
+        nextStrategy: typeof input.nextStrategy === 'string' ? input.nextStrategy : '',
+      })
+      // 判定结果会回到模型上下文，写入审计日志（不进会话日志——下游插件禁止写未知事件类型）。
+      const userStore = await deps.openStore('user')
+      await userStore.audit('assess', batch.batchId, JSON.stringify({
+        batchId: batch.batchId,
+        sufficient: verdict.sufficient,
+        refs: verdict.evidenceRefs,
+        rejected: verdict.rejectedRefs,
+        strategy: verdict.nextStrategy,
+      }))
+      return { sufficient: verdict.sufficient, nextStrategy: verdict.nextStrategy, text: renderAssessText(verdict, batch.batchId) }
     },
   })
 
@@ -1084,7 +1176,7 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     },
   })
 
-  return [save, search, timeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten, ingestHistory]
+  return [save, search, assess, timeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten, ingestHistory]
 }
 
 // ===== P0-2 巡游路由：engram_tour =====

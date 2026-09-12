@@ -20,6 +20,33 @@ export function truncateItem(text: string, maxChars: number = RECALL_PER_ITEM_CH
 }
 
 /**
+ * 预算内的贪心装填（保序）：按 cost 逐个判断，装不下的计入 dropped 并继续试后续更短的项。
+ * @param items - 候选（已按相关性排序）。
+ * @param cost - 单项占用预算（字符数等）。
+ * @param totalBudget - 总预算。
+ * @returns 保留项与丢弃数。
+ */
+export function fitWithinBudget<T>(
+  items: readonly T[],
+  cost: (item: T) => number,
+  totalBudget: number,
+): { kept: T[]; dropped: number } {
+  const kept: T[] = []
+  let used = 0
+  let dropped = 0
+  for (const item of items) {
+    const size = cost(item)
+    if (used + size > totalBudget) {
+      dropped += 1
+      continue
+    }
+    kept.push(item)
+    used += size
+  }
+  return { kept, dropped }
+}
+
+/**
  * 总量预算内贪心装填行（保序；某行装不下时继续尝试更短的后续行），
  * 被跳过的行计数并在末尾追加提示行。
  * @param lines - 候选行（已按相关性排序）。
@@ -27,17 +54,7 @@ export function truncateItem(text: string, maxChars: number = RECALL_PER_ITEM_CH
  * @returns 装填后的行；有丢弃时末尾含「另有 N 条…」提示。
  */
 export function enforceBudget(lines: readonly string[], totalBudget: number = RECALL_TOTAL_CHARS): string[] {
-  const kept: string[] = []
-  let used = 0
-  let dropped = 0
-  for (const line of lines) {
-    if (used + line.length > totalBudget) {
-      dropped += 1
-      continue
-    }
-    kept.push(line)
-    used += line.length
-  }
+  const { kept, dropped } = fitWithinBudget(lines, line => line.length, totalBudget)
   if (dropped > 0) kept.push(`（另有 ${dropped} 条未展示：缩小查询范围或降低 limit 后重试）`)
   return kept
 }

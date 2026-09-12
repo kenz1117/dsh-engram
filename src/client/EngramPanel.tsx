@@ -101,6 +101,12 @@ const OP_KEY: Record<string, EngramKey> = {
   'ingest-request': 'opIngestRequest',
   'ingest-done': 'opIngestDone',
   'outcome-report': 'opOutcomeReport',
+  assess: 'opAssess',
+  consolidation: 'opConsolidation',
+  'review-answer': 'opReviewAnswer',
+  'slot-assign': 'opSlotAssign',
+  'slot-backfill': 'opSlotBackfill',
+  'room-open': 'opRoomOpen',
   'search-rewrite-request': 'opSearchRewrite',
   'compress-request': 'opCompressRequest',
   'distill-request': 'opDistillRequest',
@@ -484,6 +490,24 @@ function activityDetail(t: T, detail: string | null): string {
     if (typeof parsed.count === 'number' && Object.keys(parsed).length === 1) {
       return t('benchCompress', { n: parsed.count })
     }
+    if (typeof parsed.batchId === 'string' && typeof parsed.sufficient === 'boolean') {
+      const refs = Array.isArray(parsed.refs) ? parsed.refs.length : 0
+      return `${parsed.batchId} · ${t(parsed.sufficient ? 'assessAdequate' : 'assessInadequate')} · ${t('assessRefs', { n: refs })}`
+    }
+    // 闭馆整理汇总：scope + 归档 / 合并 / 跳过三项计数。
+    if (typeof parsed.archived === 'number' && typeof parsed.merged === 'number' && typeof parsed.skipped === 'number') {
+      const scope = parsed.scope === 'project' ? t('scopeProject') : t('scopeUser')
+      return `${scope} · ${t('consolidateArchived', { n: parsed.archived })} · ${t('consolidateMerged', { n: parsed.merged })} · ${t('consolidateSkipped', { n: parsed.skipped })}`
+    }
+    // 衰减归档：只有 archived 计数。
+    if (typeof parsed.archived === 'number' && parsed.merged === undefined) {
+      return t('decayArchived', { n: parsed.archived })
+    }
+    if (typeof parsed.assigned === 'number') return t('slotBackfilled', { n: parsed.assigned })
+    if (typeof parsed.room === 'string') return t('roomOpened', { room: parsed.room })
+    if (typeof parsed.grade === 'number' && typeof parsed.nextIntervalDays === 'number') {
+      return t('reviewAnswered', { grade: parsed.grade, days: parsed.nextIntervalDays })
+    }
   } catch {
     // 非 JSON（outcome 值等）：走末尾原样截断。
   }
@@ -496,8 +520,8 @@ const LOG_GROUPS: Readonly<Record<LogFilter, readonly string[] | null>> = {
   all: null,
   write: ['write', 'update', 'forget', 'restore', 'decay', 'superseded', 'outcome-report'],
   ingest: ['ingest-request', 'ingest-done'],
-  retrieve: ['search-rewrite-request', 'compress-request'],
-  organize: ['distill-request'],
+  retrieve: ['search-rewrite-request', 'compress-request', 'assess'],
+  organize: ['distill-request', 'consolidation', 'slot-assign', 'slot-backfill', 'room-open', 'review-answer'],
 }
 const LOG_FILTER_KEY: Readonly<Record<LogFilter, EngramKey>> = {
   all: 'logFilterAll',

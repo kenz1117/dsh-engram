@@ -73,15 +73,17 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 - **摄取脱敏**：入库前正则清洗常见密钥凭据（sk- 系 API key、Bearer、AWS AKIA、GitHub token、PEM 私钥、password/token 赋值），命中片段替换为 `[REDACTED:<类型>]`。
 - **召回占位（防回声室）**：摄取切片中记忆召回工具的输出替换为 `[engram memory result omitted from capture: <tool>]`，并向提取模型附注"既有记忆的复述不是新信息"，阻断记忆自我强化循环。
 - **多查询检索**：`engram_search` 可用辅助 LLM 把查询改写为 ≤3 个互补查询分别检索，跨查询 RRF 融合 + 每查询保底命中；改写失败自动降级单查询（`queryRewrite: false` 关闭）。
+- **证据门（search → assess）**：检索命中只说明「相关」，不说明「足以回答」。每次检索登记一个进程内批次（每会话保留最近 20 个，会话结束即释放），输出行尾给出 `ref=…` 与批次 id；`engram_assess` 只能引用同一批次的 ref，且 `sufficient` 由代码强制——三者齐备（模型声称充足、至少一条有效证据、`nextStrategy=answer`）才算充足，否则判为不足并把策略改回继续检索。判定与拒绝明细写入审计日志，面板「管家日志」的「检索」类别可见。
 - **数据可携带**：`engram_export` 一键导出 Markdown / JSON 文件，支持脱敏视图（内容二次清洗 + 预览截断，分享安全）。`engram_mirror` 导出可漫游的镜像目录（Obsidian / Logseq 友好：每条记忆一个 Markdown，正文 + YAML frontmatter + 双向链接 `[[id]]`），让「宫殿」也成为可人读的私人知识库。
 - **认知架构探索（dsh-market · AGI 架构探索）**：本仓库是 dsh-market「AGI 架构探索」类目下，对 agent 长期记忆的认知科学方法论重构——记忆宫殿（意象标签 + 房间铭牌）、走廊拓扑（力导向图）、闭环提问（摄入时让模型主动追问用户细节）、巩固合并（启发式去重 + 余弦相似度），与 MemGPT/Letta 同层「agent 记忆架构」叙事。
 
-## 工具（16 个，窄参数）
+## 工具（17 个，窄参数）
 
 | 工具 | 作用 |
 |---|---|
 | `engram_save` | 保存（嵌入可用时自动做矛盾候选检测）；支持 `items` 数组单次批量保存 ≤10 条，统一清洗/批量内去重，单条失败不影响其余（`count`/`items`/`failed` 汇总返回）；`placard` 挂门牌（按唯一·差异化·带日期评分，低分附改写建议） |
-| `engram_search` | 语义 + 关键词混合检索（命中强化置信度）；`room` 参数做走廊路由——只在指定房间内检索；命中 top5 附同房相邻桩位线索 |
+| `engram_search` | 语义 + 关键词混合检索（命中强化置信度）；`room` 参数做走廊路由——只在指定房间内检索；命中 top5 附同房相邻桩位线索。输出行尾给 `id=` 与 `ref=`，末尾给批次 id |
+| `engram_assess` | 证据门：作答前判定「检索到的内容是否足以回答」。提交 `batchId` + ≤8 条 `evidenceRefs`（只能取该批次输出里的 `ref=`）+ `missing` + `nextStrategy`；代码强制 `sufficient` 需同时满足「声称充足」「至少一条属于本批次的有效证据」「nextStrategy=answer」，否则判为不足并把策略改回继续检索；非本批次的 ref 会被拒绝并列出，判定写入审计日志 |
 | `engram_timeline` | 时间线浏览：默认按创建时间倒序；`order: 'tour'` 改按固定巡游路线桩位顺序（输出附宫殿坐标，未上路线者排末尾），让 agent 也能沿固定路线复述 |
 | `engram_update` | 修正（supersedes 取代链）；可同时改挂 `placard` 门牌 |
 | `engram_forget` | 遗忘（软删可恢复） |
@@ -108,7 +110,7 @@ dsh plugin --profile web add @kenz1117/dsh-engram
     dbDir: '~/.dsh/engram'          # 分库与模型缓存根目录
     injectProfile: true             # 会话开始注入用户画像摘要
     profileTopN: 8                  # 注入条数上限（1-64）
-    injectTokenBudget: 1024         # 注入 token 预算（128-8192，估算 ceil(len/4)，超预算条目降级为索引行）
+    injectTokenBudget: 1024         # 注入 token 预算（128-8192，中文按 1.5 token/字、其余按 4 字符/token 估算，超预算条目降级为索引行）
     modelCacheDir: '~/.dsh/engram/models'  # 嵌入模型缓存目录
     hfEndpoint: 'https://huggingface.co'   # 模型下载端点，网络受限可配镜像
     ingest: 'off'                   # 自动摄取：off | light（仅用户消息，每轮≤2条）| eager（含助手消息，每轮≤5条）
@@ -163,6 +165,8 @@ v0.7.3 起新增独立的**「历史回填」tab**：导入规则全部由你选
 
 v0.7.4 起继续打磨面板细节：今日视图重排为「左入殿导航 · 右房间目录、今日待回忆、翻新清单」，入殿导航与房间目录加大行间距；宫殿陈展工具栏改「搜索 + 状态 + 排序」一行、房间筛选独立成可换行 chips；管家日志把计数与类别筛选合成一条工具条，并给每行加类别色点（落成 / 发掘 / 检索 / 整理）；历史回填的规则、估算、执行三段改用分隔线切块；区域间距统一由容器间距给出，消除「标题贴住上方卡片、下方却过松」的不对称。
 
+v0.7.5 起是两处底层修正加一层新能力。① 画像注入的 token 估算改为 CJK 感知（中文按 1.5 token/字、其余按 4 字符/token）：此前按长度除以 4 会把中文低估四倍以上，中文用户的实际注入长期超出 `injectTokenBudget` 约 17%–50%；末尾 `+N more` 计数行也纳入预算，注入总量不再超承诺。② 新增**证据门** `engram_assess`（工具 17 个）：检索命中只说明「相关」，不说明「足以回答」；`engram_search` 每次登记一个进程内证据批次（每会话保留最近 20 个，会话结束即释放），输出每行带 `ref=`、末尾带批次 id；`engram_assess` 只能引用同一批次的 ref，且 `sufficient` 由代码强制——声称充足、至少一条有效证据、`nextStrategy=answer` 三者齐备才算充足，否则判为不足并把策略改回继续检索；不属于该批次的 ref 会被拒绝并列出，判定写入审计日志（管家日志「检索」类别可见）。③ 管家日志补齐 op 词典与明细格式化（闭馆整理 / 复习答题 / 排桩 / 批量排桩 / 开新房），不再显示英文原名与原始 JSON。
+
 ## 开发
 
 ```sh
@@ -182,7 +186,7 @@ pnpm bundle
 
 #### Token effect
 
-画像注入为条件性固定成本（受条数上限与 token 预算双重约束）；工具 schema 为常驻成本（16 个窄参数工具）。
+画像注入为条件性固定成本（受条数上限与 token 预算双重约束）；工具 schema 为常驻成本（17 个窄参数工具）。
 
 #### KV Cache effect
 

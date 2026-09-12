@@ -62,7 +62,7 @@ const llmDouble = {
 }
 
 const EXPECTED_TOOLS = [
-  'engram_audit_forgotten', 'engram_distill', 'engram_examine', 'engram_export', 'engram_forget',
+  'engram_assess', 'engram_audit_forgotten', 'engram_distill', 'engram_examine', 'engram_export', 'engram_forget',
   'engram_ingest_history', 'engram_neighbors', 'engram_report', 'engram_review', 'engram_review_queue',
   'engram_save', 'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
 ]
@@ -145,14 +145,14 @@ async function call(port: number, method: 'GET' | 'POST', path: string, body?: u
 }
 
 describe('dsh-engram real Loader composition', () => {
-  it('装载后 15 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
+  it('装载后 17 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
     const names = () => loaded.tools.schemas().map(schema => schema.name)
     for (const expected of EXPECTED_TOOLS) {
       expect(names()).toContain(expected)
     }
 
-    // HMR 安全：卸载 engram 行后 15 个工具全部释放（tools 服务仍在，其余工具不受影响）。
+    // HMR 安全：卸载 engram 行后 17 个工具全部释放（tools 服务仍在，其余工具不受影响）。
     const entry = [...loaded.loader.entries()]
       .find(candidate => candidate.options.name === '@kenz1117/dsh-engram')
     expect(entry).toBeDefined()
