@@ -15,7 +15,7 @@ import { resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { createLocalEmbedder } from './embedder/local.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
-import { FINAL_INGEST_TIMEOUT_MS, ingestFinalTurn, ingestPreviousTurn, replayPendingIngests } from './ingest/hook.ts'
+import { FINAL_INGEST_TIMEOUT_MS, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, replayPendingIngests } from './ingest/hook.ts'
 import { estimateHistoryBackfill, runHistoryBackfill } from './ingest/history.ts'
 import type {
   HistoryBackfillDeps, HistoryBackfillRules, HistoryEstimate, HistoryLogSource, HistoryRunProgress, HistoryRunResult,
@@ -26,7 +26,10 @@ import type { IngestRequestEventData } from './ingest/hook.ts'
 import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
 import { registerEngramRoutes } from './routes.ts'
+import type { ProjectPalaceView, RouteDeps } from './routes.ts'
 import { migrateProjectDb, resolveProjectIdentity } from './project/identity.ts'
+import { findProjectPalace, listProjectPalaces } from './project/registry.ts'
+import type { ProjectPalace, WorkspaceRef } from './project/registry.ts'
 import { openEngramStore } from './store/sqlite.ts'
 import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
@@ -40,7 +43,7 @@ import type { EngramScope, Slot } from './types.ts'
 export const name = 'dsh-engram'
 
 /** 插件版本（与 package.json 同步，写进备份 _meta.json）。 */
-export const VERSION = '0.7.5'
+export const VERSION = '0.7.6'
 
 /** 必需服务：工具注册表与 LLM 流式端点（摄取/蒸馏的辅助调用）。 */
 export const inject = ['tools', 'llm']
@@ -182,6 +185,7 @@ async function compressProfileOverflow(
 async function preStep(
   ctx: Context,
   openStore: (scope: EngramScope) => Promise<EngramStore>,
+  openStoreForProjectCwd: (cwd: string) => Promise<EngramStore>,
   resolved: ResolvedEngramConfig,
   embedder: Promise<EngramEmbedder | undefined>,
   state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null; route: LlmRoute | undefined },
@@ -198,13 +202,16 @@ async function preStep(
     if (currentRoute !== undefined) state.route = currentRoute
   }
   const mode = resolved.ingest
+  // 写入路由：本会话有 cwd 时默认进项目宫殿、逐条采纳模型的 scope 判定；无 cwd 只能进私人宫殿。
+  const routing = ingestWriteRouting(sessionCwd(agent.session), openStoreForProjectCwd, openStore)
   if (step === 1 && mode !== 'off') {
     // 重放待补做的末轮摄取（上次会话 disposed 失败/超时的 pending 键）。
     if (!state.pendingReplayed) {
       state.pendingReplayed = true
       void replayPendingIngests({
         openStore: () => openStore('user'),
-        resolveEvents: makeEventResolver(ctx, agent),
+        resolveSession: makeSessionResolver(ctx, agent),
+        resolveStore: openStoreForProjectCwd,
         embedder,
         mode,
         routeOverride: resolved.routeOverride,
@@ -222,6 +229,8 @@ async function preStep(
         sessionId: String(agent.id),
         turn,
         openStore: () => openStore('user'),
+        openAuditStore: () => openStore('user'),
+        ...routing,
         embedder,
         mode,
         routeOverride: resolved.routeOverride,
@@ -292,6 +301,8 @@ async function preStep(
 interface PersistenceReadHandle {
   /** 读取一段连续日志；缺省参数 = 从 0 读到末尾。 */
   read(offset?: number, length?: number): Promise<{ events: readonly unknown[] }>
+  /** 会话 header（真实句柄必给；测试替身可能省略）——取 cwd 决定补做轮次写进哪座项目宫殿。 */
+  readonly header?: { readonly cwd?: string | undefined } | undefined
   /** 释放句柄（幂等；不释放会在后端持有本地资源）。 */
   close(): Promise<void>
 }
@@ -302,6 +313,17 @@ interface PersistenceServiceView {
   list(options?: { signal?: AbortSignal }): Promise<readonly { header: HistorySessionHeader }[]>
   /** 只读打开一个已持久化会话；不取写所有权，可与活跃写入者并存。 */
   open(id: string, access: 'read'): Promise<PersistenceReadHandle>
+}
+
+/**
+ * 会话工作目录（决定它的记忆进哪座项目宫殿）。
+ * 真实 `Session.header` 恒在；测试替身可能省略 header，故按可选形状读取。
+ * @param session - 会话（或替身）对象。
+ * @returns cwd；取不到时 undefined（该会话的回退口径是私人宫殿）。
+ */
+function sessionCwd(session: { readonly header?: { readonly cwd?: string | undefined } | undefined } | undefined): string | undefined {
+  const cwd = session?.header?.cwd
+  return cwd === undefined || cwd === '' ? undefined : cwd
 }
 
 /**
@@ -326,21 +348,29 @@ async function withReadHandle<T>(
 }
 
 /**
- * pending 重放的事件源解析器：pending 属于当前会话时直接用其事件快照；
- * 其余会话经可选的 sessionPersistence 服务（只读句柄）读持久化日志
+ * pending 重放的会话解析器：pending 属于当前会话时直接用其事件快照与 cwd；
+ * 其余会话经可选的 sessionPersistence 服务（只读句柄）读持久化日志与 header.cwd
  * （服务缺席或读取失败返回 undefined，pending 保留到下次，不报错）。
  */
-function makeEventResolver(ctx: Context, agent: Agent): (sessionId: string) => Promise<readonly SessionEventLike[] | undefined> {
+function makeSessionResolver(
+  ctx: Context,
+  agent: Agent,
+): (sessionId: string) => Promise<{ events: readonly SessionEventLike[]; cwd?: string | undefined } | undefined> {
   return async sessionId => {
     if (sessionId === String(agent.id)) {
-      return agent.session.snapshotEvents() as unknown as readonly SessionEventLike[]
+      return {
+        events: agent.session.snapshotEvents() as unknown as readonly SessionEventLike[],
+        cwd: sessionCwd(agent.session),
+      }
     }
     // 可选服务，engram 不硬依赖：缺席时跨会话 pending 保留到该会话被恢复。
     const persistence = ctx.get('sessionPersistence' as never) as PersistenceServiceView | undefined
     if (persistence === undefined) return undefined
     try {
-      return await withReadHandle(persistence, sessionId, async handle =>
-        (await handle.read()).events as readonly SessionEventLike[])
+      return await withReadHandle(persistence, sessionId, async handle => ({
+        events: (await handle.read()).events as readonly SessionEventLike[],
+        cwd: sessionCwd(handle),
+      }))
     } catch {
       return undefined
     }
@@ -400,6 +430,18 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     scope === 'user' ? 'user.db' : scope === 'shared' ? 'shared.db' : identity.dbName,
   )
 
+  // 卸载/重启时关闭已打开的分库连接：不关会在 Windows 上锁住 .db 文件
+  // （插件卸载后目录删不掉、备份/迁移也可能失败）。disposer 返回 promise，宿主会等它完成。
+  ctx.effect(() => () => Promise.allSettled(
+    [...stores.values()].map(async pending => {
+      try {
+        await (await pending).close()
+      } catch {
+        // 关闭失败无补救动作（连接会随进程退出释放）。
+      }
+    }),
+  ), 'dsh-engram: close stores')
+
   /** cwd → 分库文件名（历史回填会对每个历史 cwd 解析一次，避免重复读 git 元数据）。 */
   const cwdDbNames = new Map<string, string>()
   /**
@@ -413,15 +455,26 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     const cached = cwdDbNames.get(cwd)
     if (cached !== undefined) return cached
     const projectIdentity = resolveProjectIdentity(cwd)
-    // 历史 cwd 也可能存在旧命名库（cwd 编码）：同样走一次 rename 迁移，避免看不到旧数据。
-    if (migrateProjectDb(resolved.dbDir, projectIdentity) === 'renamed') {
-      console.warn(`[dsh-engram] 历史项目库已迁移为 origin 命名（${cwd}）`)
+    // 旧命名库（cwd 编码截断 / origin 升级前的 cwd 库）：同样走一次 rename 迁移，避免看不到旧数据。
+    const migration = migrateProjectDb(resolved.dbDir, projectIdentity)
+    if (migration === 'renamed') {
+      console.warn(`[dsh-engram] 项目记忆库已迁移到新标识命名（${cwd} → ${projectIdentity.dbName}）`)
+    } else if (migration === 'kept-both') {
+      // 旧 cwd 命名只覆盖前 12 字符，可能被同前缀的多个目录共用；并存时不动文件、由人工决定归属。
+      console.warn(`[dsh-engram] 检测到新旧项目库并存，未合并（保留新库 ${projectIdentity.dbName}；旧库 ${projectIdentity.legacyDbName} 请人工处理后删除）`)
     }
     cwdDbNames.set(cwd, projectIdentity.dbName)
     return projectIdentity.dbName
   }
 
   const openStoreForProjectCwd = (cwd: string): Promise<EngramStore> => openDb(dbNameForCwd(cwd))
+
+  /**
+   * 工具调用期的项目分库解析：按会话 cwd 归属（缺省回退插件进程目录）。
+   * 面板「项目」scope、工具读写与自动摄取的 project 落点因此同一口径。
+   */
+  const resolveProjectStore = (cwd: string | undefined): Promise<EngramStore> =>
+    cwd === undefined ? openStore('project') : openStoreForProjectCwd(cwd)
 
   // 嵌入器可选：下载/加载失败不阻塞插件加载，检索降级纯关键词并在结果中标记。
   const embedder: Promise<EngramEmbedder | undefined> = createLocalEmbedder(resolved.modelCacheDir, resolved.hfEndpoint)
@@ -461,17 +514,98 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   const openUserStoreIfExists = (): Promise<EngramStore | undefined> =>
     existsSync(join(resolved.dbDir, 'user.db')) ? openStore('user') : Promise.resolve(undefined)
 
-  /** 指定 cwd 的项目库若已存在则打开（估算用：不因估算产生空库文件）。 */
-  const openProjectStoreIfExists = (cwd: string): Promise<EngramStore | undefined> => {
-    const dbName = dbNameForCwd(cwd)
-    return existsSync(join(resolved.dbDir, dbName)) ? openDb(dbName) : Promise.resolve(undefined)
+  // ---- 项目宫殿清单：面板「项目」scope 随 GUI 工作区切换与显示（host 半数据源）----
+  /** 宿主机工作区注册表（可选服务：缺席时降级为「会话 cwd + 进程目录」两级清单）。 */
+  const workspaceRefs = (): WorkspaceRef[] => {
+    const registry = ctx.get('workspaceRegistry' as never) as
+      | { list(): readonly { id: unknown; path: unknown; title: unknown }[] }
+      | undefined
+    if (registry === undefined) return []
+    try {
+      return registry.list()
+        .filter(workspace => typeof workspace.path === 'string' && workspace.path !== '')
+        .map(workspace => ({
+          id: String(workspace.id),
+          path: workspace.path as string,
+          title: typeof workspace.title === 'string' ? workspace.title : '',
+        }))
+    } catch {
+      // 注册表不可用（未初始化/实现变更）：按无注册表降级，不影响面板其余功能。
+      return []
+    }
+  }
+
+  /** 只按会话 cwd 认领的分库上限（按会话新旧取最近的若干，避免历史 cwd 把清单撑爆）。 */
+  const SESSION_CWD_PALACE_LIMIT = 30
+
+  /**
+   * 会话 header 里出现过的 cwd：历史回填建的库也能在面板里被认领。
+   * 按会话创建时间倒序取最近的 N 个（新的在前，去重后截断）。
+   */
+  const sessionCwds = async (): Promise<string[]> => {
+    const source = persistenceService()
+    if (source === undefined) return []
+    try {
+      const headers = await source.list()
+      const ordered = [...headers].sort((a, b) => b.createdAt - a.createdAt)
+      const cwds: string[] = []
+      const seen = new Set<string>()
+      for (const header of ordered) {
+        const cwd = header.cwd
+        if (cwd === undefined || cwd === '' || seen.has(cwd)) continue
+        seen.add(cwd)
+        cwds.push(cwd)
+        if (cwds.length >= SESSION_CWD_PALACE_LIMIT) break
+      }
+      return cwds
+    } catch {
+      return []
+    }
+  }
+
+  /** 项目宫殿清单（现算、零状态）：注册表工作区 → 会话 cwd → 进程目录兜底，按分库名去重。 */
+  const projectPalaces = async (): Promise<ProjectPalace[]> =>
+    listProjectPalaces({ workspaces: workspaceRefs(), sessionCwds: await sessionCwds(), processCwd: process.cwd() })
+
+  /** 面板视图：补 exists 与 active 计数（库文件不存在时不打开，避免为工作区建空库）。 */
+  const palaceView = async (palace: ProjectPalace): Promise<ProjectPalaceView> => {
+    const exists = existsSync(join(resolved.dbDir, palace.dbName))
+    let memories: number | null = null
+    if (exists) {
+      try {
+        memories = (await (await openDb(palace.dbName)).stats()).active
+      } catch {
+        memories = null
+      }
+    }
+    return {
+      dbName: palace.dbName,
+      title: palace.title,
+      path: palace.path ?? null,
+      kind: palace.kind,
+      source: palace.source,
+      workspaceId: palace.workspaceId ?? null,
+      exists,
+      memories,
+    }
+  }
+
+  const projectsDeps: RouteDeps['projects'] = {
+    list: async () => Promise.all((await projectPalaces()).map(async palace => palaceView(palace))),
+    open: async selector => {
+      const palaces = await projectPalaces()
+      const palace = selector === undefined
+        ? findProjectPalace(palaces, {})
+        : palaces.find(candidate => candidate.dbName === selector)
+      if (palace === undefined) return undefined
+      return { store: await openDb(palace.dbName), project: await palaceView(palace) }
+    },
   }
 
   /** 组装历史回填依赖；source 每次现取，兼容持久化服务在插件之后挂载的组合。 */
   const buildHistoryDeps = (): HistoryBackfillDeps => ({
     source: persistenceService(),
     resolveStore: openStoreForProjectCwd,
-    resolveExistingStore: openProjectStoreIfExists,
     openUserStore: () => openStore('user'),
     resolveExistingUserStore: openUserStoreIfExists,
     embedder,
@@ -561,9 +695,10 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     }),
   }
 
-  // 工具注册（历史回填的估算/执行由 historyApi 提供）。
+  // 工具注册（历史回填的估算/执行由 historyApi 提供；project scope 按会话 cwd 归属解析）。
   for (const tool of createEngramTools({
     openStore,
+    resolveProjectStore,
     embedder,
     call: callParams => streamText(ctx, { ...callParams, sessionId: callParams.sessionId ?? '' }),
     routeOverride: resolved.routeOverride,
@@ -582,6 +717,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     // 外层 ctx 未依赖 webServer 时属性不可用。
     registerEngramRoutes(webCtx, {
       openStore,
+      projects: projectsDeps,
       exportDir: `${resolved.dbDir}/exports`,
       mirrorDir: `${resolved.dbDir}/palaces`,
       dbDir: resolved.dbDir,
@@ -599,7 +735,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   })
 
   if (resolved.injectProfile || resolved.ingest !== 'off') {
-    ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, resolved, embedder, preStepState, logIngestRequest, payload, next), { prepend: true })
+    ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, openStoreForProjectCwd, resolved, embedder, preStepState, logIngestRequest, payload, next), { prepend: true })
   }
 
   // 会话结束即释放该会话的证据批次（进程内注册表，避免长驻进程累积）。
@@ -621,6 +757,9 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
         turn: 0,
         slice: 'last',
         openStore: () => openStore('user'),
+        openAuditStore: () => openStore('user'),
+        // 末轮补做同样按该会话的 cwd 落项目宫殿并逐条判 scope。
+        ...ingestWriteRouting(sessionCwd(session), openStoreForProjectCwd, openStore),
         embedder,
         mode,
         routeOverride: resolved.routeOverride,
@@ -635,12 +774,20 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
 
   // 衰减调度：启动即跑一次，此后每 24 小时一次；低重要性且长期未访问的条目归档（可恢复）。
   const runDecay = async (): Promise<void> => {
-    for (const scope of ['user', 'project'] as const) {
-      const archived = await (await openStore(scope)).decay({
+    const targets: { label: string; open: () => Promise<EngramStore> }[] = [
+      { label: 'user', open: () => openStore('user') },
+    ]
+    // 项目宫殿可能不止一个（每个工作区一个）：只处理库文件已存在的，避免为工作区建空库。
+    for (const palace of await projectPalaces()) {
+      if (!existsSync(join(resolved.dbDir, palace.dbName))) continue
+      targets.push({ label: `project「${palace.title}」`, open: () => openDb(palace.dbName) })
+    }
+    for (const target of targets) {
+      const archived = await (await target.open()).decay({
         importanceBelow: resolved.decayImportanceBelow,
         olderThanDays: resolved.decayAfterDays,
       })
-      if (archived > 0) console.warn(`[dsh-engram] 衰减调度：${scope} 库归档 ${archived} 条低价值记忆（可在 engram_review 查证）`)
+      if (archived > 0) console.warn(`[dsh-engram] 衰减调度：${target.label} 库归档 ${archived} 条低价值记忆（可在 engram_review 查证）`)
     }
   }
   void runDecay().catch((error: unknown) => {

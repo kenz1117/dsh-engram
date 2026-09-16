@@ -13,6 +13,15 @@ export type EngramKey =
   | 'scopeUser'
   | 'scopeProject'
   | 'scopeShared'
+  | 'projectFollow'
+  | 'projectFollowNamed'
+  | 'projectFollowHint'
+  | 'projectPinned'
+  | 'projectUnregistered'
+  | 'projectNoWorkspace'
+  | 'projectSwitch'
+  | 'projectMemories'
+  | 'projectProcessDefault'
   | 'refresh'
   | 'exportMd'
   | 'exportJson'
@@ -259,6 +268,15 @@ export const zh: Record<EngramKey, string> = {
   scopeUser: '私人宫殿',
   scopeProject: '项目宫殿',
   scopeShared: '共享宫殿',
+  projectFollow: '跟随当前工作区',
+  projectFollowNamed: '项目 · 跟随 {name}',
+  projectFollowHint: '项目宫殿跟随 GUI 当前选中的工作区（按会话归属判定）',
+  projectPinned: '项目 · {name}',
+  projectUnregistered: '未注册工作区',
+  projectNoWorkspace: '无工作区信息（进程默认）',
+  projectSwitch: '项目宫殿来源',
+  projectMemories: '{n} 条记忆',
+  projectProcessDefault: '进程默认目录',
   refresh: '重访',
   exportMd: '导出 MD',
   exportJson: '导出 JSON',
@@ -497,6 +515,15 @@ export const en: Record<EngramKey, string> = {
   scopeUser: 'Private Palace',
   scopeProject: 'Project Palace',
   scopeShared: 'Shared Palace',
+  projectFollow: 'Follow the active workspace',
+  projectFollowNamed: 'Project · following {name}',
+  projectFollowHint: 'The project palace follows the workspace selected in the GUI (by session ownership)',
+  projectPinned: 'Project · {name}',
+  projectUnregistered: 'unregistered workspace',
+  projectNoWorkspace: 'No workspace info (process default)',
+  projectSwitch: 'Project palace source',
+  projectMemories: '{n} memories',
+  projectProcessDefault: 'Process default directory',
   refresh: 'Revisit',
   exportMd: 'Export MD',
   exportJson: 'Export JSON',

@@ -20,6 +20,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { openEngramStore } from '../src/store/sqlite.ts'
 import { markPendingIngest } from '../src/ingest/hook.ts'
+import { resolveProjectIdentity } from '../src/project/identity.ts'
 import * as Engram from '../src/index.ts'
 
 let root: string | undefined
@@ -74,7 +75,8 @@ interface PendingSeed {
   readonly turn: number
 }
 
-/** 会话持久化替身：新版 dsh 的句柄式 API（`list()` 给快照，日志经 `open(id,'read')` 句柄读）。
+/** 会话持久化替身：新版 dsh 的句柄式 API（`list()` 给快照，日志经 `open(id,'read')` 句柄读，
+ *  句柄带 header —— 补做轮次据此决定写进哪座项目宫殿）。
  *  calls 记录每次 open 及其句柄用量，用于断言「跨会话读取确实走宿主服务」。 */
 function makePersistenceDouble(
   header: { id: string; createdAt: number; cwd: string },
@@ -88,6 +90,7 @@ function makePersistenceDouble(
       calls.push(record)
       return {
         id,
+        header,
         read: async () => {
           record.reads += 1
           return { eventState: 'detached', events }
@@ -366,6 +369,7 @@ describe('dsh-engram real Loader composition', () => {
       id: 'sess-current',
       session: {
         id: 'sess-current',
+        header: { cwd: process.cwd() },
         snapshotEvents: () => [{ type: 'request/header', data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4' } } }, seq: 1, time: Date.now() }],
       },
     }
@@ -410,7 +414,7 @@ describe('dsh-engram real Loader composition', () => {
     ) as never)
 
     // 当前会话 id 与 pending 会话不同：preStep 第一步触发 pending 重放（fire-and-forget）。
-    const fakeAgent = { id: 'sess-current', session: { id: 'sess-current', snapshotEvents: () => [] } }
+    const fakeAgent = { id: 'sess-current', session: { id: 'sess-current', header: { cwd: process.cwd() }, snapshotEvents: () => [] } }
     const emitter = loaded as unknown as { emit: (name: string, ...args: unknown[]) => unknown }
     await (emitter.emit('agent/pre-step', {
       agent: fakeAgent, step: 1, turn: 1, signal: new AbortController().signal,
@@ -424,6 +428,46 @@ describe('dsh-engram real Loader composition', () => {
     expect(calls[0]?.reads).toBeGreaterThan(0)
     // 只读句柄必须释放：否则每次重放都在后端漏一个句柄。
     expect(calls[0]?.closed).toBe(true)
+  })
+
+  it('项目宫殿随工作区切换：/workspaces 列出工作区，?project= 落到对应分库', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+    // 造一个真实存在的「工作区」目录（无 git → cwd 全量哈希命名）。
+    const workspacePath = await mkdtemp(join(tmpdir(), 'engram-ws-'))
+    loaded.provide('workspaceRegistry' as never, {
+      list: () => [{ id: 'ws-1', path: workspacePath, title: '测试工作区' }],
+    } as never)
+    const dbName = resolveProjectIdentity(workspacePath).dbName
+    // 预置该项目宫殿里的一条记忆（先写后关，避免与插件连接并存）。
+    const seeded = await openEngramStore(join(root!, 'engram', dbName))
+    await seeded.write({ scope: 'project', kind: 'decision', content: '该工作区的项目约定', importance: 0.6 })
+    await seeded.close()
+
+    const workspaces = await call(port, 'GET', '/api/engram/workspaces')
+    expect(workspaces.status).toBe(200)
+    const items = (workspaces.json as {
+      items: { dbName: string; title: string; path: string | null; kind: string; exists: boolean; memories: number | null }[]
+      processDefault: { dbName: string } | null
+    }).items
+    const hit = items.find(item => item.dbName === dbName)
+    expect(hit).toMatchObject({ title: '测试工作区', kind: 'workspace', exists: true, memories: 1 })
+    expect(hit?.path).toBe(workspacePath)
+    expect(items.some(item => item.kind === 'process')).toBe(true)
+
+    // 显式选择该工作区：项目 scope 读到的正是它的库。
+    const scoped = await call(port, 'GET', `/api/engram/list?scope=project&project=${dbName}&limit=10`)
+    expect(scoped.status).toBe(200)
+    expect((scoped.json as { records: { content: string }[] }).records.map(record => record.content))
+      .toContain('该工作区的项目约定')
+
+    // 未知选择器 → 404（面板据此回退「跟随当前工作区」）。
+    const unknown = await call(port, 'GET', '/api/engram/list?scope=project&project=project-000000000000000000000000.db')
+    expect(unknown.status).toBe(404)
+    expect((unknown.json as { error: string }).error).toBe('unknown project')
+
+    // 不带选择器 = 进程目录兜底（向后兼容），照常 200。
+    expect((await call(port, 'GET', '/api/engram/list?scope=project&limit=5')).status).toBe(200)
   })
 
   it('未知配置键经 Loader 装载 loud 失败', { timeout: 60_000 }, async () => {

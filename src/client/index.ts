@@ -14,7 +14,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: LocaleNamespaceMap 声明合并目标（t 席位的键类型检查）。
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
-import { EngramSection } from './EngramPanel.tsx'
+import { bindEngramSection } from './EngramPanel.tsx'
+import type { SessionsLike, WorkspacesLike } from './EngramPanel.tsx'
 import { NS, en, zh, type EngramKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -29,16 +30,24 @@ export const inject = ['slots', 'locale']
 /**
  * Client plugin body: 注册 zh/en 词典与设置页「记忆库」section（order 20，
  * 排在 general/models/plugins 之后）。
+ *
+ * 面板的「项目宫殿」跟随 GUI 当前工作区，需要宿主的工作区/会话清单服务；
+ * 两者都**可选取用**（`ctx.get`，不写进必需 inject）：缺席时面板其余功能照常，
+ * 只有项目宫殿来源 chip 显示「无工作区信息（进程默认）」。
  * @param ctx - client root context.
  */
 export function apply(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-engram: dictionaries')
   const t = ctx.locale.bind(NS)
+  // 可选服务：按运行时形状取用（不硬依赖 @deepseek-ai/dsh-api-* 客户端包）；
+  // 用 getter 现取而不是 apply 时取实例——这两个服务可能在本插件之后才挂载。
+  const workspaces = (): WorkspacesLike | undefined => ctx.get('workspaces' as never) as WorkspacesLike | undefined
+  const sessions = (): SessionsLike | undefined => ctx.get('sessions' as never) as SessionsLike | undefined
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'engram',
     order: 20,
     label: () => t('nav'),
     locale: NS,
-  }, EngramSection))
+  }, bindEngramSection({ workspaces, sessions })))
 }

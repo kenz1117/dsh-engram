@@ -15,6 +15,7 @@ import type { EngramKind, EngramScope, EngramStatus, ListFilter, ReviewGrade } f
 import type { EngramStore } from './store/interface.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
+import type { ProjectPalaceKind } from './project/registry.ts'
 import type { ResolvedHistoryRules } from './config.ts'
 import { writeMirror } from './mirror/markdown.ts'
 import { createBackup, restoreBackup, BACKUP_SCHEMA_VERSION } from './backup/tar.ts'
@@ -139,9 +140,45 @@ function historyRulesOf(raw: Readonly<Record<string, unknown>>): HistoryBackfill
   }
 }
 
+/** 面板用的项目宫殿视图（JSON 友好：无归属目录 = null，未计数 = null）。 */
+export interface ProjectPalaceView {
+  /** 分库文件名，也是 API 选择器 id（`?project=`）。 */
+  readonly dbName: string
+  /** 展示标题（工作区标题 / 目录末段 / 进程目录兜底）。 */
+  readonly title: string
+  /** 归属目录；无法归属时为 null。 */
+  readonly path: string | null
+  /** 来源类别：宿主注册表工作区 / 只从会话 cwd 见到 / 进程目录兜底。 */
+  readonly kind: ProjectPalaceKind
+  /** 标识来源：git origin 哈希 / cwd 全量哈希。 */
+  readonly source: 'origin' | 'cwd'
+  /** 宿主工作区 id；非注册表工作区为 null。 */
+  readonly workspaceId: string | null
+  /** 分库文件是否已存在（不存在时不建空库，memories 为 null）。 */
+  readonly exists: boolean
+  /** active 记忆条数；库不存在或读取失败为 null。 */
+  readonly memories: number | null
+}
+
+/** 未知项目选择器（路由统一映射为 404）。 */
+class UnknownProjectError extends Error {
+  constructor(selector: string) {
+    super(`unknown project: ${selector}`)
+    this.name = 'UnknownProjectError'
+  }
+}
+
 /** 管理面板的路由依赖。 */
 export interface RouteDeps {
   readonly openStore: (scope: EngramScope) => Promise<EngramStore>
+  /**
+   * 项目宫殿（工作区）清单与解析：面板「项目」scope 的落点随 GUI 当前工作区切换。
+   * `open(undefined)` = 插件进程目录兜底（旧行为）；未知选择器返回 undefined。
+   */
+  readonly projects: {
+    list: () => Promise<readonly ProjectPalaceView[]>
+    open: (selector: string | undefined) => Promise<{ readonly store: EngramStore; readonly project: ProjectPalaceView } | undefined>
+  }
   readonly exportDir: string
   /** 嵌入器承诺（search-test 的语义道）；undefined = 纯关键词。 */
   readonly embedder: Promise<EngramEmbedder | undefined>
@@ -184,10 +221,36 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
         if (!guardLoopback(req, res)) return
         const url = new URL(req.url ?? '/', 'http://127.0.0.1')
         const route = url.pathname.slice('/api/engram/'.length)
+        // 项目宫殿选择器：GET 从 query 取，POST 在读 body 后覆盖（body.project）。
+        const selectorRef: { value: string | undefined } = { value: url.searchParams.get('project') ?? undefined }
+        /** 按作用域取分库：project 走选择器解析，未知选择器抛错 → catch 统一 404。 */
+        const storeFor = async (scope: EngramScope): Promise<EngramStore> => {
+          if (scope !== 'project') return deps.openStore(scope)
+          const opened = await deps.projects.open(selectorRef.value)
+          if (opened === undefined) throw new UnknownProjectError(selectorRef.value ?? '')
+          return opened.store
+        }
+        /** POST body 里的项目选择器（面板所有写操作都会带）。 */
+        const adoptBodySelector = (body: Record<string, unknown> | null): void => {
+          const raw = body?.['project']
+          if (typeof raw === 'string' && raw !== '') selectorRef.value = raw
+        }
         try {
+          if (req.method === 'GET' && route === 'workspaces') {
+            // 项目宫殿清单：面板据此显示当前工作区、并支持手动切换（不建空库）。
+            const items = await deps.projects.list()
+            const processDefault = items.find(item => item.kind === 'process')
+            json(res, 200, {
+              items,
+              processDefault: processDefault === undefined
+                ? null
+                : { dbName: processDefault.dbName, path: processDefault.path, title: processDefault.title },
+            })
+            return
+          }
           if (req.method === 'GET' && route === 'stats') {
             const scopes: EngramScope[] = ['user', 'project']
-            const parts = await Promise.all(scopes.map(async (scope) => ({ scope, stats: await (await deps.openStore(scope)).stats() })))
+            const parts = await Promise.all(scopes.map(async (scope) => ({ scope, stats: await (await storeFor(scope)).stats() })))
             json(res, 200, { parts })
             return
           }
@@ -210,7 +273,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               limit,
               offset,
             }
-            json(res, 200, await (await deps.openStore(scope)).list(filter))
+            json(res, 200, await (await storeFor(scope)).list(filter))
             return
           }
           if (req.method === 'GET' && route === 'search-test') {
@@ -226,7 +289,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const embedder = deps.embedder === undefined ? undefined : await deps.embedder
             const vector = embedder === undefined ? undefined : (await embedder.embed([q.trim()]))[0]
             const results = await Promise.all(scopes.map(async scope => {
-              const store = await deps.openStore(scope)
+              const store = await storeFor(scope)
               return store.search({ text: q, scopes: [scope], limit }, vector)
             }))
             const degraded = results.some(result => result.degraded)
@@ -253,7 +316,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
             const scopes: EngramScope[] = ['user', 'project']
             const merged = (await Promise.all(scopes.map(async scope => {
-              const ops = await (await deps.openStore(scope)).recentOps(limit)
+              const ops = await (await storeFor(scope)).recentOps(limit)
               return ops.map(op => ({ ...op, scope }))
             }))).flat().sort((a, b) => b.at - a.at).slice(0, limit)
             json(res, 200, { operations: merged })
@@ -264,7 +327,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const scope = scopeOf(url.searchParams.get('scope'), 'user')
             const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
             const now = Date.now()
-            const due = await (await deps.openStore(scope)).dueReviews(now, limit)
+            const due = await (await storeFor(scope)).dueReviews(now, limit)
             json(res, 200, {
               scope,
               items: due.map(record => ({
@@ -290,8 +353,9 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               ? body.grade as 0 | 1 | 2 | 3 | 4 | 5
               : null
             if (grade === null) { json(res, 400, { error: 'grade must be an integer 0-5' }); return }
+            adoptBodySelector(body)
             const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')
-            const store = await deps.openStore(scope)
+            const store = await storeFor(scope)
             const record = await store.scheduleReview(body.id as never, grade)
             if (record === undefined) { json(res, 404, { error: `未找到条目 ${body.id}` }); return }
             json(res, 200, { id: record.id, review: record.review ?? null })
@@ -301,7 +365,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const scope = scopeOf(url.searchParams.get('scope'), 'user')
             const id = url.searchParams.get('id')
             if (id === null || id === '') { json(res, 400, { error: 'id required' }); return }
-            const store = await deps.openStore(scope)
+            const store = await storeFor(scope)
             const view = await store.review(id as never)
             if (view === undefined) { json(res, 404, { error: `未找到条目 ${id}` }); return }
             json(res, 200, view)
@@ -312,7 +376,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const scope = scopeOf(url.searchParams.get('scope'), 'user')
             const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
             const now = Date.now()
-            const due = await (await deps.openStore(scope)).dueReviews(now, limit)
+            const due = await (await storeFor(scope)).dueReviews(now, limit)
             json(res, 200, {
               scope,
               count: due.length,
@@ -340,8 +404,9 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             if (body === null || typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
             const grade = Number(body.grade)
             if (!Number.isInteger(grade) || grade < 0 || grade > 5) { json(res, 400, { error: 'grade must be an integer 0-5' }); return }
+            adoptBodySelector(body)
             const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')
-            const record = await (await deps.openStore(scope)).scheduleReview(body.id as never, grade as ReviewGrade)
+            const record = await (await storeFor(scope)).scheduleReview(body.id as never, grade as ReviewGrade)
             if (record === undefined) { json(res, 404, { error: `未找到条目 ${body.id}` }); return }
             json(res, 200, { record })
             return
@@ -349,7 +414,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'GET' && route === 'export') {
             const scope = scopeOf(url.searchParams.get('scope'), 'user')
             const format = url.searchParams.get('format') === 'json' ? 'json' : 'markdown'
-            const data = await (await deps.openStore(scope)).exportAll()
+            const data = await (await storeFor(scope)).exportAll()
             const stamp = new Date().toISOString().replaceAll(':', '-')
             const body = format === 'json'
               ? JSON.stringify(data, null, 2)
@@ -373,7 +438,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'GET' && route === 'mirror') {
             // 镜像导出：与 engram_export format=markdown-mirror 同语义，HTTP 路由版（面板「导出镜像」按钮直接 GET）。
             const scope = scopeOf(url.searchParams.get('scope'), 'user')
-            const data = await (await deps.openStore(scope)).exportAll()
+            const data = await (await storeFor(scope)).exportAll()
             const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
             const mirrorRoot = join(deps.mirrorDir, scope, stamp)
             const report = await writeMirror(mirrorRoot, data)
@@ -394,7 +459,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               ? [rawScope]
               : ['user', 'project']
             const parts = await Promise.all(scopes.map(async scope => {
-              const store = await deps.openStore(scope)
+              const store = await storeFor(scope)
               const s = await store.stats()
               const edgeCount = (await store.exportAll()).edges.length
               const total = Math.max(s.total, 1)
@@ -437,7 +502,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 if (s === 'active' || s === 'archived' || s === 'forgotten') includeStatuses.add(s)
               }
             }
-            const data = await (await deps.openStore(scope)).exportAll()
+            const data = await (await storeFor(scope)).exportAll()
             const nodes = data.records
               .filter(r => includeStatuses.has(r.status))
               .map(r => ({
@@ -464,7 +529,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const rawScope = url.searchParams.get('scope')
             const scopeFilter: 'user' | 'project' | 'shared' | undefined =
               rawScope === 'user' ? 'user' : rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : undefined
-            const snapshot = await aggregateTelemetry(deps.openStore, windowDays, scopeFilter)
+            // 项目 scope 的遥测也随选择器走（面板切工作区时计数同步切换）。
+            const snapshot = await aggregateTelemetry(scope => storeFor(scope), windowDays, scopeFilter)
             json(res, 200, snapshot)
             return
           }
@@ -473,7 +539,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // 仅取 active（greeting 区分空宫殿与多房间两种文案），suggestedStops ≤ 5。
             const rawScope = url.searchParams.get('scope')
             const scope: EngramScope = rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : 'user'
-            const store = await deps.openStore(scope)
+            const store = await storeFor(scope)
             const filter = await store.list({ scope, status: 'active', limit: 200, offset: 0 })
             const focusKind = url.searchParams.get('focusKind')
             const proposal = buildTourProposal(scope, filter.records, focusKind ?? undefined)
@@ -496,7 +562,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // 翻新清单：扫描当前 scope 的 active 条目，按规则生成 merge/demote/review/split 建议。
             const rawScope = url.searchParams.get('scope')
             const scope: EngramScope = rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : 'user'
-            const store = await deps.openStore(scope)
+            const store = await storeFor(scope)
             const filter = await store.list({ scope, status: 'active', limit: 500, offset: 0 })
             const suggestions = gatherRefurbSuggestions(filter.records, DEFAULT_REFURB_OPTIONS)
             json(res, 200, {
@@ -549,12 +615,13 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // 可选 candidates：仅把指定 ids 当作合并阶段种子（其它条目仅在与种子相似时被并入）。
             if (!guardWrite(req, res)) return
             const body = await readJsonBody(req)
+            adoptBodySelector(body)
             const rawScope = typeof body?.scope === 'string' ? body.scope : 'user'
             const scope: 'user' | 'project' | 'shared' = rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : 'user'
             const candidates = Array.isArray(body?.candidates)
               ? body.candidates.filter((value: unknown): value is string => typeof value === 'string')
               : undefined
-            const store = await deps.openStore(scope)
+            const store = await storeFor(scope)
             const report = await runConsolidation(store, deps.embedder, candidates === undefined
               ? { scope }
               : { scope, mergeCandidateIds: candidates })
@@ -593,8 +660,9 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             if (!guardWrite(req, res)) return
             const body = await readJsonBody(req)
             if (body === null || typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
+            adoptBodySelector(body)
             const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')
-            const store = await deps.openStore(scope)
+            const store = await storeFor(scope)
             if (route === 'update') {
               if (typeof body.content !== 'string' || body.content.trim() === '') { json(res, 400, { error: 'content required' }); return }
               const old = await store.get(body.id as never)
@@ -621,6 +689,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           }
           json(res, 404, { error: 'unknown route' })
         } catch (error) {
+          // 未知项目选择器：面板传了不认识的 dbName（工作区已删/改名）→ 明确 404 而不是 500。
+          if (error instanceof UnknownProjectError) { json(res, 404, { error: 'unknown project' }); return }
           json(res, 500, { error: error instanceof Error ? error.message : String(error) })
         }
       },

@@ -20,6 +20,7 @@ beforeEach(async () => {
   tools = new Map<string, ExecutableTool>(
     createEngramTools({
       openStore: async () => store,
+      resolveProjectStore: async () => store,
       embedder: Promise.resolve(undefined),
       call: undefined,
       routeOverride: undefined,
@@ -171,6 +172,7 @@ describe('engram tools', () => {
   it('engram_save render 汇总批量结果文本', () => {
     const saveDefinition = createEngramTools({
       openStore: async () => store,
+      resolveProjectStore: async () => store,
       embedder: Promise.resolve(undefined),
       call: undefined,
       routeOverride: undefined,
@@ -244,6 +246,7 @@ describe('engram tools', () => {
     const rewrittenTools = new Map<string, ExecutableTool>(
       createEngramTools({
         openStore: async () => store,
+      resolveProjectStore: async () => store,
         embedder: Promise.resolve(undefined),
         call: async () => JSON.stringify(['端口配置', '部署端口']),
         routeOverride: { provider: 'deepseek', model: 'deepseek-v4-flash' },
@@ -262,6 +265,7 @@ describe('engram tools', () => {
     const fallbackTools = new Map<string, ExecutableTool>(
       createEngramTools({
         openStore: async () => store,
+      resolveProjectStore: async () => store,
         embedder: Promise.resolve(undefined),
         call: async () => { throw new Error('llm down') },
         routeOverride: { provider: 'deepseek', model: 'deepseek-v4-flash' },
@@ -314,6 +318,7 @@ describe('engram tools', () => {
       const tourTools = new Map<string, ExecutableTool>(
         createEngramTools({
           openStore: async () => tourStore,
+          resolveProjectStore: async () => tourStore,
           embedder: Promise.resolve(undefined),
           call: undefined,
           routeOverride: undefined,
@@ -351,6 +356,7 @@ describe('engram tools', () => {
     const withEmbedder = new Map<string, ExecutableTool>(
       createEngramTools({
         openStore: async () => store,
+      resolveProjectStore: async () => store,
         embedder: Promise.resolve(pseudo),
         call: undefined,
         routeOverride: undefined,
@@ -376,5 +382,44 @@ describe('engram tools', () => {
     // 未注入 historyBackfill（= 当前组合无会话持久化）时给出可读说明而不是抛错。
     const result = await tools.get('engram_ingest_history')!.execute({}, fakeExec) as { text: string }
     expect(result.text).toContain('历史回填不可用')
+  })
+})
+
+describe('project scope 按会话 cwd 归属', () => {
+  it('project 读写交给 resolveProjectStore(会话 header.cwd)；无 cwd 会话回退 undefined（进程目录）', async () => {
+    const seen: (string | undefined)[] = []
+    const projectStore = await openEngramStore(join(dir, 'cwd-project.db'))
+    try {
+      const sessionTools = new Map<string, ExecutableTool>(
+        createEngramTools({
+          openStore: async () => store,
+          resolveProjectStore: async (cwd) => { seen.push(cwd); return projectStore },
+          embedder: Promise.resolve(undefined),
+          call: undefined,
+          routeOverride: undefined,
+          queryRewrite: false,
+          exportDir: join(dir, 'exports'),
+        }).map(tool => [tool.name, tool]),
+      )
+      const execWithCwd = {
+        agent: {
+          id: 'sess-cwd',
+          session: { id: 'sess-cwd', header: { cwd: 'G:\\GitWork\\proj' }, snapshotEvents: () => [] },
+        },
+        signal: new AbortController().signal,
+      } as unknown as ToolRunContext
+      await sessionTools.get('engram_save')!.execute({ content: '项目约定：发布前跑全量测试', kind: 'decision', scope: 'project' }, execWithCwd)
+      expect(seen).toEqual(['G:\\GitWork\\proj'])
+      expect((await projectStore.topActive('project', 10)).some(record => record.content === '项目约定：发布前跑全量测试')).toBe(true)
+      // 非 project scope 不碰项目解析器。
+      seen.length = 0
+      await sessionTools.get('engram_save')!.execute({ content: '私人偏好：简体中文', kind: 'preference', scope: 'user' }, execWithCwd)
+      expect(seen).toEqual([])
+      // 会话 header 不可得（旧宿主/替身）→ undefined，由 index.ts 回退插件进程目录。
+      await sessionTools.get('engram_save')!.execute({ content: '回退条目', kind: 'fact', scope: 'project' }, fakeExec)
+      expect(seen).toEqual([undefined])
+    } finally {
+      await projectStore.close()
+    }
   })
 })

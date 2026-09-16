@@ -51,7 +51,9 @@
 
 /* ---------- Header ---------- */
 .header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); row-gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-5); }
-.headerBrand { display: flex; align-items: center; gap: var(--space-3); min-width: 0; flex: 1; }
+/* 品牌区保留一个下限宽度：否则右侧动作区（scope 三宫格 + 项目宫殿 chip/下拉 + 重访/导出）
+   会把标题与副标题挤成竖排单字。低于下限时让 .header 的 flex-wrap 把动作区折到下一行。 */
+.headerBrand { display: flex; align-items: center; gap: var(--space-3); min-width: min(260px, 100%); flex: 1 1 260px; }
 /* 宫殿 Logo：32×32，悬停时门扇轻启（旋转 6°），增强品牌识别。 */
 .headerLogo { width: 36px; height: 36px; flex-shrink: 0; border-radius: var(--radius-control); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, var(--dsw-alias-bg-layer-1)); border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 30%, var(--dsw-alias-border-l2)); display: inline-flex; align-items: center; justify-content: center; color: var(--dsw-alias-brand-primary); transition: transform var(--dur-base) var(--ease-spring), background var(--dur-base) var(--ease-spring); }
 .headerLogo:hover { transform: rotate(-6deg); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 18%, var(--dsw-alias-bg-layer-1)); }
@@ -61,6 +63,14 @@
 .headerTitle h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; color: var(--dsw-alias-label-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .headerTitle p { margin: 0; font-size: var(--fs-body); color: var(--dsw-alias-label-tertiary); line-height: 1.5; }
 .headerActions { display: flex; gap: var(--space-2); align-items: center; flex-shrink: 0; }
+
+/* ---------- 项目宫殿来源（独占一行的 chip + project 作用域下的切换下拉） ---------- */
+/* flex-basis: 100% 让它在 .header 里自成一行：紧贴作用域三宫格下方、Tab 栏之上。 */
+.wsBar { display: flex; flex-basis: 100%; align-items: center; gap: var(--space-2); flex-wrap: wrap; min-width: 0; }
+.wsChip { display: inline-flex; align-items: center; max-width: 220px; height: 28px; padding: 0 var(--space-3); border-radius: var(--radius-control); border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: border-color var(--dur-fast) var(--ease-spring), color var(--dur-fast) var(--ease-spring); }
+.wsChip.wsFollow { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 38%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-layer-1)); color: var(--dsw-alias-brand-primary); }
+.wsChip.wsMuted { color: var(--dsw-alias-label-tertiary); }
+.wsSelect { max-width: 240px; }
 
 /* ---------- 今日待回忆角标（Header；有待回忆时一眼可见，点击直达待回忆卡） ---------- */
 .dueBadge { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 var(--space-3); border-radius: var(--radius-control); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 38%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, var(--dsw-alias-bg-layer-1)); color: var(--dsw-alias-label-primary); font-size: var(--fs-body); font-variant-numeric: tabular-nums; line-height: 1; cursor: pointer; transition: background var(--dur-fast) var(--ease-spring), border-color var(--dur-fast) var(--ease-spring), transform 80ms var(--ease-spring); }

@@ -22,9 +22,18 @@ export interface ProjectIdentity {
 /** 迁移结果：renamed = 旧库已改名；kept-both = 新旧并存未动；none = 无需迁移。 */
 export type MigrationOutcome = 'renamed' | 'kept-both' | 'none'
 
-/** v0.4 旧命名：cwd 的 hex 编码前 24 位（无 git 时仍是兜底命名）。 */
+/** v0.4 旧命名：cwd 的 hex 编码前 24 位（只覆盖 cwd 前 12 字符，同前缀目录会撞库）。保留仅供迁移识别。 */
 export function legacyProjectDbName(cwd: string): string {
   return `project-${Buffer.from(cwd).toString('hex').slice(0, 24)}.db`
+}
+
+/**
+ * 无 git 时的 cwd 命名：cwd 全量 sha256 前 24 位。
+ * 旧算法只取 cwd 前 12 字符，`C:\Users\Adm…` 这类同前缀目录会共用同一个库；
+ * 新算法对每个目录唯一，启动时把旧库 rename 迁移到新名（见 migrateProjectDb）。
+ */
+export function cwdProjectDbName(cwd: string): string {
+  return `project-${createHash('sha256').update(cwd).digest('hex').slice(0, 24)}.db`
 }
 
 /**
@@ -115,24 +124,28 @@ export function readOriginUrl(configPath: string): string | undefined {
 
 /**
  * 解析项目标识：origin URL 归一化后取 sha256 hex 前 24 位；无 git、无 origin
- * 或 URL 无法解析时回退 cwd 旧算法。
+ * 或 URL 无法解析时回退 cwd 全量哈希命名。
  */
 export function resolveProjectIdentity(cwd: string): ProjectIdentity {
   const legacyDbName = legacyProjectDbName(cwd)
   const configPath = resolveGitConfigPath(cwd)
   const origin = configPath === undefined ? undefined : readOriginUrl(configPath)
   const normalized = origin === undefined ? undefined : normalizeOriginUrl(origin)
-  if (normalized === undefined) return { dbName: legacyDbName, source: 'cwd', legacyDbName }
+  if (normalized === undefined) return { dbName: cwdProjectDbName(cwd), source: 'cwd', legacyDbName }
   const hash = createHash('sha256').update(normalized).digest('hex').slice(0, 24)
   return { dbName: `project-${hash}.db`, source: 'origin', legacyDbName }
 }
 
 /**
- * 旧库迁移：origin 库不存在而 cwd 旧库存在时同目录 rename（零数据搬运）；
- * 两者都存在时不合并、不动文件，返回 kept-both 由调用方告警。仅 origin 标识下有意义。
+ * 旧库迁移：新名库不存在而旧名库存在时同目录 rename（零数据搬运）；两者都存在时
+ * 不合并、不动文件，返回 kept-both 由调用方告警。origin 标识（v0.4 cwd 编码 → 仓库
+ * 哈希）与 cwd 兜底（截断命名 → 全量哈希）两种升级都走这里。
+ *
+ * 注意旧 cwd 命名只覆盖前 12 字符：同一前缀下的多个目录可能共用过一个旧库，
+ * 迁移只能把库判给先打开它的那个目录，调用方应对 kept-both 与本次迁移都告警。
  */
 export function migrateProjectDb(dbDir: string, identity: ProjectIdentity): MigrationOutcome {
-  if (identity.source !== 'origin' || identity.dbName === identity.legacyDbName) return 'none'
+  if (identity.dbName === identity.legacyDbName) return 'none'
   const next = join(dbDir, identity.dbName)
   const legacy = join(dbDir, identity.legacyDbName)
   const hasNext = existsSync(next)

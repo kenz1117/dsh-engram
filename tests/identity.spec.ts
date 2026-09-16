@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
-  legacyProjectDbName, migrateProjectDb, normalizeOriginUrl, resolveProjectIdentity,
+  cwdProjectDbName, legacyProjectDbName, migrateProjectDb, normalizeOriginUrl, resolveProjectIdentity,
 } from '../src/project/identity.ts'
 
 const ORIGIN_CONFIG = [
@@ -69,11 +69,17 @@ describe('resolveProjectIdentity', () => {
     expect(identity.dbName).toBe(resolveProjectIdentity(repo).dbName)
   })
 
-  it('无 .git 或 .git 无 origin 时回退 cwd 旧算法', async () => {
+  it('无 .git 或 .git 无 origin 时回退 cwd 全量哈希命名', async () => {
     const bare = await mkdtemp(join(tmpdir(), 'engram-nogit-'))
     const identity = resolveProjectIdentity(bare)
     expect(identity.source).toBe('cwd')
-    expect(identity.dbName).toBe(legacyProjectDbName(bare))
+    expect(identity.dbName).toBe(cwdProjectDbName(bare))
+    expect(identity.dbName).toMatch(/^project-[0-9a-f]{24}\.db$/)
+    // 旧截断命名保留用于迁移；同前缀目录不再共用同一个库。
+    expect(identity.legacyDbName).toBe(legacyProjectDbName(bare))
+    const sibling = await mkdtemp(join(tmpdir(), 'engram-nogit-'))
+    expect(resolveProjectIdentity(sibling).dbName).not.toBe(identity.dbName)
+    expect(legacyProjectDbName(sibling)).toBe(identity.legacyDbName)
 
     const noOrigin = await mkdtemp(join(tmpdir(), 'engram-noorigin-'))
     await mkdir(join(noOrigin, '.git'), { recursive: true })
@@ -104,7 +110,17 @@ describe('migrateProjectDb', () => {
     expect(existsSync(join(dbDir, identity.dbName))).toBe(true)
   })
 
-  it('cwd 兜底标识或两库都不存在 → 无迁移', async () => {
+  it('cwd 兜底命名的旧截断库也迁移到全量哈希名', async () => {
+    const bare = await mkdtemp(join(tmpdir(), 'engram-nogit-'))
+    const identity = resolveProjectIdentity(bare)
+    const dbDir = await mkdtemp(join(tmpdir(), 'engram-mig-'))
+    await writeFile(join(dbDir, identity.legacyDbName), 'old-data')
+    expect(migrateProjectDb(dbDir, identity)).toBe('renamed')
+    expect(existsSync(join(dbDir, identity.dbName))).toBe(true)
+    expect(existsSync(join(dbDir, identity.legacyDbName))).toBe(false)
+  })
+
+  it('两库都不存在 → 无迁移', async () => {
     const bare = await mkdtemp(join(tmpdir(), 'engram-nogit-'))
     const dbDir = await mkdtemp(join(tmpdir(), 'engram-mig-'))
     expect(migrateProjectDb(dbDir, resolveProjectIdentity(bare))).toBe('none')

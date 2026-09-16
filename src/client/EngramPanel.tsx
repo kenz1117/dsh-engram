@@ -7,7 +7,7 @@
  * @module @kenz1117/dsh-engram/client/EngramPanel
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
 import { KIND_KEY, NS, type EngramKey } from './locales.ts'
@@ -171,11 +171,254 @@ function sourceLabel(t: T, record: Pick<MemoryRow, 'sourceSessionId' | 'sourceRo
   return t('sourceSession', { id: withRound })
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api/engram/${path}`, init)
-  const body = (await response.json()) as T & { error?: string }
-  if (!response.ok) throw new Error(body.error ?? `HTTP ${String(response.status)}`)
-  return body
+/**
+ * 当前项目宫殿的选择器（host 的项目分库 dbName）；null = 不注入，服务端走进程默认库。
+ * 由 EngramSection 在**渲染期**赋值：父组件先于子组件渲染，保证子组件 effect 里的首批
+ * 请求就带上选择器（放进 useEffect 会因「子 effect 先跑」而漏掉首帧那批请求）。
+ */
+let activeProjectSelector: string | null = null
+
+/**
+ * 固定的项目选择器失效时的自愈入口（host 回 404 unknown project）：
+ * EngramSection 挂载时注册、卸载时清空——清掉固定的 library.project 回到 follow 并重载。
+ */
+let healDeadProject: (() => void) | null = null
+
+/** 请求是否属于 project 作用域：URL 里的 scope=project，或 POST JSON body 的 scope === 'project'。 */
+function isProjectScoped(path: string, init?: RequestInit): boolean {
+  if (/(?:^|[?&])scope=project(?:&|$)/.test(path)) return true
+  const body = init?.body
+  if (typeof body !== 'string' || body === '') return false
+  try {
+    const parsed = JSON.parse(body) as { scope?: unknown } | null
+    return typeof parsed === 'object' && parsed !== null && parsed.scope === 'project'
+  } catch {
+    // body 不是 JSON：按「非 project 作用域」处理，不抛错（偏好类请求可能带自由文本）。
+    return false
+  }
+}
+
+/** 往 JSON 对象 body 里加 project 字段；不可解析或非对象时返回 undefined（调用方退回 query 兜底）。 */
+function withProjectField(body: string, selector: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as unknown
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    return JSON.stringify({ ...(parsed as Record<string, unknown>), project: selector })
+  } catch {
+    return undefined
+  }
+}
+
+/** 追加 project 查询参数（GET，以及无法改写 body 时的兜底路径）。 */
+function withProjectParam(path: string, selector: string): string {
+  return `${path}${path.includes('?') ? '&' : '?'}project=${encodeURIComponent(selector)}`
+}
+
+/**
+ * 唯一的请求出口：project 作用域的请求统一注入当前项目宫殿选择器。
+ * POST 优先写进 JSON body（host 契约：POST 经 body 传选择器），body 不可解析时退回 query。
+ * project 请求收到 404 unknown project 时触发一次自愈（清固定值回到 follow），随后照常抛错。
+ * @param path - `/api/engram/` 之后的路径（含 query）；不要以 `/` 开头。
+ * @param init - fetch 参数。
+ * @param forceProject - 显式要求注入（合并视图如管家日志：user 侧照旧、project 侧跟随选择器）。
+ * @returns 解析后的响应体；非 2xx 抛错（错误文案取 body.error）。
+ */
+async function api<T>(path: string, init?: RequestInit, forceProject = false): Promise<T> {
+  const selector = activeProjectSelector
+  let target = path
+  let requestInit = init
+  const projectScoped = selector !== null && (forceProject || isProjectScoped(path, init))
+  if (projectScoped) {
+    const body = init?.body
+    const fromBody = typeof body === 'string' && body !== '' ? withProjectField(body, selector) : undefined
+    if (fromBody !== undefined && init !== undefined) requestInit = { ...init, body: fromBody }
+    else target = withProjectParam(path, selector)
+  }
+  const response = await fetch(`/api/engram/${target}`, requestInit)
+  const parsed = (await response.json()) as T & { error?: string }
+  if (!response.ok) {
+    // 自愈：固定的分库已失效（工作区被删/改名）→ 回到跟随并重载，避免面板卡在错误态。
+    if (projectScoped && response.status === 404 && parsed.error === 'unknown project') healDeadProject?.()
+    throw new Error(parsed.error ?? `HTTP ${String(response.status)}`)
+  }
+  return parsed
+}
+
+/** host 项目宫殿清单的行（GET /api/engram/workspaces）。 */
+interface EngramProjectItem {
+  readonly dbName: string
+  /** 工作区标题；host 给不出时为 null（显示回退路径末段 / dbName 短写）。 */
+  readonly title?: string | null | undefined
+  /** 该分库归属的工作目录；无法归属时 host 给 null 或直接省略该键。 */
+  readonly path?: string | null | undefined
+  /** workspace = 宿主注册表里的工作区；session = 只从会话 cwd 见到；process = 进程目录兜底。 */
+  readonly kind: 'workspace' | 'session' | 'process'
+  /** 项目标识来源（origin = git 仓库；cwd = 目录编码兜底）。 */
+  readonly source: 'origin' | 'cwd'
+  /** 宿主注册表里的工作区 id；对不上时 null（此时跟随只能按路径匹配）。 */
+  readonly workspaceId?: string | null | undefined
+  /** 库文件是否已存在（不存在时 memories 为 null）。 */
+  readonly exists: boolean
+  /** 库内记忆条数；库还不存在时为 null。 */
+  readonly memories: number | null
+}
+
+/** GET /api/engram/workspaces 的返回（processDefault = 进程目录兜底库；缺席时 null）。 */
+interface EngramWorkspacesView {
+  readonly items: readonly EngramProjectItem[]
+  readonly processDefault: { readonly dbName: string; readonly path: string | null; readonly title: string | null } | null
+}
+
+/** 宿主工作区视图（@deepseek-ai/dsh-api-workspace-controller/client 的 WorkspaceView 窄视图）。 */
+export interface HostWorkspaceView {
+  readonly workspaceId: string
+  readonly path: string
+  readonly title: string
+  readonly sessionIds: readonly string[]
+}
+
+/** 宿主可观察快照的窄视图（getSnapshot + subscribe；与 useSyncExternalStore 兼容）。 */
+interface ObservableLike<T> {
+  getSnapshot(): T
+  subscribe(listener: () => void): () => void
+}
+
+/** 宿主工作区服务窄视图（可选注入；缺席时面板其余功能照常）。 */
+export interface WorkspacesLike {
+  readonly list: ObservableLike<{ readonly items: readonly HostWorkspaceView[] }>
+}
+
+/** 宿主会话清单服务窄视图（可选注入；判定当前工作区只看当前会话 id）。 */
+export interface SessionsLike {
+  readonly list: ObservableLike<{ readonly current?: string | undefined }>
+}
+
+/** 空清单常量：useSyncExternalStore 的 getSnapshot 必须返回稳定引用。 */
+const NO_WORKSPACES: readonly HostWorkspaceView[] = []
+
+/** 服务缺席时的空订阅（保持 hook 调用形状一致）。 */
+function noopUnsubscribe(): void { /* 无订阅可退 */ }
+
+/**
+ * 订阅宿主快照（useSyncExternalStore 的 subscribe 席位）。
+ * 契约上返回退订函数；个别实现若返回 void，则退化为「不卸载」而不是抛错。
+ */
+function subscribeSnapshot<T>(source: ObservableLike<T> | undefined, onChange: () => void): () => void {
+  if (source === undefined) return noopUnsubscribe
+  const off = source.subscribe(onChange)
+  return typeof off === 'function' ? off : noopUnsubscribe
+}
+
+/**
+ * 当前 GUI 工作区：与侧边栏 WorkspacePicker 同一判定（工作区的 sessionIds 含当前会话）。
+ * 两个宿主服务都可选：任一缺席时 available=false，chip 显示「无工作区信息（进程默认）」。
+ * @param workspaces - 可选取用的宿主工作区服务。
+ * @param sessions - 可选取用的宿主会话清单服务。
+ * @returns 当前工作区（判定不出为 null）与服务是否齐备。
+ */
+function useCurrentWorkspace(workspaces: WorkspacesLike | undefined, sessions: SessionsLike | undefined): {
+  workspace: HostWorkspaceView | null
+  available: boolean
+} {
+  const subscribeWorkspaces = useCallback(
+    (onChange: () => void): (() => void) => subscribeSnapshot(workspaces?.list, onChange),
+    [workspaces],
+  )
+  const subscribeSessions = useCallback(
+    (onChange: () => void): (() => void) => subscribeSnapshot(sessions?.list, onChange),
+    [sessions],
+  )
+  const currentSessionId = useSyncExternalStore(subscribeSessions, () => sessions?.list.getSnapshot().current ?? null)
+  const items = useSyncExternalStore(subscribeWorkspaces, () => workspaces?.list.getSnapshot().items ?? NO_WORKSPACES)
+  const available = workspaces !== undefined && sessions !== undefined
+  if (!available || currentSessionId === null) return { workspace: null, available }
+  return { workspace: items.find(item => item.sessionIds.includes(currentSessionId)) ?? null, available }
+}
+
+/** 路径比较键：统一分隔符、去尾斜杠、小写（GUI 与 host 的路径书写可能不一致，Windows 大小写不敏感）。 */
+function pathKey(path: string): string {
+  return path.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase()
+}
+
+/** 路径末段（title 缺失时的回退显示名）。 */
+function lastSegment(path: string): string {
+  const normalized = path.replace(/[/\\]+$/, '')
+  const at = Math.max(normalized.lastIndexOf('\\'), normalized.lastIndexOf('/'))
+  return at < 0 ? normalized : normalized.slice(at + 1)
+}
+
+/** dbName 短写：project-<hash>.db → project-<前 8 位>…（不符合该命名时按长度截断）。 */
+function shortDbName(dbName: string): string {
+  const match = /^project-([0-9a-f]+)\.db$/i.exec(dbName)
+  return match === null ? dbName.slice(0, 14) : `project-${match[1]!.slice(0, 8)}…`
+}
+
+/** 项目库的显示名与「未注册工作区」标记：无法归属目录 → dbName 短写；否则 title > 路径末段。 */
+function projectLabel(item: EngramProjectItem): { name: string; unregistered: boolean } {
+  if (typeof item.path !== 'string' || item.path === '') return { name: shortDbName(item.dbName), unregistered: true }
+  const title = item.title?.trim() ?? ''
+  if (title !== '') return { name: title, unregistered: item.kind !== 'workspace' }
+  return { name: lastSegment(item.path), unregistered: item.kind !== 'workspace' }
+}
+
+/** 下拉项文案：显示名（含未注册标记）· 记忆条数（库未建时给「—」，不显示 0）。 */
+function projectOptionLabel(t: T, item: EngramProjectItem): string {
+  const label = projectLabel(item)
+  const parts = [label.unregistered ? `${label.name} · ${t('projectUnregistered')}` : label.name]
+  parts.push(item.memories === null ? '—' : t('projectMemories', { n: item.memories }))
+  return parts.join(' · ')
+}
+
+/** 跟随模式的目标：先按宿主工作区 id 匹配（最稳），对不上再按路径匹配；都匹配不到 → 进程默认库。 */
+function matchFollowTarget(list: EngramWorkspacesView | null, workspace: HostWorkspaceView | null): EngramProjectItem | undefined {
+  if (list === null || workspace === null) return undefined
+  const byId = list.items.find(item => item.workspaceId === workspace.workspaceId)
+  if (byId !== undefined) return byId
+  const key = pathKey(workspace.path)
+  return list.items.find(item => typeof item.path === 'string' && pathKey(item.path) === key)
+}
+
+/**
+ * 项目宫殿 chip 的文案与 hover 说明：固定 / 跟随 / 未注册 / 无工作区信息四态。
+ * 固定优先判定（host 清单不依赖客户端服务，固定态在缺服务时依然准确）。
+ */
+function projectChip(t: T, state: {
+  mode: string
+  available: boolean
+  items: readonly EngramProjectItem[]
+  followed: EngramProjectItem | undefined
+  processDefaultPath: string | null
+}): { label: string; title: string; tone: 'pinned' | 'follow' | 'muted' } {
+  if (state.mode !== 'follow') {
+    const item = state.items.find(entry => entry.dbName === state.mode)
+    if (item === undefined) {
+      return {
+        label: t('projectPinned', { name: `${shortDbName(state.mode)} · ${t('projectUnregistered')}` }),
+        title: state.mode,
+        tone: 'pinned',
+      }
+    }
+    const label = projectLabel(item)
+    return {
+      label: t('projectPinned', { name: label.unregistered ? `${label.name} · ${t('projectUnregistered')}` : label.name }),
+      title: item.path ?? item.dbName,
+      tone: 'pinned',
+    }
+  }
+  if (!state.available) return { label: t('projectNoWorkspace'), title: t('projectFollowHint'), tone: 'muted' }
+  if (state.followed === undefined) {
+    return {
+      label: t('projectPinned', { name: t('projectProcessDefault') }),
+      title: state.processDefaultPath ?? t('projectFollowHint'),
+      tone: 'pinned',
+    }
+  }
+  const label = projectLabel(state.followed)
+  return {
+    label: t('projectFollowNamed', { name: label.unregistered ? `${label.name} · ${t('projectUnregistered')}` : label.name }),
+    title: state.followed.path ?? t('projectFollowHint'),
+    tone: 'follow',
+  }
 }
 
 /** 绝对时间（审计时间线等需要精确时刻的位置）。 */
@@ -250,10 +493,12 @@ function RelChips({ ids }: { ids: readonly string[] }): React.ReactElement {
 }
 
 /** 行内审计区：属性网格 + 关系 chips + 操作时间线（review API）。 */
-function ReviewBody({ t, recordId, scope }: {
+function ReviewBody({ t, recordId, scope, project }: {
   t: T
   recordId: string
   scope: 'user' | 'project' | 'shared'
+  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
+  project: string | null
 }): React.ReactElement {
   const [view, setView] = useState<ReviewView | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
@@ -263,7 +508,7 @@ function ReviewBody({ t, recordId, scope }: {
       .then((data) => { if (!cancelled) setView(data) })
       .catch((error: Error) => { if (!cancelled) setFailed(error.message) })
     return () => { cancelled = true }
-  }, [recordId, scope, t])
+  }, [recordId, scope, project, t])
   if (failed !== null) return <div className={styles.expandLoading}>{t('loadFailed', { msg: failed })}</div>
   if (view === null) return <div className={styles.expandLoading}>{t('loading')}</div>
   const { record } = view
@@ -421,7 +666,8 @@ function RecallBench({ t, scope }: { t: T; scope: 'user' | 'project' | 'shared' 
   const run = (): void => {
     if (query.trim() === '' || busy) return
     setBusy(true)
-    api<BenchResult>(`search-test?q=${encodeURIComponent(query.trim())}&scope=${benchScope}`)
+    // forceProject：'all' 模式（user + project）与 project 模式都要用当前选中的项目分库。
+    api<BenchResult>(`search-test?q=${encodeURIComponent(query.trim())}&scope=${benchScope}`, undefined, true)
       .then((data) => { setResult(data); setError(null) })
       .catch((benchError: Error) => setError(benchError.message))
       .finally(() => setBusy(false))
@@ -554,17 +800,23 @@ function logDotClass(op: string): string {
 /**
  * 管家日志整页视图：顶部近 7 天三个计数，下面是两库合并的完整 op_log
  * （时间 · 操作 · 宫殿 · 摘要），可按操作类别筛选；不再限高裁切，供逐条审计。
+ * user 侧照旧合并，project 侧跟随项目宫殿选择器（api 的 forceProject）。
  */
-function LogPanel({ t, telemetry }: { t: T; telemetry: TelemetrySnapshot | null }): React.ReactElement {
+function LogPanel({ t, telemetry, project }: {
+  t: T
+  telemetry: TelemetrySnapshot | null
+  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
+  project: string | null
+}): React.ReactElement {
   const [rows, setRows] = useState<ActivityRow[] | null>(null)
   const [filter, setFilter] = useState<LogFilter>('all')
   useEffect(() => {
     let cancelled = false
-    api<{ operations: ActivityRow[] }>('activity?limit=50')
+    api<{ operations: ActivityRow[] }>('activity?limit=50', undefined, true)
       .then((data) => { if (!cancelled) setRows(data.operations) })
       .catch(() => { if (!cancelled) setRows([]) })
     return () => { cancelled = true }
-  }, [])
+  }, [project])
   const allow = LOG_GROUPS[filter]
   const visible = (rows ?? []).filter(row => allow === null || allow.includes(row.op))
   const counts = telemetry?.counts
@@ -624,9 +876,11 @@ interface ReviewDueItem {
 
 /** 今日待回忆：检索练习卡片。线索先行 → 揭示正文 → 三档自评（记得/模糊/忘了 → SM-2 grade 5/3/1）推进调度。
  *  onAnswered 供 Header 角标同步递减。 */
-function ReviewQueueCard({ t, scope, toast, onAnswered }: {
+function ReviewQueueCard({ t, scope, project, toast, onAnswered }: {
   t: T
   scope: 'user' | 'project' | 'shared'
+  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
+  project: string | null
   toast: ToastController
   onAnswered: () => void
 }): React.ReactElement {
@@ -638,7 +892,7 @@ function ReviewQueueCard({ t, scope, toast, onAnswered }: {
     api<{ items: ReviewDueItem[] }>(`review-due?scope=${scope}`)
       .then(data => { setItems(data.items); setRevealed({}) })
       .catch((error: Error) => { toast.push('error', error.message); setItems([]) })
-  }, [scope, toast])
+  }, [scope, project, toast])
   useEffect(() => { reload() }, [reload])
   /** 揭示：拉完整正文（复用 review 路由），用户核对回忆是否准确。 */
   const reveal = (id: string): void => {
@@ -706,7 +960,13 @@ function ReviewQueueCard({ t, scope, toast, onAnswered }: {
 /** 入殿导航：根据当前 scope 的 active 记忆给出开场邀请 + 候选记忆列表；点击可展开抽屉。
  *  顶部 kind chip（全部 / fact / preference / decision / episode / skill）切换 focusKind，
  *  触发后端按该 kind 优先选前 N 条作为开场建议。 */
-function TourProposalCard({ t, scope, onSelect }: { t: T; scope: 'user' | 'project' | 'shared'; onSelect: (id: string) => void }): React.ReactElement {
+function TourProposalCard({ t, scope, project, onSelect }: {
+  t: T
+  scope: 'user' | 'project' | 'shared'
+  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
+  project: string | null
+  onSelect: (id: string) => void
+}): React.ReactElement {
   interface Stop { id: string; kind: string; content: string; importance: number; confidence: number }
   interface Proposal { greeting: string; activeCount: number; empty: boolean; suggestedStops: readonly Stop[] }
   const KINDS_FOCUS = ['', 'fact', 'preference', 'decision', 'episode', 'skill'] as const
@@ -721,7 +981,7 @@ function TourProposalCard({ t, scope, onSelect }: { t: T; scope: 'user' | 'proje
       .then((data) => { if (!cancelled) setProposal(data) })
       .catch(() => { if (!cancelled) setProposal({ greeting: t('tourProposalEmpty'), activeCount: 0, empty: true, suggestedStops: [] }) })
     return () => { cancelled = true }
-  }, [t, scope, focusKind])
+  }, [t, scope, project, focusKind])
   const labelKind = (kind: string): string => {
     if (kind === '') return t('tourFocusAll')
     const key = KIND_KEY[kind]
@@ -769,9 +1029,11 @@ function TourProposalCard({ t, scope, onSelect }: { t: T; scope: 'user' | 'proje
  *  - review / split：跳到对应记忆抽屉查看（无副作用）。
  *  - demote：调用 engram_forget（带三问墓志铭），记忆转 archived。
  *  - merge：触发当前 scope 的 engram_distill（用户级闭馆整理），把多条相似记忆蒸馏为一条高层规律。 */
-function RefurbCard({ t, scope, onSelect, onAfterAction, toast }: {
+function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast }: {
   t: T
   scope: 'user' | 'project' | 'shared'
+  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
+  project: string | null
   onSelect: (id: string) => void
   onAfterAction: () => void
   toast: ToastController
@@ -786,7 +1048,7 @@ function RefurbCard({ t, scope, onSelect, onAfterAction, toast }: {
       .then((data) => { setReport(data) })
       .catch(() => { setReport({ count: 0, suggestions: [] }) })
       .finally(() => { setBusy(false) })
-  }, [scope])
+  }, [scope, project])
   useEffect(() => { reload() }, [reload])
   const labelOf = (action: Suggestion['action']): string => {
     switch (action) {
@@ -892,9 +1154,11 @@ interface CorridorGraph {
   readonly edges: ReadonlyArray<{ readonly id: string; readonly from: string; readonly to: string; readonly type: string }>
 }
 
-function CorridorPanel({ t, scope, onSelect }: {
+function CorridorPanel({ t, scope, project, onSelect }: {
   t: T
   scope: 'user' | 'project' | 'shared'
+  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
+  project: string | null
   onSelect: (id: string) => void
 }): React.ReactElement {
   const [graph, setGraph] = useState<CorridorGraph | null>(null)
@@ -905,7 +1169,7 @@ function CorridorPanel({ t, scope, onSelect }: {
       .then(data => { if (!cancelled) setGraph(data); setFailed(null) })
       .catch((err: Error) => { if (!cancelled) setFailed(err.message) })
     return () => { cancelled = true }
-  }, [scope])
+  }, [scope, project])
   if (failed !== null) return <div className={styles.expandLoading}>{t('corridorFailed')}：{failed}</div>
   if (graph === null) return <div className={styles.expandLoading}>{t('corridorLoad')}</div>
   if (graph.nodes.length === 0) return <div className={styles.empty}>{t('corridorEmpty')}</div>
@@ -959,9 +1223,10 @@ interface TelemetrySnapshot {
  * 宫殿总览取数：规模（stats，含房间分布）+ 近 7 天活动（telemetry）+ 健康分（health）
  * 一次并行拉齐，供今日速览、健康分构成与房间目录共用（同一路由不重复请求）。
  * @param scope - 当前观察的宫殿（跟随 Header 三宫格）。
+ * @param project - 项目宫殿选择器（仅用于选择器变化时重载；实际注入在 api() 里做）。
  * @returns 各段数据与取数失败原因（失败时保留上一次成功值）。
  */
-function usePalaceOverview(scope: 'user' | 'project' | 'shared'): {
+function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string | null): {
   stats: StatsPart['stats'] | null
   byKind: Readonly<Record<string, number>>
   telemetry: TelemetrySnapshot | null
@@ -978,7 +1243,8 @@ function usePalaceOverview(scope: 'user' | 'project' | 'shared'): {
   useEffect(() => {
     let cancelled = false
     Promise.all([
-      api<{ parts: StatsPart[] }>('stats'),
+      // stats 带 scope：project 时经 api() 注入选择器，host 让 project 段按选择器解析（缺省行为不变）。
+      api<{ parts: StatsPart[] }>(`stats?scope=${scope}`),
       api<TelemetrySnapshot>(`telemetry?days=7&scope=${scope}`),
       api<HealthReport>(`health?scope=${scope}`),
     ])
@@ -991,7 +1257,7 @@ function usePalaceOverview(scope: 'user' | 'project' | 'shared'): {
         if (!cancelled) setState(current => ({ ...current, failed: error.message }))
       })
     return () => { cancelled = true }
-  }, [scope])
+  }, [scope, project])
   return state
 }
 
@@ -1352,8 +1618,14 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
   )
 }
 
-/** 导出下拉：把三种格式（Markdown / JSON / 镜像目录）合并成一个按钮 + 弹出列表。 */
-function ExportMenu({ t, scope }: { t: T; scope: 'user' | 'project' | 'shared' }): React.ReactElement {
+/** 导出下拉：把三种格式（Markdown / JSON / 镜像目录）合并成一个按钮 + 弹出列表。
+ *  链接是浏览器直连的 GET（不走 api()），故这里显式拼接项目宫殿选择器。 */
+function ExportMenu({ t, scope, project }: {
+  t: T
+  scope: 'user' | 'project' | 'shared'
+  /** 项目宫殿选择器：仅在 project 作用域拼接（null = 服务端走进程默认库）。 */
+  project: string | null
+}): React.ReactElement {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
@@ -1364,10 +1636,11 @@ function ExportMenu({ t, scope }: { t: T; scope: 'user' | 'project' | 'shared' }
     window.addEventListener('mousedown', handler)
     return () => { window.removeEventListener('mousedown', handler) }
   }, [open])
+  const projectQuery = scope === 'project' && project !== null ? `&project=${encodeURIComponent(project)}` : ''
   const options: Array<{ label: string; hint: string; href: string }> = [
-    { label: t('exportMd'), hint: t('exportMdHint'), href: `/api/engram/export?scope=${scope}&format=markdown` },
-    { label: t('exportJson'), hint: t('exportJsonHint'), href: `/api/engram/export?scope=${scope}&format=json` },
-    { label: t('exportMirror'), hint: t('exportMirrorHint'), href: `/api/engram/mirror?scope=${scope}` },
+    { label: t('exportMd'), hint: t('exportMdHint'), href: `/api/engram/export?scope=${scope}${projectQuery}&format=markdown` },
+    { label: t('exportJson'), hint: t('exportJsonHint'), href: `/api/engram/export?scope=${scope}${projectQuery}&format=json` },
+    { label: t('exportMirror'), hint: t('exportMirrorHint'), href: `/api/engram/mirror?scope=${scope}${projectQuery}` },
   ]
   return (
     <div className={styles.exportWrap} ref={wrapRef}>
@@ -1391,8 +1664,16 @@ function ExportMenu({ t, scope }: { t: T; scope: 'user' | 'project' | 'shared' }
   )
 }
 
+/** EngramSection 的 props：渲染器给的 t（locale 席位）+ 可选取用的宿主服务。 */
+export type EngramSectionProps = PropsLocale<typeof NS> & {
+  /** 宿主工作区服务（缺席时 chip 显示「无工作区信息」，面板其余功能照常）。 */
+  readonly workspaces?: WorkspacesLike | undefined
+  /** 宿主会话清单服务（用于判定当前会话所属工作区）。 */
+  readonly sessions?: SessionsLike | undefined
+}
+
 /** 设置页「记忆库」section 主组件（t 由渲染器按 locale: NS 声明合成）。 */
-export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement {
+export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): React.ReactElement {
   const toast = useToast()
   /** 全局 scope（持久化）：Header 三宫格是唯一切换器，驱动今日速览、各视图卡片、陈展列表与导出。 */
   const [scope, setScope] = usePersistedState<'user' | 'project' | 'shared'>('library.scope', 'user', ['user', 'project', 'shared'])
@@ -1418,17 +1699,70 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
   const [confirmForget, setConfirmForget] = useState(false)
   /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / log 管家日志 / backfill 历史回填。 */
   const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'log' | 'backfill'>('today')
+  /** 项目宫殿来源（持久化）：'follow' = 跟随 GUI 当前工作区；其它值 = 固定的 host 分库 dbName。 */
+  const [projectMode, setProjectMode] = usePersistedString('library.project', 'follow')
+  /** GUI 当前工作区（与侧边栏同一判定）与 host 的项目宫殿清单。 */
+  const currentWorkspace = useCurrentWorkspace(workspaces, sessions)
+  const [workspaceList, setWorkspaceList] = useState<EngramWorkspacesView | null>(null)
+  const workspaceId = currentWorkspace.workspace?.workspaceId ?? ''
+
+  /** 拉取 host 项目宫殿清单（挂载 / 工作区切换 / 固定值变化 / 手动重访）：失败静默，只影响标签与下拉。 */
+  useEffect(() => {
+    let cancelled = false
+    api<EngramWorkspacesView>('workspaces')
+      .then((data) => { if (!cancelled) setWorkspaceList(data) })
+      .catch(() => { /* 清单失败保持上一次：选择器本身仍可工作（跟随退化为进程默认） */ })
+    return () => { cancelled = true }
+  }, [workspaceId, projectMode, reloadTick])
+
+  /** 跟随目标：GUI 当前工作区在 host 清单里对应的项目库（匹配不到 = 进程默认库）。 */
+  const followedProject = matchFollowTarget(workspaceList, currentWorkspace.workspace)
+  /** 实际选择器：follow + 已知工作区 → 该工作区分库；follow + 未知 → null（不注入）。 */
+  const projectSelector = projectMode === 'follow' ? followedProject?.dbName ?? null : projectMode
+  // 渲染期挂到 api() 的注入点：父先渲染，保证子组件 effect 的首批请求已带上选择器。
+  activeProjectSelector = projectSelector
+  /** Header chip 的四态文案（固定 / 跟随 / 未注册 / 无工作区信息）。 */
+  const chip = projectChip(t, {
+    mode: projectMode,
+    available: currentWorkspace.available,
+    items: workspaceList?.items ?? [],
+    followed: followedProject,
+    processDefaultPath: workspaceList?.processDefault?.path ?? null,
+  })
+  /** 固定的 dbName 不在 host 清单里（工作区被删除 / 只从会话 cwd 见过）：下拉补一项避免选中态丢失。 */
+  const pinnedMissing = projectMode !== 'follow'
+    && !(workspaceList?.items ?? []).some(item => item.dbName === projectMode)
+
   /** 今日速览、健康分构成与房间目录共用一份总览数据（同一路由不重复请求）。 */
-  const overview = usePalaceOverview(scope)
+  const overview = usePalaceOverview(scope, projectSelector)
 
   const reload = useCallback((): void => { setReloadTick(tick => tick + 1) }, [])
+
+  /** 失效选择器的自愈：同一轮只触发一次，回到 follow 后复位（见 api() 的 404 分支）。 */
+  const healingRef = useRef(false)
+  useEffect(() => {
+    healDeadProject = (): void => {
+      // 只在「固定到某个已失效分库」时自愈；跟随态 404 说明 host 清单与分库不一致，回退只会抖动。
+      if (healingRef.current || projectMode === 'follow') return
+      healingRef.current = true
+      setProjectMode('follow')
+      setOffset(0)
+      setExpanded(null)
+      setSelected(new Set())
+      reload()
+    }
+    return () => { healDeadProject = null }
+  }, [projectMode, reload])
+  useEffect(() => {
+    if (projectMode === 'follow') healingRef.current = false
+  }, [projectMode])
 
   /** 刷新 Header 角标计数（本地回环毫秒级；失败静默归零，不打断面板）。 */
   const refreshDue = useCallback((): void => {
     api<{ items: unknown[] }>(`review-due?scope=${scope}&limit=50`)
       .then(data => { setDueCount(data.items.length) })
       .catch(() => { setDueCount(0) })
-  }, [scope])
+  }, [scope, projectSelector])
   useEffect(() => { refreshDue() }, [refreshDue])
 
   /** 角标点击：切到今日速览并滚到今日待回忆卡（待 tab 切换渲染完成后再滚）。 */
@@ -1462,7 +1796,17 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
       .then((data) => { if (!cancelled) { setList(data); setError(null) } })
       .catch((loadError: Error) => { if (!cancelled) setError(loadError.message) })
     return () => { cancelled = true }
-  }, [scope, status, kind, redacted, q, sort, offset, reloadTick])
+  }, [scope, status, kind, redacted, q, sort, offset, reloadTick, projectSelector])
+
+  /** 项目宫殿切换（工作区切换 / 手动固定）：回到第 1 页并清掉跨库无意义的展开与选择态。 */
+  const lastProject = useRef(projectSelector)
+  useEffect(() => {
+    if (lastProject.current === projectSelector) return
+    lastProject.current = projectSelector
+    setOffset(0)
+    setExpanded(null)
+    setSelected(new Set())
+  }, [projectSelector])
 
   const act = (route: string, record: MemoryRow): void => {
     api(route, {
@@ -1587,8 +1931,31 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
             </button>
           )}
           <button type="button" className={styles.button} onClick={() => { reload(); refreshDue() }}>{t('refresh')}</button>
-          <ExportMenu t={t} scope={scope} />
+          <ExportMenu t={t} scope={scope} project={projectSelector} />
         </div>
+        {/* 项目宫殿来源：独占一行（flex-basis: 100%），紧贴作用域三宫格下方、Tab 栏之上——
+            只在 project 作用域显示（私人/共享宫殿没有工作区概念）。chip 显示当前落在哪个工作区分库
+            （跟随 / 固定 / 未注册 / 无工作区信息）、hover 给完整路径，旁边下拉可临时固定到别的项目库。 */}
+        {scope === 'project' && (
+          <div className={styles.wsBar}>
+            <span
+              className={`${styles.wsChip}${chip.tone === 'follow' ? ` ${styles.wsFollow}` : chip.tone === 'muted' ? ` ${styles.wsMuted}` : ''}`}
+              title={chip.title}>
+              {chip.label}
+            </span>
+            <select className={`${styles.input} ${styles.wsSelect}`} value={projectMode}
+              aria-label={t('projectSwitch')} title={t('projectSwitch')}
+              onChange={event => { setProjectMode(event.target.value); setOffset(0); setExpanded(null); clearSelection() }}>
+              <option value="follow">{t('projectFollow')}</option>
+              {(workspaceList?.items ?? []).map(item => (
+                <option key={item.dbName} value={item.dbName}>{projectOptionLabel(t, item)}</option>
+              ))}
+              {pinnedMissing && (
+                <option value={projectMode}>{`${shortDbName(projectMode)} · ${t('projectUnregistered')}`}</option>
+              )}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* 顶部 Tab Bar：五个视图（今日 / 宫殿 / 走廊 / 日志 / 回填；按「先管家后陈展」语义排序）。
@@ -1785,7 +2152,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
                   <h4 className={styles.sectionTitle}>{t('tourProposalTitle')}</h4>
                 </div>
                 <div className={styles.panelCard}>
-                  <TourProposalCard t={t} scope={scope} onSelect={openReview} />
+                  <TourProposalCard t={t} scope={scope} project={projectSelector} onSelect={openReview} />
                 </div>
               </section>
             </div>
@@ -1805,7 +2172,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
                   <span className={styles.sectionHint}>{t('reviewQueueHint')}</span>
                 </div>
                 <div className={styles.panelCard}>
-                  <ReviewQueueCard t={t} scope={scope} toast={toast} onAnswered={refreshDue} />
+                  <ReviewQueueCard t={t} scope={scope} project={projectSelector} toast={toast} onAnswered={refreshDue} />
                 </div>
               </section>
               <section className={styles.section}>
@@ -1813,7 +2180,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
                   <h4 className={styles.sectionTitle}>{t('refurbTitle')}</h4>
                 </div>
                 <div className={styles.panelCard}>
-                  <RefurbCard t={t} scope={scope} onSelect={openReview} onAfterAction={reload} toast={toast} />
+                  <RefurbCard t={t} scope={scope} project={projectSelector} onSelect={openReview} onAfterAction={reload} toast={toast} />
                 </div>
               </section>
             </aside>
@@ -1830,7 +2197,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
                 <h4 className={styles.sectionTitle}>{t('sectionCorridor')}</h4>
               </div>
               <div className={styles.panelCard}>
-                <CorridorPanel t={t} scope={scope} onSelect={openReview} />
+                <CorridorPanel t={t} scope={scope} project={projectSelector} onSelect={openReview} />
               </div>
             </section>
             <section className={styles.section}>
@@ -1848,7 +2215,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
 
       {activeTab === 'log' && (
         <div className={styles.tabPanel}>
-          <LogPanel t={t} telemetry={overview.telemetry} />
+          <LogPanel t={t} telemetry={overview.telemetry} project={projectSelector} />
         </div>
       )}
 
@@ -1886,7 +2253,7 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
             </header>
             <div className={styles.drawerBody}>
               {expanded.kind === 'review'
-                ? <ReviewBody t={t} recordId={expanded.record.id} scope={expanded.record.scope} />
+                ? <ReviewBody t={t} recordId={expanded.record.id} scope={expanded.record.scope} project={projectSelector} />
                 : <EditForm t={t} record={expanded.record} onClose={() => { setExpanded(null) }}
                     onSaved={() => { setExpanded(null); reload() }} toast={toast} />}
             </div>
@@ -1897,4 +2264,20 @@ export function EngramSection({ t }: PropsLocale<typeof NS>): React.ReactElement
       {toast.viewport}
     </div>
   )
+}
+
+/**
+ * 注册用的薄包装：把**可选取用**的宿主服务经闭包带进 props。
+ * 放在 .tsx 里是因为 index.ts 不能写 JSX；服务缺席时照常渲染（chip 显示「无工作区信息」）。
+ * 服务按**渲染期现取**（getter 而非实例）：宿主工作区/会话服务可能在插件 apply 之后才挂载。
+ * @param services - 取宿主服务的 getter（workspaces / sessions，均可缺席）。
+ * @returns 与注册席位兼容的组件（只吃 locale 的 t，其余 props 原样忽略）。
+ */
+export function bindEngramSection(services: {
+  readonly workspaces: () => WorkspacesLike | undefined
+  readonly sessions: () => SessionsLike | undefined
+}): (props: PropsLocale<typeof NS>) => React.ReactElement {
+  return function EngramSectionBound(props: PropsLocale<typeof NS>): React.ReactElement {
+    return <EngramSection {...props} workspaces={services.workspaces()} sessions={services.sessions()} />
+  }
 }
