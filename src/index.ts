@@ -285,9 +285,50 @@ async function preStep(
 }
 
 /**
+ * 会话持久化服务的窄视图：新版 dsh 只有句柄式 `open`/`read`（`load(id)` 已移除），
+ * 且 `list()` 返回快照（header 在 `snapshot.header` 上）而非 header 数组。
+ * 本插件不硬依赖 @deepseek-ai/dsh-session-persistence，只按运行时形状取用。
+ */
+interface PersistenceReadHandle {
+  /** 读取一段连续日志；缺省参数 = 从 0 读到末尾。 */
+  read(offset?: number, length?: number): Promise<{ events: readonly unknown[] }>
+  /** 释放句柄（幂等；不释放会在后端持有本地资源）。 */
+  close(): Promise<void>
+}
+
+/** 持久化服务的最小视图（只用到 list 与只读 open）。 */
+interface PersistenceServiceView {
+  /** 列出全部已持久化会话的快照（宿主接口不分页不过滤）。 */
+  list(options?: { signal?: AbortSignal }): Promise<readonly { header: HistorySessionHeader }[]>
+  /** 只读打开一个已持久化会话；不取写所有权，可与活跃写入者并存。 */
+  open(id: string, access: 'read'): Promise<PersistenceReadHandle>
+}
+
+/**
+ * 只读打开会话日志 → 交给调用方读取 → 必关闭句柄。
+ * close 失败不掩盖读取结果（读取成功而 close 失败时仍返回成功值）。
+ * @param persistence - 持久化服务视图。
+ * @param sessionId - 目标会话 id。
+ * @param use - 句柄使用回调。
+ * @returns 回调结果。
+ */
+async function withReadHandle<T>(
+  persistence: PersistenceServiceView,
+  sessionId: string,
+  use: (handle: PersistenceReadHandle) => Promise<T>,
+): Promise<T> {
+  const handle = await persistence.open(sessionId, 'read')
+  try {
+    return await use(handle)
+  } finally {
+    await handle.close().catch(() => { /* 关闭失败无补救动作 */ })
+  }
+}
+
+/**
  * pending 重放的事件源解析器：pending 属于当前会话时直接用其事件快照；
- * 其余会话经可选的 sessionPersistence 服务读持久化日志（服务缺席或读取失败
- * 返回 undefined，pending 保留到下次，不报错）。
+ * 其余会话经可选的 sessionPersistence 服务（只读句柄）读持久化日志
+ * （服务缺席或读取失败返回 undefined，pending 保留到下次，不报错）。
  */
 function makeEventResolver(ctx: Context, agent: Agent): (sessionId: string) => Promise<readonly SessionEventLike[] | undefined> {
   return async sessionId => {
@@ -295,12 +336,11 @@ function makeEventResolver(ctx: Context, agent: Agent): (sessionId: string) => P
       return agent.session.snapshotEvents() as unknown as readonly SessionEventLike[]
     }
     // 可选服务，engram 不硬依赖：缺席时跨会话 pending 保留到该会话被恢复。
-    const persistence = ctx.get('sessionPersistence' as never) as
-      { load(id: string): Promise<{ events: readonly unknown[] }> } | undefined
+    const persistence = ctx.get('sessionPersistence' as never) as PersistenceServiceView | undefined
     if (persistence === undefined) return undefined
     try {
-      const loaded = await persistence.load(sessionId)
-      return loaded.events as unknown as readonly SessionEventLike[]
+      return await withReadHandle(persistence, sessionId, async handle =>
+        (await handle.read()).events as readonly SessionEventLike[])
     } catch {
       return undefined
     }
@@ -407,11 +447,14 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   // ---- 历史会话回填：把 dsh 持久化的历史会话逐轮摄取进宫殿（面板「历史回填」tab / engram_ingest_history）----
   /** 会话持久化服务（可选；缺席时历史回填不可用）。 */
   const persistenceService = (): HistoryLogSource | undefined => {
-    const persistence = ctx.get('sessionPersistence' as never) as
-      | { list(signal?: AbortSignal): Promise<readonly HistorySessionHeader[]>; load(id: string): Promise<{ events: readonly unknown[] }> }
-      | undefined
+    const persistence = ctx.get('sessionPersistence' as never) as PersistenceServiceView | undefined
     if (persistence === undefined) return undefined
-    return { list: signal => persistence.list(signal), load: id => persistence.load(id) }
+    return {
+      // header 现在嵌在快照里，取消参数也从位置参数改为 { signal }（无信号时不传该键）。
+      list: async signal => (await persistence.list(signal === undefined ? undefined : { signal })).map(snapshot => snapshot.header),
+      // 日志经只读句柄读取（打开 → 读完 → 必关闭）；读取失败原样抛出，调用方计 unreadable。
+      load: id => withReadHandle(persistence, id, async handle => ({ events: (await handle.read()).events })),
+    }
   }
 
   /** user 分库若已存在则打开（估算用：不因估算产生空库文件）。 */

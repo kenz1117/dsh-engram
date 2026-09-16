@@ -37,7 +37,7 @@ export interface HistorySessionHeader {
   readonly origin?: string | undefined
 }
 
-/** 历史会话日志来源（sessionPersistence 的窄视图）。 */
+/** 历史会话日志来源（sessionPersistence 的窄视图；宿主侧经只读句柄 open/read 读取）。 */
 export interface HistoryLogSource {
   /** 列出全部已持久化会话的 header（宿主接口不分页不过滤）。 */
   list(signal?: AbortSignal): Promise<readonly HistorySessionHeader[]>
