@@ -50,7 +50,8 @@ export function decodeTurnKey(detail: string): { sessionId: string; turn: number
 
 const INGEST_SYSTEM = [
   '从对话记录中提取值得跨会话长期记住的用户信息（事实/偏好/决策/经历/做事方法）。',
-  '只输出一个 JSON 数组，每项形如 {"content": "一句话完整表述", "kind": "fact|preference|decision|episode|skill", "importance": 0到1的小数}。',
+  '只输出一个 JSON 数组，每项形如 {"content": "一句话完整表述", "kind": "fact|preference|decision|episode|skill", "scope": "project|user", "importance": 0到1的小数}。',
+  'scope 决定这条记忆进哪座宫殿：只跟当前项目/仓库有关的（技术选型、项目约定、架构决策、该项目自身的事实）用 project；与具体项目无关、跨项目通用的（个人偏好、习惯、用户本人的经历、通用事实）用 user。拿不准用 project。',
   '只提取明确、可复用的信息；寒暄、临时上下文、你自己的回答不要提取。没有值得记的就输出 []。',
   '不要输出 JSON 以外的任何内容。',
 ].join('\n')
@@ -107,10 +108,48 @@ export interface IngestDeps {
   readonly slice?: IngestSlice
   /** 是否对本切片应用节流（低活动/寒暄/禁记跳过）。缺省只作用于 previous 切片；历史回填传 true。 */
   readonly throttle?: boolean
-  /** 写入的分库作用域标记（缺省 user）。历史回填按会话 cwd 写 project 库时传 'project'。 */
+  /** 写入分库的作用域兜底（模型未给合法 scope 时用）。缺省 user；实时摄取与历史回填都传显式值。 */
   readonly writeScope?: EngramScope
+  /** 逐条判宫殿：是否采纳提炼模型输出的 scope（缺省 false = 全部用 writeScope）。 */
+  readonly perCandidateScope?: boolean
+  /** 按作用域解析写入分库（模型判 project 时落到该项目库）；缺省 = 全部写 openStore() 的分库。 */
+  readonly resolveStore?: (scope: EngramScope) => Promise<EngramStore>
+  /** 幂等/审计键（ingest-done、ingest-pending）落点；缺省 = openStore()（键是会话级的，与写入落点解耦）。 */
+  readonly openAuditStore?: () => Promise<EngramStore>
   /** 历史回填模式：写入不进入 SM-2 复习调度（避免一次性回填的条目同时涌入今日复习队列）。 */
   readonly history?: boolean
+}
+
+/** 写入路由：默认作用域 + 是否逐条采纳模型 scope + 按作用域解析分库。 */
+export interface IngestWriteRouting {
+  /** 默认（模型未给合法 scope 时）作用域。 */
+  readonly writeScope: EngramScope
+  /** 是否采纳模型逐条给出的 scope。 */
+  readonly perCandidateScope: boolean
+  /** 分库解析器；缺省表示所有写入都落 `openStore()` 那个库。 */
+  readonly resolveStore?: (scope: EngramScope) => Promise<EngramStore>
+}
+
+/**
+ * 组装一次摄取的写入路由：会话有 cwd（可归属项目）时默认进项目宫殿且采纳模型的逐条判定，
+ * 明显跨项目的个人偏好可被标成 user 落私人宫殿；无 cwd 的会话只能进私人宫殿，
+ * 故关掉逐条判定（否则 project 标记落进 user 库后检索不可见）。
+ * @param cwd - 会话工作目录；空串/undefined = 无法归属项目。
+ * @param openProjectStore - 按 cwd 打开项目分库。
+ * @param openScopeStore - 按作用域打开分库（user / shared）。
+ * @returns 可直接展开进 IngestDeps / ReplayIngestDeps 的路由字段。
+ */
+export function ingestWriteRouting(
+  cwd: string | undefined,
+  openProjectStore: (cwd: string) => Promise<EngramStore>,
+  openScopeStore: (scope: EngramScope) => Promise<EngramStore>,
+): IngestWriteRouting {
+  if (cwd === undefined || cwd === '') return { writeScope: 'user', perCandidateScope: false }
+  return {
+    writeScope: 'project',
+    perCandidateScope: true,
+    resolveStore: scope => (scope === 'project' ? openProjectStore(cwd) : openScopeStore(scope)),
+  }
 }
 
 /** 从事件里按类型收集文本块，跳过插件注入的 user 快照（它们不是用户说的话）。 */
@@ -301,8 +340,10 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   }
 
   const store = await deps.openStore()
+  // 幂等/审计键是会话级的（与写入落哪个宫殿无关）：固定落审计库，跨路径（实时/回填）共用一份。
+  const auditStore = deps.openAuditStore === undefined ? store : await deps.openAuditStore()
   const doneKey = encodeTurnKey(deps.sessionId, round)
-  if (await store.hasAudit(INGEST_DONE_OP, doneKey)) {
+  if (await auditStore.hasAudit(INGEST_DONE_OP, doneKey)) {
     return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: 'already-ingested' }
   }
 
@@ -347,7 +388,7 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   const writtenContents: string[] = []
   let written = 0
   for (const item of parsed.slice(0, limits.maxCandidates)) {
-    const candidate = item as { content?: unknown; kind?: unknown; importance?: unknown }
+    const candidate = item as { content?: unknown; kind?: unknown; scope?: unknown; importance?: unknown }
     if (typeof candidate.content !== 'string' || candidate.content.trim() === '') continue
     // 模型输出候选入库前同样剥离协议块并脱敏（可能复述会话中的密钥或伪造协议标签）。
     const content = redactSecrets(sanitizeProtocolText(candidate.content.trim()))
@@ -355,17 +396,23 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     const kind = (typeof candidate.kind === 'string' && ['fact', 'preference', 'decision', 'episode', 'skill'].includes(candidate.kind))
       ? candidate.kind as EngramKind
       : 'fact'
+    // 逐条判宫殿：模型给出的 project/user 覆盖默认作用域；非法值（含 shared）一律回退默认。
+    const modelScope = candidate.scope === 'user' || candidate.scope === 'project' ? candidate.scope : undefined
+    const scope: EngramScope = deps.perCandidateScope === true && modelScope !== undefined
+      ? modelScope
+      : deps.writeScope ?? 'user'
+    const target = deps.resolveStore === undefined ? store : await deps.resolveStore(scope)
     const importance = typeof candidate.importance === 'number' && Number.isFinite(candidate.importance)
       ? Math.min(1, Math.max(0, candidate.importance))
       : 0.5
-    // 去重：嵌入可用时与现有 active 条目高度相似即跳过；同批重复内容也跳过。
+    // 去重：嵌入可用时与目标宫殿内现有 active 条目高度相似即跳过；同批重复内容也跳过。
     if (embedder !== undefined) {
       const vector = (await embedder.embed([content]))[0]
-      if (vector !== undefined && (await store.findContradictions(vector, 1)).length > 0) continue
+      if (vector !== undefined && (await target.findContradictions(vector, 1)).length > 0) continue
     }
     if (writtenContents.includes(content)) continue
-    await store.write({
-      scope: deps.writeScope ?? 'user',
+    await target.write({
+      scope,
       kind,
       content,
       importance,
@@ -379,7 +426,7 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     writtenContents.push(content)
     written += 1
   }
-  await store.audit(INGEST_DONE_OP, deps.sessionId, doneKey)
+  await auditStore.audit(INGEST_DONE_OP, deps.sessionId, doneKey)
   return { scannedEvents: slice.length, candidates: parsed.length, written, skipped: null }
 }
 
@@ -411,7 +458,7 @@ export async function ingestFinalTurn(deps: IngestDeps): Promise<IngestOutcome |
   } catch (error) {
     if (round !== undefined) {
       try {
-        await markPendingIngest(await deps.openStore(), deps.sessionId, round)
+        await markPendingIngest(await (deps.openAuditStore ?? deps.openStore)(), deps.sessionId, round)
       } catch {
         // pending 落库失败：摄取本就尽力而为，不再升级。
       }
@@ -423,10 +470,15 @@ export async function ingestFinalTurn(deps: IngestDeps): Promise<IngestOutcome |
 
 /** pending 重放的依赖：事件源解析器由调用方注入（当前会话事件或持久化后端）。 */
 export interface ReplayIngestDeps {
-  /** user 分库打开器。 */
+  /** 幂等/审计键（pending、done）所在分库；也是无 cwd 会话的写入落点。 */
   readonly openStore: () => Promise<EngramStore>
-  /** 按 sessionId 解析会话日志事件；无法解析返回 undefined（保留 pending 到下次）。 */
-  readonly resolveEvents: (sessionId: string) => Promise<readonly SessionEventLike[] | undefined>
+  /**
+   * 按 sessionId 解析会话日志与它的 cwd；无法解析返回 undefined（保留 pending 到下次）。
+   * cwd 决定该会话的待补做轮次写进哪座项目宫殿。
+   */
+  readonly resolveSession: (sessionId: string) => Promise<{ events: readonly SessionEventLike[]; cwd?: string | undefined } | undefined>
+  /** 按会话 cwd 解析项目分库（模型判 project 时的落点）。 */
+  readonly resolveStore: (cwd: string) => Promise<EngramStore>
   /** 嵌入器承诺。 */
   readonly embedder: Promise<EngramEmbedder | undefined>
   /** 档位。 */
@@ -452,6 +504,7 @@ export interface ReplayOutcome {
 /**
  * 重放待补做的末轮摄取（下次会话首次 pre-step 调用）。已有 done 标记或键损坏的
  * pending 直接出队；事件源不可得的保留到下次。单个键失败抛出，剩余键留待下次。
+ * 每条 pending 按它自己会话的 cwd 组装写入路由（补做时同样逐条判宫殿）。
  */
 export async function replayPendingIngests(deps: ReplayIngestDeps): Promise<ReplayOutcome> {
   const store = await deps.openStore()
@@ -464,17 +517,19 @@ export async function replayPendingIngests(deps: ReplayIngestDeps): Promise<Repl
       await store.clearAudit(INGEST_PENDING_OP, detail)
       continue
     }
-    const events = await deps.resolveEvents(key.sessionId)
-    if (events === undefined) {
+    const session = await deps.resolveSession(key.sessionId)
+    if (session === undefined) {
       kept += 1
       continue
     }
     await ingestPreviousTurn({
-      events,
+      events: session.events,
       sessionId: key.sessionId,
       turn: key.turn,
       slice: key.turn,
       openStore: deps.openStore,
+      openAuditStore: deps.openStore,
+      ...ingestWriteRouting(session.cwd, deps.resolveStore, deps.openStore),
       embedder: deps.embedder,
       mode: deps.mode,
       routeOverride: deps.routeOverride,

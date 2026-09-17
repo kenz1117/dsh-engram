@@ -19,6 +19,8 @@ import HttpServer from '@deepseek-ai/dsh-host-webserver'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { openEngramStore } from '../src/store/sqlite.ts'
+import { markPendingIngest } from '../src/ingest/hook.ts'
+import { resolveProjectIdentity } from '../src/project/identity.ts'
 import * as Engram from '../src/index.ts'
 
 let root: string | undefined
@@ -67,12 +69,45 @@ const EXPECTED_TOOLS = [
   'engram_save', 'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
 ]
 
+/** 预置到 user 库的待补做摄取键（跨会话 pending 重放用例用）。 */
+interface PendingSeed {
+  readonly sessionId: string
+  readonly turn: number
+}
+
+/** 会话持久化替身：新版 dsh 的句柄式 API（`list()` 给快照，日志经 `open(id,'read')` 句柄读，
+ *  句柄带 header —— 补做轮次据此决定写进哪座项目宫殿）。
+ *  calls 记录每次 open 及其句柄用量，用于断言「跨会话读取确实走宿主服务」。 */
+function makePersistenceDouble(
+  header: { id: string; createdAt: number; cwd: string },
+  events: readonly unknown[],
+  calls: { id: string; access: string; reads: number; closed: boolean }[] = [],
+): unknown {
+  return {
+    list: async () => [{ header }],
+    open: async (id: string, access: string) => {
+      const record = { id, access, reads: 0, closed: false }
+      calls.push(record)
+      return {
+        id,
+        header,
+        read: async () => {
+          record.reads += 1
+          return { eventState: 'detached', events }
+        },
+        close: async () => { record.closed = true },
+      }
+    },
+  }
+}
+
 /** 在宿主打开分库前写入种子记忆（同进程先后连接，时序安全）。
  *  keep 条目的复习日程拨到 1 天前，让 review-due / review-answer 链路可断言。 */
-async function seedMemories(dbPath: string): Promise<{ keep: string; dropped: string }> {
+async function seedMemories(dbPath: string, pending?: PendingSeed): Promise<{ keep: string; dropped: string }> {
   const store = await openEngramStore(dbPath)
   const keep = (await store.write({ scope: 'user', kind: 'preference', content: '种子偏好：回复用简体中文', importance: 0.8 })).id
   const dropped = (await store.write({ scope: 'user', kind: 'fact', content: '种子事实：将被遗忘', importance: 0.5 })).id
+  if (pending !== undefined) await markPendingIngest(store, pending.sessionId, pending.turn)
   await store.close()
   const { DatabaseSync } = await import('node:sqlite')
   const raw = new DatabaseSync(dbPath)
@@ -82,11 +117,12 @@ async function seedMemories(dbPath: string): Promise<{ keep: string; dropped: st
 }
 
 /** 六行 cordis.yml（webserver + system-prompt + tools + llm 替身 + engram）经真实 Loader 启动。
- *  extraConfig 追加到 engram 行 config 下（如 `    ingest: 'light'`）。 */
-async function loadComposition(extraConfig: readonly string[] = []): Promise<Context> {
+ *  extraConfig 追加到 engram 行 config 下（如 `    ingest: 'light'`）；
+ *  pending 预置一个待补做摄取键（跨会话 pending 重放用例）。 */
+async function loadComposition(extraConfig: readonly string[] = [], pending?: PendingSeed): Promise<Context> {
   root = await mkdtemp(join(tmpdir(), 'dsh-engram-'))
   const dbPath = join(root, 'engram', 'user.db')
-  await seedMemories(dbPath)
+  await seedMemories(dbPath, pending)
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
     "- name: '@deepseek-ai/dsh-host-webserver'",
@@ -272,10 +308,9 @@ describe('dsh-engram real Loader composition', () => {
       { type: 'request/header', data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4-flash' } } }, seq: 4, time: Date.now() },
       ...[0, 1, 2, 3, 4].map(index => ({ type: 'tool/result', data: { callId: `c${String(index)}`, isError: false }, seq: 5 + index, time: Date.now() })),
     ]
-    loaded.provide('sessionPersistence' as never, {
-      list: async () => [{ id: 'hist-1', createdAt: Date.now() - 1000, cwd: process.cwd() }],
-      load: async () => ({ events }),
-    } as never)
+    loaded.provide('sessionPersistence' as never, makePersistenceDouble(
+      { id: 'hist-1', createdAt: Date.now() - 1000, cwd: process.cwd() }, events,
+    ) as never)
 
     // 模型清单接口：面板「辅助模型」下拉的数据源。
     const modelsResponse = await call(port, 'GET', '/api/engram/models')
@@ -326,15 +361,15 @@ describe('dsh-engram real Loader composition', () => {
       { type: 'assistant/message', data: { content: [{ type: 'text', text: '答' }] }, seq: 4, time: Date.now() },
       ...[0, 1, 2, 3, 4].map(index => ({ type: 'tool/result', data: { callId: `c${String(index)}`, isError: false }, seq: 5 + index, time: Date.now() })),
     ]
-    loaded.provide('sessionPersistence' as never, {
-      list: async () => [{ id: 'hist-old-model', createdAt: Date.now() - 1000, cwd: process.cwd() }],
-      load: async () => ({ events: historicalEvents }),
-    } as never)
+    loaded.provide('sessionPersistence' as never, makePersistenceDouble(
+      { id: 'hist-old-model', createdAt: Date.now() - 1000, cwd: process.cwd() }, historicalEvents,
+    ) as never)
     // 模拟「当前会话在用 deepseek」：preStep 每轮第一步记录该路由。
     const fakeAgent = {
       id: 'sess-current',
       session: {
         id: 'sess-current',
+        header: { cwd: process.cwd() },
         snapshotEvents: () => [{ type: 'request/header', data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4' } } }, seq: 1, time: Date.now() }],
       },
     }
@@ -360,6 +395,79 @@ describe('dsh-engram real Loader composition', () => {
     expect(llmCalls.length).toBeGreaterThan(0)
     expect(JSON.stringify(llmCalls)).toContain('deepseek')
     expect(JSON.stringify(llmCalls)).not.toContain('zai')
+  })
+
+  it('跨会话 pending 重放经持久化只读句柄读日志（load(id) 已移除）', { timeout: 60_000 }, async () => {
+    // 回归：新版 dsh 的 sessionPersistence 只有句柄式 open(id,'read')+read()，已无 load(id)。
+    // 适配层若还调 load，跨会话 pending 会被 catch 吞掉 TypeError 而永远保留（静默失效）。
+    const loaded = await loadComposition(["    ingest: 'light'"], { sessionId: 'sess-foreign', turn: 1 })
+    const pad = '这是一段足够长的具体描述，用来越过节流阈值。'.repeat(12)
+    const events = [
+      { type: 'request/header', data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4' } } }, seq: 1, time: Date.now() },
+      { type: 'turn/start', data: { turn: 1 }, seq: 2, time: Date.now() },
+      { type: 'user/message', data: { content: [{ type: 'text', text: pad }] }, seq: 3, time: Date.now() },
+      { type: 'assistant/message', data: { content: [{ type: 'text', text: '答' }] }, seq: 4, time: Date.now() },
+    ]
+    const calls: { id: string; access: string; reads: number; closed: boolean }[] = []
+    loaded.provide('sessionPersistence' as never, makePersistenceDouble(
+      { id: 'sess-foreign', createdAt: Date.now() - 1000, cwd: process.cwd() }, events, calls,
+    ) as never)
+
+    // 当前会话 id 与 pending 会话不同：preStep 第一步触发 pending 重放（fire-and-forget）。
+    const fakeAgent = { id: 'sess-current', session: { id: 'sess-current', header: { cwd: process.cwd() }, snapshotEvents: () => [] } }
+    const emitter = loaded as unknown as { emit: (name: string, ...args: unknown[]) => unknown }
+    await (emitter.emit('agent/pre-step', {
+      agent: fakeAgent, step: 1, turn: 1, signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] })) as Promise<unknown>)
+    // 给异步重放（打开句柄 → 读日志 → 关闭）一个跑完的窗口。
+    await new Promise(resolve => setTimeout(resolve, 600))
+
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls[0]?.id).toBe('sess-foreign')
+    expect(calls[0]?.access).toBe('read')
+    expect(calls[0]?.reads).toBeGreaterThan(0)
+    // 只读句柄必须释放：否则每次重放都在后端漏一个句柄。
+    expect(calls[0]?.closed).toBe(true)
+  })
+
+  it('项目宫殿随工作区切换：/workspaces 列出工作区，?project= 落到对应分库', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+    // 造一个真实存在的「工作区」目录（无 git → cwd 全量哈希命名）。
+    const workspacePath = await mkdtemp(join(tmpdir(), 'engram-ws-'))
+    loaded.provide('workspaceRegistry' as never, {
+      list: () => [{ id: 'ws-1', path: workspacePath, title: '测试工作区' }],
+    } as never)
+    const dbName = resolveProjectIdentity(workspacePath).dbName
+    // 预置该项目宫殿里的一条记忆（先写后关，避免与插件连接并存）。
+    const seeded = await openEngramStore(join(root!, 'engram', dbName))
+    await seeded.write({ scope: 'project', kind: 'decision', content: '该工作区的项目约定', importance: 0.6 })
+    await seeded.close()
+
+    const workspaces = await call(port, 'GET', '/api/engram/workspaces')
+    expect(workspaces.status).toBe(200)
+    const items = (workspaces.json as {
+      items: { dbName: string; title: string; path: string | null; kind: string; exists: boolean; memories: number | null }[]
+      processDefault: { dbName: string } | null
+    }).items
+    const hit = items.find(item => item.dbName === dbName)
+    expect(hit).toMatchObject({ title: '测试工作区', kind: 'workspace', exists: true, memories: 1 })
+    expect(hit?.path).toBe(workspacePath)
+    expect(items.some(item => item.kind === 'process')).toBe(true)
+
+    // 显式选择该工作区：项目 scope 读到的正是它的库。
+    const scoped = await call(port, 'GET', `/api/engram/list?scope=project&project=${dbName}&limit=10`)
+    expect(scoped.status).toBe(200)
+    expect((scoped.json as { records: { content: string }[] }).records.map(record => record.content))
+      .toContain('该工作区的项目约定')
+
+    // 未知选择器 → 404（面板据此回退「跟随当前工作区」）。
+    const unknown = await call(port, 'GET', '/api/engram/list?scope=project&project=project-000000000000000000000000.db')
+    expect(unknown.status).toBe(404)
+    expect((unknown.json as { error: string }).error).toBe('unknown project')
+
+    // 不带选择器 = 进程目录兜底（向后兼容），照常 200。
+    expect((await call(port, 'GET', '/api/engram/list?scope=project&limit=5')).status).toBe(200)
   })
 
   it('未知配置键经 Loader 装载 loud 失败', { timeout: 60_000 }, async () => {

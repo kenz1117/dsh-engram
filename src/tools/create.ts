@@ -5,6 +5,7 @@
  */
 
 import { mkdir, writeFile } from 'node:fs/promises'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { join } from 'node:path'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -33,8 +34,13 @@ import type { HistoryBackfillRules, HistoryEstimate, HistoryRunResult } from '..
 
 /** 工具依赖：分库打开器、嵌入器承诺、辅助 LLM 调用与导出目录。 */
 export interface ToolDeps {
-  /** 每次调用解析目标 scope 的分库（user/project 各一）。 */
+  /** 每次调用解析目标 scope 的分库（user/shared 各一）。 */
   readonly openStore: (scope: EngramScope) => Promise<EngramStore>
+  /**
+   * 项目分库解析：按会话 cwd 归属（undefined = 会话 cwd 不可得，回退插件进程目录）。
+   * 与面板「项目」scope、自动摄取的落点同一口径——切换工作区时工具读写随会话走。
+   */
+  readonly resolveProjectStore: (cwd: string | undefined) => Promise<EngramStore>
   /** 嵌入器承诺；undefined = 嵌入不可用，检索降级纯关键词、矛盾检测停用。 */
   readonly embedder: Promise<EngramEmbedder | undefined>
   /** 辅助 LLM 调用（index.ts 用 ctx.llm.stream 构造）；undefined = distill 不可用。sessionId 由调用点补齐。 */
@@ -55,6 +61,19 @@ export interface ToolDeps {
 }
 
 const KINDS = ['fact', 'preference', 'decision', 'episode', 'skill'] as const
+
+/**
+ * 工具执行期的会话 cwd：project scope 的读写据此解析项目宫殿。
+ * 用 AsyncLocalStorage 而不是模块级变量：同一进程里多个会话的工具调用可能交错，
+ * 模块级可变状态会把 A 会话的 cwd 泄漏给 B 会话。
+ */
+const execSessionCwd = new AsyncLocalStorage<string | undefined>()
+
+/** 从工具运行上下文取会话 cwd（缺省 = 无会话信息，调用方回退插件进程目录）。 */
+function sessionCwdOf(exec: ToolRunContext): string | undefined {
+  const cwd = exec.agent?.session?.header?.cwd
+  return cwd === undefined || cwd === '' ? undefined : cwd
+}
 
 /** 历史回填估算的模型可读文本（零成本，先看数再决定跑不跑）。 */
 function renderHistoryEstimate(estimate: HistoryEstimate): string {
@@ -176,10 +195,20 @@ async function rewriteQueries(deps: ToolDeps, exec: ToolRunContext, query: strin
 /**
  * 构造 17 个工具定义（engram_save/search/assess/timeline/update/forget/report/review/review_queue/
  * stats/export/distill/examine/neighbors/audit_forgotten/tour/ingest_history）。
- * @param deps - 分库打开器、嵌入器、辅助 LLM、导出目录。
- * @returns 可直接 register 的工具定义数组。
+ * @param baseDeps - 分库打开器、嵌入器、辅助 LLM、导出目录。
+ * @returns 可直接 register 的工具定义数组（execute 已绑定会话 cwd 的项目宫殿路由）。
  */
-export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
+export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
+  /**
+   * 分库门面：project scope 一律走 `resolveProjectStore(执行期会话 cwd)`，
+   * 其余 scope 原样透传。所有 handler 都用这个 `deps`，无需逐处改调用点。
+   */
+  const deps: ToolDeps = {
+    ...baseDeps,
+    openStore: scope => (scope === 'project'
+      ? baseDeps.resolveProjectStore(execSessionCwd.getStore())
+      : baseDeps.openStore(scope)),
+  }
   /** 批量保存上限（协议内常量：与单轮摄取候选量级对齐，防一次灌入过多）。 */
   const MAX_SAVE_BATCH = 10
 
@@ -1176,7 +1205,13 @@ export function createEngramTools(deps: ToolDeps): ToolDefinition[] {
     },
   })
 
-  return [save, search, assess, timeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten, ingestHistory]
+  const tools = [save, search, assess, timeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten, ingestHistory]
+  // 执行前把该会话的 cwd 放进 ALS 上下文：project scope 的分库解析据此归属（并发会话互不串味）。
+  return tools.map(tool => ({
+    ...tool,
+    execute: (args: Parameters<ToolDefinition['execute']>[0], exec: ToolRunContext) =>
+      execSessionCwd.run(sessionCwdOf(exec), () => tool.execute(args, exec)),
+  }))
 }
 
 // ===== P0-2 巡游路由：engram_tour =====

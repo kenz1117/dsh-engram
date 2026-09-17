@@ -4,8 +4,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   ACTIVITY_THRESHOLD, INGEST_DONE_OP, INGEST_PENDING_OP, activityScore, encodeTurnKey, ingestFinalTurn,
-  ingestPreviousTurn, isChitchat, forbidsCapture, lastTurnNumber, lastTurnSlice, markPendingIngest, previousTurnSlice,
-  replayPendingIngests, throttleDecision, turnSlice, turnSignals,
+  ingestPreviousTurn, ingestWriteRouting, isChitchat, forbidsCapture, lastTurnNumber, lastTurnSlice, markPendingIngest,
+  previousTurnSlice, replayPendingIngests, throttleDecision, turnSlice, turnSignals,
 } from '../src/ingest/hook.ts'
 import type { IngestRequestEventData } from '../src/ingest/hook.ts'
 import { openEngramStore } from '../src/store/sqlite.ts'
@@ -427,10 +427,87 @@ describe('ingestFinalTurn', () => {
   })
 })
 
+describe('ingestWriteRouting', () => {
+  const openProject = async () => store
+  const openScope = async () => store
+
+  it('有 cwd：默认项目宫殿、逐条采纳模型 scope，user 落按作用域解析的分库', async () => {
+    const routing = ingestWriteRouting('/repo/x', openProject, openScope)
+    expect(routing.writeScope).toBe('project')
+    expect(routing.perCandidateScope).toBe(true)
+    expect(await routing.resolveStore!('project')).toBe(store)
+    expect(await routing.resolveStore!('user')).toBe(store)
+  })
+
+  it('无 cwd：只能进私人宫殿，关掉逐条判定（否则 project 标记落 user 库后检索不可见）', () => {
+    expect(ingestWriteRouting(undefined, openProject, openScope)).toEqual({ writeScope: 'user', perCandidateScope: false })
+    expect(ingestWriteRouting('', openProject, openScope)).toEqual({ writeScope: 'user', perCandidateScope: false })
+  })
+})
+
+describe('逐条判宫殿（写入分库路由）', () => {
+  it('采纳模型 scope：project 落项目库、user 落私人库；幂等键固定在审计库', async () => {
+    const projectStore = await openEngramStore(join(dir, 'routed-project.db'))
+    try {
+      const outcome = await ingestPreviousTurn(baseDeps({
+        perCandidateScope: true,
+        writeScope: 'project',
+        resolveStore: async scope => (scope === 'project' ? projectStore : store),
+        openAuditStore: async () => store,
+        call: async () => JSON.stringify([
+          { content: '项目约定：提交信息用中文', kind: 'decision', scope: 'project', importance: 0.7 },
+          { content: '用户偏好简体中文回复', kind: 'preference', scope: 'user', importance: 0.8 },
+        ]),
+      }))
+      expect(outcome.written).toBe(2)
+      const project = await projectStore.topActive('project', 10)
+      expect(project.map(record => record.content)).toEqual(['项目约定：提交信息用中文'])
+      expect(project[0]?.scope).toBe('project')
+      const personal = await store.topActive('user', 10)
+      expect(personal.map(record => record.content)).toContain('用户偏好简体中文回复')
+      // 幂等键是会话级的：只落审计库（这里就是写入 user 库所用的那个库），不落写入库。
+      expect(await store.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-ingest-1', 1))).toBe(true)
+      expect(await projectStore.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-ingest-1', 1))).toBe(false)
+    } finally {
+      await projectStore.close()
+    }
+  })
+
+  it('模型 scope 非法（shared）或缺失时回退默认作用域', async () => {
+    const projectStore = await openEngramStore(join(dir, 'routed-project-2.db'))
+    try {
+      const outcome = await ingestPreviousTurn(baseDeps({
+        perCandidateScope: true,
+        writeScope: 'project',
+        resolveStore: async () => projectStore,
+        call: async () => JSON.stringify([
+          { content: '非法 scope 的候选', kind: 'fact', scope: 'shared', importance: 0.5 },
+          { content: '缺 scope 的候选', kind: 'fact', importance: 0.5 },
+        ]),
+      }))
+      expect(outcome.written).toBe(2)
+      expect(await projectStore.topActive('project', 10)).toHaveLength(2)
+    } finally {
+      await projectStore.close()
+    }
+  })
+
+  it('perCandidateScope 关闭（历史回填的旧口径）时模型 scope 不生效', async () => {
+    const outcome = await ingestPreviousTurn(baseDeps({
+      perCandidateScope: false,
+      writeScope: 'user',
+      call: async () => JSON.stringify([{ content: '模型标了 project 但被忽略', kind: 'fact', scope: 'project' }]),
+    }))
+    expect(outcome.written).toBe(1)
+    expect((await store.topActive('user', 10)).some(record => record.content === '模型标了 project 但被忽略')).toBe(true)
+  })
+})
+
 describe('replayPendingIngests', () => {
   const replayDeps = (overrides?: Partial<Parameters<typeof replayPendingIngests>[0]>) => ({
     openStore: async () => store,
-    resolveEvents: async () => undefined,
+    resolveSession: async () => undefined,
+    resolveStore: async () => store,
     embedder: Promise.resolve(undefined),
     mode: 'light' as const,
     routeOverride: undefined,
@@ -451,7 +528,7 @@ describe('replayPendingIngests', () => {
   it('重放补做：摄取写入、pending 出队、done 落键', async () => {
     await markPendingIngest(store, 'sess-old', 2)
     const outcome = await replayPendingIngests(replayDeps({
-      resolveEvents: async sessionId => sessionId === 'sess-old' ? pendingEvents : undefined,
+      resolveSession: async sessionId => (sessionId === 'sess-old' ? { events: pendingEvents } : undefined),
     }))
     expect(outcome).toEqual({ replayed: 1, kept: 0 })
     expect((await store.listAuditDetails(INGEST_PENDING_OP)).length).toBe(0)
@@ -460,6 +537,25 @@ describe('replayPendingIngests', () => {
     expect(rows.some(record => record.sourceSessionId === 'sess-old' && record.sourceRound === 2)).toBe(true)
     // 再次重放：pending 已出队，无动作。
     expect(await replayPendingIngests(replayDeps())).toEqual({ replayed: 0, kept: 0 })
+  })
+
+  it('按待补做会话自己的 cwd 落项目库（补做同样逐条判宫殿）', async () => {
+    const projectStore = await openEngramStore(join(dir, 'replay-project.db'))
+    try {
+      await markPendingIngest(store, 'sess-proj', 2)
+      const outcome = await replayPendingIngests(replayDeps({
+        resolveSession: async sessionId => (sessionId === 'sess-proj' ? { events: pendingEvents, cwd: '/repo/x' } : undefined),
+        resolveStore: async () => projectStore,
+      }))
+      expect(outcome).toEqual({ replayed: 1, kept: 0 })
+      // 幂等键仍在审计库（user 库），记忆落该项目库。
+      expect(await store.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-proj', 2))).toBe(true)
+      expect(await projectStore.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-proj', 2))).toBe(false)
+      const rows = await projectStore.topActive('project', 10)
+      expect(rows.some(record => record.sourceSessionId === 'sess-proj' && record.sourceRound === 2)).toBe(true)
+    } finally {
+      await projectStore.close()
+    }
   })
 
   it('事件源不可得的 pending 保留到下次', async () => {

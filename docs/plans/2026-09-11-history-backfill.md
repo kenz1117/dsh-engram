@@ -3,8 +3,8 @@
 动机：插件此前的摄取只覆盖**当前会话**（每轮第一步摄取上一轮 + 会话结束时补末轮 + pending 重放）。用户在换模型/清理前积累的历史会话内容无法进入宫殿——那些「以前聊过的偏好、决策、经历」是长期记忆最有价值的部分。
 
 前置调研（harness 侧，已核对源码）：
-- `sessionPersistence.list()` 返回全部已持久化会话的 header（`id` / `createdAt` / `cwd` / `parentSession` / `isSeeded` / `origin` …），**无分页无过滤**。
-- `sessionPersistence.load(id)` 返回 `{ meta, inheritedEventCount, events }`——插件早已用它读跨会话日志（[index.ts makeEventResolver](../../src/index.ts)）。
+- `sessionPersistence.list()` 返回全部已持久化会话的**快照**（`{ header, revision, eventCount?, sizeBytes? }`，header 含 `id` / `createdAt` / `cwd` / `parentSession` / `isSeeded` / `origin` …），**无分页无过滤**。
+- 日志读取走**只读句柄**：`sessionPersistence.open(id, 'read')` → `handle.read()`（返回 `{ eventState, events }`）→ `handle.close()`。早期的 `load(id)` 已在新版 dsh 移除——插件的历史回填与 pending 重放均经 [index.ts persistenceService / makeEventResolver](../../src/index.ts) 的这层适配读取。
 - 会话目录命名 `root/<project>/<encoded id>/session.jsonl.zstd`，转义与校验由 provider 承担：**走服务接口比自己遍历目录稳**。
 - 无「批量导出全部会话」的既有能力；跨会话检索（`sessionQuery`）存在但工作区受限且该包默认不挂载，不作为依赖。
 

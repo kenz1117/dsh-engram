@@ -3,15 +3,16 @@
  *
  * 设计要点：
  * 1. **复用实时摄取管线**——内层直接调用 `ingestPreviousTurn` 的 `slice=<turn>` 模式，
- *    提炼、脱敏、防回声、幂等键全部沿用，不另建管线；
- * 2. **按会话 cwd 分库**——历史会话写进它自己项目的库（`writeScope: 'project'`），
+ *    提炼、脱敏、防回声、逐条判宫殿全部沿用，不另建管线；
+ * 2. **按会话 cwd 分库**——历史会话的 `project` 记忆写进它自己项目的库，
  *    避免跨项目内容串库；无 cwd 的会话只能进 user 库（默认仍跳过）；
  * 3. **先估算后执行**——估算给出「候选会话数 / 规则内轮数 / 真正待处理轮数」，
  *    并在估算阶段避免创建空库；
  * 4. **成本可控**——时间窗、单会话轮数、单次总轮数三重限额 + 复用摄取节流
  *    （低活动/寒暄/禁记跳过）+ 显式触发（不做后台自动跑）；
- * 5. **可中断续跑**——幂等键是 (sessionId, turn)，中断后重跑只补未完成的轮次；
- *    历史条目写入不进入 SM-2 复习队列（否则一次性回填会淹没今日待回忆）。
+ * 5. **可中断续跑**——幂等键是 (sessionId, turn) 且固定在 user 库，与写入落点解耦，
+ *    中断后重跑只补未完成的轮次；历史条目写入不进入 SM-2 复习队列（否则一次性
+ *    回填会淹没今日待回忆）。
  * @module @kenz1117/dsh-engram/ingest/history
  */
 
@@ -19,9 +20,8 @@ import type { ResolvedHistoryRules } from '../config.ts'
 import type { EngramEmbedder } from '../embedder/interface.ts'
 import type { LlmRoute, SessionEventLike } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
-import type { EngramScope } from '../types.ts'
-import { INGEST_DONE_OP, encodeTurnKey, ingestPreviousTurn } from './hook.ts'
-import type { IngestDeps, IngestMode } from './hook.ts'
+import { INGEST_DONE_OP, encodeTurnKey, ingestPreviousTurn, ingestWriteRouting } from './hook.ts'
+import type { IngestDeps, IngestMode, IngestWriteRouting } from './hook.ts'
 
 /** 历史会话 header 的窄视图（session-persistence 的 SessionHeader 子集，只依赖用到的字段）。 */
 export interface HistorySessionHeader {
@@ -37,7 +37,7 @@ export interface HistorySessionHeader {
   readonly origin?: string | undefined
 }
 
-/** 历史会话日志来源（sessionPersistence 的窄视图）。 */
+/** 历史会话日志来源（sessionPersistence 的窄视图；宿主侧经只读句柄 open/read 读取）。 */
 export interface HistoryLogSource {
   /** 列出全部已持久化会话的 header（宿主接口不分页不过滤）。 */
   list(signal?: AbortSignal): Promise<readonly HistorySessionHeader[]>
@@ -129,9 +129,7 @@ export interface HistoryBackfillDeps {
   readonly source: HistoryLogSource | undefined
   /** 按会话 cwd 打开（必要时创建）目标分库。 */
   readonly resolveStore: (cwd: string) => Promise<EngramStore>
-  /** 按会话 cwd 打开已存在的目标分库；库文件不存在返回 undefined（估算用，避免创建空库）。 */
-  readonly resolveExistingStore: (cwd: string) => Promise<EngramStore | undefined>
-  /** user 分库打开器（无 cwd 会话的落点）。 */
+  /** user 分库打开器（无 cwd 会话的落点，也是幂等/审计键的所在库）。 */
   readonly openUserStore: () => Promise<EngramStore>
   /** user 分库若已存在则打开，否则 undefined（估算用，避免创建空库）。 */
   readonly resolveExistingUserStore: () => Promise<EngramStore | undefined>
@@ -144,18 +142,16 @@ export interface HistoryBackfillDeps {
   readonly now?: () => number
 }
 
-/** 参与处理的会话（含按 cwd 解析出的落点）。 */
+/** 参与处理的会话（含按 cwd 解析出的写入路由）。 */
 interface CandidateSession {
   readonly header: HistorySessionHeader
   readonly events: readonly SessionEventLike[]
   /** 规则内允许处理的轮次号（升序，已按单会话上限取最近若干轮）。 */
   readonly turns: readonly number[]
-  /** 目标分库打开器。 */
+  /** 目标分库打开器（无 cwd → user 库；有 cwd → 该项目库）。 */
   readonly openStore: () => Promise<EngramStore>
-  /** 写入的作用域标记（有 cwd → project，无 cwd → user）。 */
-  readonly writeScope: EngramScope
-  /** 该会话的唯一键（同 cwd 的库内幂等；无 cwd 用固定标记）。 */
-  readonly storeKey: string
+  /** 写入路由：默认作用域 + 逐条采纳模型 scope + 按作用域解析分库。 */
+  readonly routing: IngestWriteRouting
 }
 
 const DAY_MS = 86_400_000
@@ -259,16 +255,19 @@ async function selectSessions(deps: HistoryBackfillDeps, rules: ResolvedHistoryR
       const turns = all.slice(Math.max(0, all.length - rules.maxTurnsPerSession))
       if (turns.length === 0) return undefined
       const cwd = header.cwd
-      return (cwd === undefined || cwd === '')
-        ? { header, events, turns, openStore: deps.openUserStore, writeScope: 'user', storeKey: 'user' }
-        : {
-            header,
-            events,
-            turns,
-            openStore: () => deps.resolveStore(cwd),
-            writeScope: 'project',
-            storeKey: cwd,
-          }
+      if (cwd === undefined || cwd === '') {
+        // 无 cwd：无法归属项目宫殿，只能进私人宫殿，故关掉逐条 scope 判定。
+        return { header, events, turns, openStore: deps.openUserStore, routing: { writeScope: 'user', perCandidateScope: false } }
+      }
+      const projectCwd = cwd
+      return {
+        header,
+        events,
+        turns,
+        openStore: () => deps.resolveStore(projectCwd),
+        // 有 cwd：默认项目宫殿，模型判为跨项目通用（个人偏好等）的条目落私人宫殿。
+        routing: ingestWriteRouting(projectCwd, deps.resolveStore, deps.openUserStore),
+      }
     }))
     loaded.push(...settled)
   }
@@ -308,17 +307,15 @@ export async function estimateHistoryBackfill(
     return { rules, candidates: 0, eligibleTurns: 0, pendingTurns: 0, alreadyIngested: 0, skipped: { subagent: 0, seeded: 0, noCwd: 0, tooOld: 0, unreadable: 0 }, truncated: false, unavailable: UNAVAILABLE_REASON }
   }
   const { candidates, skipped, truncated } = await selectSessions(deps, rules)
+  const auditStore = await deps.resolveExistingUserStore()
   let eligibleTurns = 0
   let alreadyIngested = 0
   for (const candidate of candidates) {
     eligibleTurns += candidate.turns.length
-    // 只查「已存在」的库：从未用过的项目 cwd 不因估算而产生空库文件。
-    const store = candidate.writeScope === 'user'
-      ? await deps.resolveExistingUserStore()
-      : await deps.resolveExistingStore(candidate.storeKey)
-    if (store === undefined) continue
+    // 幂等键固定在 user 库（与写入落哪个宫殿无关）：只查已存在的库，不因估算产生空库文件。
+    if (auditStore === undefined) continue
     for (const turn of candidate.turns) {
-      if (await store.hasAudit(INGEST_DONE_OP, encodeTurnKey(candidate.header.id, turn))) alreadyIngested += 1
+      if (await auditStore.hasAudit(INGEST_DONE_OP, encodeTurnKey(candidate.header.id, turn))) alreadyIngested += 1
     }
   }
   return {
@@ -392,6 +389,9 @@ export async function runHistoryBackfill(
           turn,
           slice: turn,
           openStore: () => candidate.openStore(),
+          // 幂等/审计键固定在 user 库：实时路径与回填共用同一份 (会话,轮次) 键，跨路径不重复摄取。
+          openAuditStore: deps.openUserStore,
+          ...candidate.routing,
           embedder: deps.embedder,
           mode: deps.mode,
           routeOverride,
@@ -401,7 +401,6 @@ export async function runHistoryBackfill(
           // 历史轮次同样节流（省调用），且写入不进入复习调度。
           throttle: true,
           history: true,
-          writeScope: candidate.writeScope,
         })
         progress.memoriesWritten += outcome.written
         if (outcome.skipped !== null) {

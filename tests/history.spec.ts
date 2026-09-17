@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ResolvedHistoryRules } from '../src/config.ts'
 import { estimateHistoryBackfill, mergeHistoryRules, runHistoryBackfill } from '../src/ingest/history.ts'
 import type { HistoryBackfillDeps, HistoryLogSource } from '../src/ingest/history.ts'
+import { INGEST_DONE_OP, encodeTurnKey } from '../src/ingest/hook.ts'
 import { openEngramStore } from '../src/store/sqlite.ts'
 import type { EngramStore } from '../src/store/interface.ts'
 
@@ -80,12 +81,11 @@ function makeSource(fixtures: readonly SessionFixture[]): HistoryLogSource {
   }
 }
 
-/** 依赖装配：按 cwd 路由到不同分库（user 键为无 cwd 会话的落点）。 */
+/** 依赖装配：按 cwd 路由到不同分库（user 库既是无 cwd 会话的落点，也是幂等/审计键所在库）。 */
 function makeDeps(source: HistoryLogSource | undefined, calls: { count: number; routes?: { provider: string; model: string }[] }): HistoryBackfillDeps {
   return {
     source,
     resolveStore: cwd => storeFor(cwd),
-    resolveExistingStore: async cwd => stores.get(cwd),
     openUserStore: () => storeFor('user'),
     resolveExistingUserStore: async () => stores.get('user'),
     embedder: Promise.resolve(undefined),
@@ -230,6 +230,29 @@ describe('runHistoryBackfill', () => {
     expect(await beta.topActive('project', 10)).toHaveLength(1)
     // 进度回调被调用（含结束态）。
     expect(progress.length).toBeGreaterThan(0)
+    // 幂等键固定在 user 库：与实时路径共用一份 (会话,轮次) 键，跨路径不重复摄取。
+    const userStore = await storeFor('user')
+    expect(await userStore.hasAudit(INGEST_DONE_OP, encodeTurnKey('a', 1))).toBe(true)
+    expect(await alpha.hasAudit(INGEST_DONE_OP, encodeTurnKey('a', 1))).toBe(false)
+  })
+
+  it('回填同样采纳模型的逐条 scope：跨项目通用的个人偏好落私人宫殿', async () => {
+    const source = makeSource([{ id: 'a', createdAt: NOW - 1000, cwd: '/repo/alpha', turns: [1] }])
+    const deps = {
+      ...makeDeps(source, { count: 0 }),
+      now: () => NOW,
+      call: async () => JSON.stringify([
+        { kind: 'decision', content: '项目约定：发布前跑全量测试', scope: 'project', importance: 0.7 },
+        { kind: 'preference', content: '用户偏好简体中文回复', scope: 'user', importance: 0.8 },
+      ]),
+    }
+    const result = await runHistoryBackfill(deps, DEFAULTS, {}, () => undefined, new AbortController().signal)
+    expect(result.memoriesWritten).toBe(2)
+    // project 落会话 cwd 的项目库，user 落私人库。
+    const alpha = await storeFor('/repo/alpha')
+    expect((await alpha.topActive('project', 10)).map(record => record.content)).toEqual(['项目约定：发布前跑全量测试'])
+    const userStore = await storeFor('user')
+    expect((await userStore.topActive('user', 10)).map(record => record.content)).toContain('用户偏好简体中文回复')
   })
 
   it('回填的条目不进 SM-2 复习队列（否则一次性回填会淹没今日待回忆）', async () => {
