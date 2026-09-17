@@ -200,6 +200,12 @@ pnpm bundle
 - **矛盾候选无 LLM 判定** —— 写入时仅按向量相似度（≥0.88）报告候选并建边，语义矛盾的确认留给模型/用户裁决与蒸馏。
 - **嵌入器降级期间的记忆无向量** —— 模型未就绪时写入的记忆不参与语义道；语义上线后跑一次 `pnpm backfill` 补算存量向量（`pnpm build` 的模型缓存就绪后执行，可经 `HF_ENDPOINT` 配镜像）。
 
+## 致谢
+
+感谢社区贡献者让这个项目更好：
+
+- **[@lujfsd](https://github.com/lujfsd)（路杰锋）** —— [PR #2](https://github.com/kenz1117/dsh-engram/pull/2)：适配新版 dsh 的 `sessionPersistence` 只读句柄（新版已移除 `load()`）、摄取逐条判宫殿（提炼输出新增 `scope`）、项目宫殿随工作区切换（`GET /api/engram/workspaces` + 面板工作区选择器），并把无 git 时的分库命名从「cwd 前 12 字符」改为 cwd 全量 sha256（修掉同前缀目录撞库）。随 PR 附 17 条测试与两份设计文档。
+
 ## 许可证
 
 [MIT](LICENSE) © 2026 KenZ (kenz1117)
