@@ -88,7 +88,6 @@ export type EngramKey =
   | 'tabLibraryCount'
   | 'roomsTitle'
   | 'roomsHint'
-  | 'reviewQueueHint'
   | 'healthEvaluatedAt'
   | 'logFilterAll'
   | 'logFilterWrite'
@@ -195,16 +194,8 @@ export type EngramKey =
   | 'refurbMergeDone'
   | 'refurbActionFailed'
   | 'refurbMergeEmpty'
-  | 'reviewQueueTitle'
-  | 'reviewQueueEmpty'
-  | 'reviewReveal'
-  | 'reviewGradeRemember'
-  | 'reviewGradeVague'
-  | 'reviewGradeForgot'
-  | 'reviewOverdue'
-  | 'reviewDueToday'
-  | 'reviewNoPlacard'
-  | 'reviewScheduled'
+  | 'heroDue'
+  | 'filterDueToday'
   | 'sortTime'
   | 'sortTour'
   | 'dueBadgeLabel'
@@ -348,7 +339,6 @@ export const zh: Record<EngramKey, string> = {
   tabLibraryCount: '{n} 条',
   roomsTitle: '房间目录',
   roomsHint: '每间满 9 个桩位后开新间',
-  reviewQueueHint: '只给线索：先在脑中复述，再揭示核对',
   healthEvaluatedAt: '诊脉于 {time}',
   logFilterAll: '全部',
   logFilterWrite: '落成类',
@@ -450,19 +440,11 @@ export const zh: Record<EngramKey, string> = {
   refurbMergeDone: '合并任务已派发',
   refurbActionFailed: '执行失败：{msg}',
   refurbMergeEmpty: '无可合并的候选条目',
-  reviewQueueTitle: '今日待回忆',
-  reviewQueueEmpty: '今日无到期记忆，宫殿节奏良好',
-  reviewReveal: '揭示铭牌',
-  reviewGradeRemember: '记得',
-  reviewGradeVague: '模糊',
-  reviewGradeForgot: '忘了',
-  reviewOverdue: '逾期 {n} 天',
-  reviewDueToday: '今日到期',
-  reviewNoPlacard: '（无门牌）',
-  reviewScheduled: '已排入 {n} 天后再回忆',
+  heroDue: '今日到期',
+  filterDueToday: '今日到期',
   sortTime: '按时间',
   sortTour: '按巡游路线',
-  dueBadgeLabel: '今日待回忆 {n} 段，点击前往',
+  dueBadgeLabel: '今日到期 {n} 条，点击在陈展中筛选',
   tabBackfill: '历史回填',
   backfillIntro: '把 dsh 的历史会话逐轮提炼进宫殿：每条会话写进它自己 cwd 对应的项目库；已摄取过的轮次按幂等键自动跳过，中断后再次开始即可续做。回填的条目不会进入今日复习队列。',
   backfillRulesTitle: '导入规则',
@@ -595,7 +577,6 @@ export const en: Record<EngramKey, string> = {
   tabLibraryCount: '{n} memories',
   roomsTitle: 'Room directory',
   roomsHint: 'A new room opens once 9 slots fill',
-  reviewQueueHint: 'Cues only: recall first, then reveal to check',
   healthEvaluatedAt: 'Scored {time}',
   logFilterAll: 'All',
   logFilterWrite: 'Writes',
@@ -697,19 +678,11 @@ export const en: Record<EngramKey, string> = {
   refurbMergeDone: 'Merge dispatched',
   refurbActionFailed: 'Action failed: {msg}',
   refurbMergeEmpty: 'No merge candidates',
-  reviewQueueTitle: 'Due today',
-  reviewQueueEmpty: 'Nothing due today — palace rhythm is healthy',
-  reviewReveal: 'Reveal placard',
-  reviewGradeRemember: 'Remembered',
-  reviewGradeVague: 'Hazy',
-  reviewGradeForgot: 'Forgot',
-  reviewOverdue: '{n}d overdue',
-  reviewDueToday: 'due today',
-  reviewNoPlacard: '(no placard)',
-  reviewScheduled: 'Scheduled again in {n}d',
+  heroDue: 'Due today',
+  filterDueToday: 'Due today',
   sortTime: 'By time',
   sortTour: 'By tour route',
-  dueBadgeLabel: '{n} due for review — click to open',
+  dueBadgeLabel: '{n} due today — click to filter in the library',
   tabBackfill: 'History backfill',
   backfillIntro: 'Distils past dsh sessions into the palace, turn by turn: each session is written into the project store matching its own cwd. Turns already captured are skipped by idempotency key, so starting again resumes where it stopped. Backfilled memories never enter the due-today queue.',
   backfillRulesTitle: 'Import rules',

@@ -863,100 +863,6 @@ function LogPanel({ t, telemetry, project }: {
   )
 }
 
-/** review-due API 的行结构（只给线索：坐标/门牌/逾期天数，不给正文——检索练习的刻意设计）。 */
-interface ReviewDueItem {
-  readonly id: string
-  readonly kind: string
-  readonly slot?: { readonly room: string; readonly index: number }
-  readonly caption: string | null
-  readonly nextReviewAt: number | null
-  readonly overdueDays: number
-  readonly reps: number
-}
-
-/** 今日待回忆：检索练习卡片。线索先行 → 揭示正文 → 三档自评（记得/模糊/忘了 → SM-2 grade 5/3/1）推进调度。
- *  onAnswered 供 Header 角标同步递减。 */
-function ReviewQueueCard({ t, scope, project, toast, onAnswered }: {
-  t: T
-  scope: 'user' | 'project' | 'shared'
-  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
-  project: string | null
-  toast: ToastController
-  onAnswered: () => void
-}): React.ReactElement {
-  const [items, setItems] = useState<ReviewDueItem[] | null>(null)
-  /** 已揭示的条目正文（id → content）。 */
-  const [revealed, setRevealed] = useState<Readonly<Record<string, string>>>({})
-  const [busyId, setBusyId] = useState<string | null>(null)
-  const reload = useCallback(() => {
-    api<{ items: ReviewDueItem[] }>(`review-due?scope=${scope}`)
-      .then(data => { setItems(data.items); setRevealed({}) })
-      .catch((error: Error) => { toast.push('error', error.message); setItems([]) })
-  }, [scope, project, toast])
-  useEffect(() => { reload() }, [reload])
-  /** 揭示：拉完整正文（复用 review 路由），用户核对回忆是否准确。 */
-  const reveal = (id: string): void => {
-    setBusyId(id)
-    api<ReviewView>(`review?scope=${scope}&id=${encodeURIComponent(id)}`)
-      .then(view => { setRevealed(current => ({ ...current, [id]: view.record.content })) })
-      .catch((error: Error) => { toast.push('error', error.message) })
-      .finally(() => { setBusyId(null) })
-  }
-  /** 自评：提交 grade 并把该条移出今日队列。 */
-  const answer = (item: ReviewDueItem, grade: 1 | 3 | 5): void => {
-    setBusyId(item.id)
-    api<{ review: { nextReviewAt: number | null; intervalDays: number } | null }>('review-answer', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: item.id, scope, grade }),
-    })
-      .then(result => {
-        setItems(current => current?.filter(row => row.id !== item.id) ?? null)
-        const days = result.review?.intervalDays ?? 1
-        toast.push('success', t('reviewScheduled', { n: days }))
-        onAnswered()
-      })
-      .catch((error: Error) => { toast.push('error', error.message) })
-      .finally(() => { setBusyId(null) })
-  }
-  if (items === null) return <div className={styles.expandLoading}>{t('loading')}</div>
-  if (items.length === 0) return <div className={styles.expandLoading}>{t('reviewQueueEmpty')}</div>
-  return (
-    <ul className={styles.reviewQueue}>
-      {items.map(item => (
-        <li key={item.id} className={styles.reviewItem}>
-          <div className={styles.reviewCue}>
-            <span className={roomPillClass(item.kind)}>{kindLabel(t, item.kind)}</span>
-            {item.slot !== undefined && <span className={styles.reviewSlot}>{item.slot.room}#{item.slot.index}</span>}
-            <span className={styles.reviewCaption}>{item.caption ?? t('reviewNoPlacard')}</span>
-            <span className={styles.reviewOverdue}>
-              {item.overdueDays > 0 ? t('reviewOverdue', { n: item.overdueDays }) : t('reviewDueToday')}
-            </span>
-          </div>
-          {revealed[item.id] === undefined
-            ? (
-              <button type="button" className={styles.button} disabled={busyId === item.id}
-                onClick={() => { reveal(item.id) }}>{t('reviewReveal')}</button>
-            )
-            : (
-              <>
-                <div className={styles.reviewContent}>{revealed[item.id]}</div>
-                <div className={styles.reviewGrades}>
-                  <button type="button" className={`${styles.button} ${styles.primary}`} disabled={busyId === item.id}
-                    onClick={() => { answer(item, 5) }}>{t('reviewGradeRemember')}</button>
-                  <button type="button" className={styles.button} disabled={busyId === item.id}
-                    onClick={() => { answer(item, 3) }}>{t('reviewGradeVague')}</button>
-                  <button type="button" className={styles.button} disabled={busyId === item.id}
-                    onClick={() => { answer(item, 1) }}>{t('reviewGradeForgot')}</button>
-                </div>
-              </>
-            )}
-        </li>
-      ))}
-    </ul>
-  )
-}
-
 /** 入殿导航：根据当前 scope 的 active 记忆给出开场邀请 + 候选记忆列表；点击可展开抽屉。
  *  顶部 kind chip（全部 / fact / preference / decision / episode / skill）切换 focusKind，
  *  触发后端按该 kind 优先选前 N 条作为开场建议。 */
@@ -1265,7 +1171,7 @@ function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string
  * 今日速览：三个主指标（记忆 / 开放 / 清晰度）+ 近 7 天三个次级计数 + 健康分环。
  * 取代原先常驻的九格日报条——主次分层，其余计数下沉到「管家日志」tab。
  */
-function TodayHero({ t, overview }: { t: T; overview: ReturnType<typeof usePalaceOverview> }): React.ReactElement {
+function TodayHero({ t, overview, dueCount }: { t: T; overview: ReturnType<typeof usePalaceOverview>; dueCount: number }): React.ReactElement {
   const { stats, telemetry, health, failed } = overview
   if (failed !== null) {
     return <section className={styles.panelCard}><div className={styles.expandLoading}>{t('teleFailed')}：{failed}</div></section>
@@ -1289,6 +1195,8 @@ function TodayHero({ t, overview }: { t: T; overview: ReturnType<typeof usePalac
           <Metric label={t('teleWrites')} value={counts.writes} secondary />
           <Metric label={t('teleIngest')} value={counts.ingestRequests} secondary />
           <Metric label={t('teleConsolidate')} value={counts.consolidations} secondary />
+          {/* 今日到期：复习调度的消费者是 agent，这里只给观测计数（角标/陈展筛选可达）。 */}
+          <Metric label={t('heroDue')} value={dueCount} secondary />
           <HealthRing score={health?.overall ?? 0} />
         </div>
       </div>
@@ -1683,8 +1591,11 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
   const [q, setQ] = usePersistedString('library.q', '')
   /** 陈展列表排序（持久化）：time = 开馆时间倒序；tour = 固定巡游路线桩位顺序。 */
   const [sort, setSort] = usePersistedState<'time' | 'tour'>('library.sort', 'time', ['time', 'tour'])
-  /** 今日待回忆条数（Header 角标）：与今日视图的待回忆卡同源。 */
+  /** 今日到期条数与 id 集合（Header 角标 + 陈展「今日到期」筛选共用同一次拉取）。 */
   const [dueCount, setDueCount] = useState(0)
+  const [dueIds, setDueIds] = useState<ReadonlySet<string>>(new Set())
+  /** 陈展「今日到期」筛选：只显示复习调度今天到期的条目。 */
+  const [dueOnly, setDueOnly] = useState(false)
   /** 脱敏筛选已合并到顶部 KPI 与 tag 视觉，不再作为过滤器。 */
   const [redacted] = useState('all')
   const [offset, setOffset] = useState(0)
@@ -1757,20 +1668,21 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
     if (projectMode === 'follow') healingRef.current = false
   }, [projectMode])
 
-  /** 刷新 Header 角标计数（本地回环毫秒级；失败静默归零，不打断面板）。 */
+  /** 刷新今日到期计数与 id 集合（本地回环毫秒级；失败静默归零，不打断面板）。 */
   const refreshDue = useCallback((): void => {
-    api<{ items: unknown[] }>(`review-due?scope=${scope}&limit=50`)
-      .then(data => { setDueCount(data.items.length) })
-      .catch(() => { setDueCount(0) })
+    api<{ items: readonly { id: string }[] }>(`review-due?scope=${scope}&limit=50`)
+      .then(data => {
+        setDueCount(data.items.length)
+        setDueIds(new Set(data.items.map(item => item.id)))
+      })
+      .catch(() => { setDueCount(0); setDueIds(new Set()) })
   }, [scope, projectSelector])
   useEffect(() => { refreshDue() }, [refreshDue])
 
-  /** 角标点击：切到今日速览并滚到今日待回忆卡（待 tab 切换渲染完成后再滚）。 */
+  /** 角标点击：切到宫殿陈展并启用「今日到期」筛选（复习调度的消费者是 agent，面板只做观测）。 */
   const goToDue = (): void => {
-    setActiveTab('today')
-    requestAnimationFrame(() => {
-      document.getElementById('engram-review-due')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-    })
+    setActiveTab('library')
+    setDueOnly(true)
   }
 
   /** 打开详情抽屉：陈展列表已有该行时复用真实行，只有 id 的列表用最小占位行（抽屉自行拉 review）。 */
@@ -1824,7 +1736,9 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
       : { kind: expandKind, record })
   }
 
-  const pageRecords = list?.records ?? []
+  const allRecords = list?.records ?? []
+  // 「今日到期」筛选是页内视图过滤（复习调度今天到期的 id 白名单）；分页仍按库内全量计算。
+  const pageRecords = dueOnly ? allRecords.filter(record => dueIds.has(record.id)) : allRecords
   const selectedRecords = pageRecords.filter(record => selected.has(record.id))
   const forgetable = selectedRecords.filter(record => record.status === 'active').length
   const restorable = selectedRecords.length - forgetable
@@ -2017,6 +1931,14 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
                 </button>
               ))}
             </div>
+            {/* 今日到期：复习调度今天到期的条目（消费者是 agent，这里只做观测筛选）。 */}
+            <div className={styles.segGroup}>
+              <button type="button" aria-pressed={dueOnly}
+                className={dueOnly ? `${styles.segItem} ${styles.on}` : styles.segItem}
+                onClick={() => { setDueOnly(!dueOnly); setOffset(0); setExpanded(null); clearSelection() }}>
+                {t('filterDueToday')}
+              </button>
+            </div>
             <div className={styles.segGroup}>
               {([['time', t('sortTime')], ['tour', t('sortTour')]] as const).map(([value, label]) => (
                 <button key={value} type="button"
@@ -2071,16 +1993,16 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
               ))}
             </div>
           )}
-          {error === null && list !== null && list.records.length === 0 && (
+          {error === null && list !== null && pageRecords.length === 0 && (
             <div className={styles.empty}>
               <b>{t('empty')}</b>
               <span>{t('emptyHint')}</span>
             </div>
           )}
 
-          {(list?.records ?? []).length > 0 && (
+          {pageRecords.length > 0 && (
             <div className={styles.itemList}>
-              {(list?.records ?? []).map((record, index) => (
+              {pageRecords.map((record, index) => (
                 <div key={record.id}
                   className={selected.has(record.id) ? `${styles.item} ${styles.selected}` : styles.item}
                   style={{ animationDelay: `${String(Math.min(index, 12) * 36)}ms` }}>
@@ -2143,9 +2065,10 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
       {activeTab === 'today' && (
         <div className={styles.tabPanel}>
           {/* 今日速览：主指标 + 健康环，替代原常驻日报条。 */}
-          <TodayHero t={t} overview={overview} />
+          <TodayHero t={t} overview={overview} dueCount={dueCount} />
           <div className={styles.layout}>
-            {/* 左：入殿导航（进宫的入口）；右：房间目录 + 今日待回忆 + 翻新清单（要看的与要做的）。 */}
+            {/* 左：入殿导航（进宫的入口）；右：房间目录 + 翻新清单（要看的与要做的）。
+                今日到期不再单独成卡：消费者是 agent（review 工具链），面板只在速览条显示计数、在陈展提供筛选。 */}
             <div className={styles.mainCol}>
               <section className={styles.section}>
                 <div className={styles.sectionHead}>
@@ -2164,15 +2087,6 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
                 </div>
                 <div className={styles.panelCard}>
                   <RoomDirectory t={t} byKind={overview.byKind} />
-                </div>
-              </section>
-              <section className={styles.section} id="engram-review-due">
-                <div className={styles.sectionHead}>
-                  <h4 className={styles.sectionTitle}>{t('reviewQueueTitle')}</h4>
-                  <span className={styles.sectionHint}>{t('reviewQueueHint')}</span>
-                </div>
-                <div className={styles.panelCard}>
-                  <ReviewQueueCard t={t} scope={scope} project={projectSelector} toast={toast} onAnswered={refreshDue} />
                 </div>
               </section>
               <section className={styles.section}>
