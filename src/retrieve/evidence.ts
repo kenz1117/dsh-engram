@@ -33,6 +33,25 @@ export interface EvidenceBatch {
   readonly refs: ReadonlySet<string>
   /** 注册时间。 */
   readonly createdAt: number
+  /** 代码校验后的判定结果；undefined = 尚未判定。 */
+  verdict?: AssessVerdict
+}
+
+/** 连续不足判定达到该次数时，收尾提醒附「换检索方式」建议。 */
+export const INSUFFICIENT_HINT_THRESHOLD = 2
+
+/**
+ * 构造证据门收尾提醒（agent 面向文本，英文与检索工具输出一致）。
+ * @param pendingCount - 尚未判定的批次数。
+ * @param insufficientStreak - 连续不足判定次数。
+ * @returns 提醒文本；无待判定批次返回 undefined（不需要提醒）。
+ */
+export function buildAssessReminder(pendingCount: number, insufficientStreak: number): string | undefined {
+  if (pendingCount <= 0) return undefined
+  const base = `Evidence gate: ${pendingCount} search batch(es) from this conversation have not been assessed. `
+    + 'Before answering, call engram_assess with the batchId and your evidence refs — or briefly state why assessment is not needed.'
+  if (insufficientStreak < INSUFFICIENT_HINT_THRESHOLD) return base
+  return `${base} Multiple insufficient verdicts in a row — try a different room (engram_search room=), engram_timeline, or ask the user for the missing details.`
 }
 
 /** 模型提交的判定请求（字段值尚未校验）。 */
@@ -92,6 +111,9 @@ export function evidenceRefOf(scope: string, id: string, slot: Slot | undefined)
 export class EvidenceBatches {
   private readonly bySession = new Map<string, Map<string, EvidenceBatch>>()
 
+  /** 每会话连续不足判定的次数（sufficient 判定即清零；提醒据此升级措辞）。 */
+  private readonly insufficientStreaks = new Map<string, number>()
+
   private counter = 0
 
   /**
@@ -126,11 +148,44 @@ export class EvidenceBatches {
   }
 
   /**
-   * 清理会话的全部批次（会话销毁时调用，避免长驻进程累积）。
+   * 记录批次判定结果，并维护连续不足计数（sufficient 清零）。
+   * @param sessionId - 会话标识。
+   * @param batchId - 批次 id。
+   * @param verdict - 代码校验后的判定结果。
+   */
+  recordVerdict(sessionId: string, batchId: string, verdict: AssessVerdict): void {
+    const batch = this.get(sessionId, batchId)
+    if (batch === undefined) return
+    batch.verdict = verdict
+    const streak = this.insufficientStreaks.get(sessionId) ?? 0
+    this.insufficientStreaks.set(sessionId, verdict.sufficient ? 0 : streak + 1)
+  }
+
+  /**
+   * 会话内尚未判定的批次（注册顺序，最旧在前）。
+   * @param sessionId - 会话标识。
+   */
+  pendingBatches(sessionId: string): readonly EvidenceBatch[] {
+    const batches = this.bySession.get(sessionId)
+    if (batches === undefined) return []
+    return [...batches.values()].filter(batch => batch.verdict === undefined)
+  }
+
+  /**
+   * 连续不足判定次数（sufficient 判定清零；未判定批次不影响计数）。
+   * @param sessionId - 会话标识。
+   */
+  insufficientStreak(sessionId: string): number {
+    return this.insufficientStreaks.get(sessionId) ?? 0
+  }
+
+  /**
+   * 清理会话的全部批次与判定计数（会话销毁时调用，避免长驻进程累积）。
    * @param sessionId - 会话标识。
    */
   clear(sessionId: string): void {
     this.bySession.delete(sessionId)
+    this.insufficientStreaks.delete(sessionId)
   }
 }
 

@@ -107,6 +107,25 @@ describe('redactSecrets', () => {
     expect(redactSecrets('api_key: "sk-abc"')).toBe('api_key=[REDACTED:secret-value]')
   })
 
+  it('脱敏中文密码赋值（值限定非中文串）', () => {
+    expect(redactSecrets('我的密码是 Tr0ub4dor&3')).toBe('我的密码=[REDACTED:password]')
+    expect(redactSecrets('口令: admin1!')).toBe('口令=[REDACTED:password]')
+    // 叙述句不是赋值，不误伤。
+    expect(redactSecrets('密码不能是中文')).toBe('密码不能是中文')
+    expect(redactSecrets('密码忘了，帮我重置')).toBe('密码忘了，帮我重置')
+  })
+
+  it('脱敏中国大陆手机号（长数字串片段不命中）', () => {
+    expect(redactSecrets('联系电话 13812345678，发我短信')).toBe('联系电话 [REDACTED:phone]，发我短信')
+    expect(redactSecrets('订单号 9138123456781 不是手机号')).toBe('订单号 9138123456781 不是手机号')
+  })
+
+  it('脱敏 18 位身份证号（结构不符不命中）', () => {
+    expect(redactSecrets('身份证 110101199003074512 就不贴了')).toBe('身份证 [REDACTED:id-number] 就不贴了')
+    // 月份 13 结构非法，不命中。
+    expect(redactSecrets('编号 110101199013074519 保持原样')).toBe('编号 110101199013074519 保持原样')
+  })
+
   it('普通文本不受影响', () => {
     expect(redactSecrets('部署在 4000 端口，喜欢深色主题')).toBe('部署在 4000 端口，喜欢深色主题')
   })

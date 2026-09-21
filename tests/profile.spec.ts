@@ -64,8 +64,40 @@ describe('renderProfile 预算装填', () => {
     const records = Array.from({ length: 5 }, (_, index) => record(`id-${index}`, 'fact', '中'.repeat(200)))
     const text = renderProfile(records, 1024)
     expect(estimateTokens(text)).toBeLessThanOrEqual(1024)
-    // 200 汉字 = 300 token，1024 预算装不下 5 条，必然出现索引行或计数行。
-    expect(text).toMatch(/#id-|more; use engram_search/)
+    // 分级递减：5 条全部截断装入（首条 160 字），不再需要索引行/计数行。
+    expect(text.match(/^- \[fact\]/gm)).toHaveLength(5)
+    expect(text).toContain('中'.repeat(160) + '…')
+    expect(text).not.toContain('中'.repeat(161))
+  })
+})
+
+describe('分级递减正文预算', () => {
+  it('第 i 条预算 = max(floor, start×decay^i)：长条目按位次截断', () => {
+    const records = [record('a', 'fact', '甲'.repeat(200)), record('b', 'fact', '乙'.repeat(200))]
+    const detailed = renderProfileDetailed(records, 8192, { start: 160, decay: 0.9, floor: 24 })
+    const lines = detailed.text.split('\n').filter(line => line.startsWith('- ['))
+    expect(lines[0]).toContain('甲'.repeat(160) + '…')
+    expect(lines[1]).toContain('乙'.repeat(144) + '…')
+    expect(detailed.overflow).toEqual([])
+  })
+
+  it('预算触及下限后恒为 floor（0.9^18 后 160 递减到 24）', () => {
+    const records = [
+      record('a', 'fact', '甲'.repeat(200)),
+      ...Array.from({ length: 25 }, (_, index) => record(`r-${index}`, 'fact', '丙'.repeat(200))),
+    ]
+    const detailed = renderProfileDetailed(records, 8192, { start: 160, decay: 0.9, floor: 24 })
+    const lines = detailed.text.split('\n').filter(line => line.startsWith('- ['))
+    expect(lines[0]).toContain('甲'.repeat(160) + '…')
+    const floorLine = lines.at(-1)!
+    expect(floorLine).toContain('丙'.repeat(24) + '…')
+    expect(floorLine).not.toContain('丙'.repeat(25))
+  })
+
+  it('短条目不截断', () => {
+    const detailed = renderProfileDetailed([record('s', 'fact', '很短')], 1024, { start: 160, decay: 0.9, floor: 24 })
+    expect(detailed.text).toContain('- [fact] 很短')
+    expect(detailed.text).not.toContain('…')
   })
 })
 

@@ -32,4 +32,13 @@ export function redactSecrets(text: string): string {
       /\b(password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|auth[_-]?token)\b\s*[=:]\s*("[^"\n]*"|'[^'\n]*'|[^'",;\s)\]}]+)/gi,
       (_match, key: string) => `${key}=${redacted('secret-value')}`,
     )
+    // 中文密码赋值：密码/口令 后跟非中文连续值（值限定非中文串，「密码不能是中文」这类句子不会误伤）。
+    .replace(
+      /(密码|口令)[是为:：\s]{0,3}([A-Za-z0-9!@#$%^&*()_+=\[\]{}<>/?\\|`~.-]{4,})/g,
+      (_match, key: string) => `${key}=${redacted('password')}`,
+    )
+    // 中国大陆手机号：1[3-9] 开头 11 位；前后紧邻数字（更长数字串的片段）不命中。
+    .replace(/(?<!\d)1[3-9]\d{9}(?!\d)/g, redacted('phone'))
+    // 中国大陆居民身份证 18 位：区划 + 出生日期 + 顺序码 + 校验位；结构不符（如 13 月）不命中。
+    .replace(/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, redacted('id-number'))
 }

@@ -37,8 +37,16 @@ export interface EngramConfig {
   decayAfterDays?: number
   /** 衰减：importance 低于该值才可能被归档；默认 0.3。 */
   decayImportanceBelow?: number
-  /** 画像注入的 token 预算（估算 ceil(len/4)，超预算条目降级为索引行）；默认 1024。 */
+  /** 画像注入的 token 预算（估算 ceil(len/4)）；默认 1024。 */
   injectTokenBudget?: number
+  /** 画像分级递减预算：首条正文字符数；默认 160。 */
+  injectItemBudgetStart?: number
+  /** 画像分级递减预算：逐条递减系数（0.5-1）；默认 0.9。 */
+  injectItemBudgetDecay?: number
+  /** 画像分级递减预算：单条正文字符下限；默认 24。 */
+  injectItemBudgetFloor?: number
+  /** 证据门收尾提醒：会话存在未判定检索批次时在下一步开始前注入提醒；默认 true。 */
+  assessReminder?: boolean
   /** 检索排序 recency 因子权重（0 关闭）；默认 0.2。 */
   rankRecencyWeight?: number
   /** 检索排序 proof 因子权重（0 关闭）；默认 0.1。 */
@@ -93,6 +101,10 @@ export interface ResolvedEngramConfig {
   readonly decayAfterDays: number
   readonly decayImportanceBelow: number
   readonly injectTokenBudget: number
+  readonly injectItemBudgetStart: number
+  readonly injectItemBudgetDecay: number
+  readonly injectItemBudgetFloor: number
+  readonly assessReminder: boolean
   readonly rankRecencyWeight: number
   readonly rankProofWeight: number
   readonly queryRewrite: boolean
@@ -106,8 +118,9 @@ export interface ResolvedEngramConfig {
 const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'legacyMigration', 'dbDir', 'injectProfile', 'profileTopN', 'modelCacheDir', 'hfEndpoint',
   'ingest', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
-  'injectTokenBudget', 'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
-  'autoSlot', 'reviewScheduling',
+  'injectTokenBudget', 'injectItemBudgetStart', 'injectItemBudgetDecay', 'injectItemBudgetFloor',
+  'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
+  'autoSlot', 'reviewScheduling', 'assessReminder',
   'historyBackfillDays', 'historyBackfillMaxTurnsPerSession', 'historyBackfillMaxTotalTurns',
   'historyBackfillIncludeSubagents', 'historyBackfillIncludeSeeded', 'historyBackfillIncludeNoCwd',
 ])
@@ -128,11 +141,15 @@ export const Config: z<EngramConfig> = z.object({
   decayAfterDays: z.number().step(1).min(1).max(3650),
   decayImportanceBelow: z.number().min(0).max(1),
   injectTokenBudget: z.number().step(1).min(128).max(8192),
+  injectItemBudgetStart: z.number().step(1).min(40).max(2000),
+  injectItemBudgetDecay: z.number().min(0.5).max(1),
+  injectItemBudgetFloor: z.number().step(1).min(8).max(200),
   rankRecencyWeight: z.number().min(0).max(2),
   rankProofWeight: z.number().min(0).max(2),
   queryRewrite: z.boolean(),
   autoSlot: z.boolean(),
   reviewScheduling: z.boolean(),
+  assessReminder: z.boolean(),
   historyBackfillDays: z.number().step(1).min(0).max(3650),
   historyBackfillMaxTurnsPerSession: z.number().step(1).min(1).max(500),
   historyBackfillMaxTotalTurns: z.number().step(1).min(1).max(5000),
@@ -174,6 +191,24 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   if (config.injectTokenBudget !== undefined && (!Number.isInteger(config.injectTokenBudget) || config.injectTokenBudget < 128 || config.injectTokenBudget > 8192)) {
     throw new Error('dsh-engram: injectTokenBudget must be an integer in [128, 8192]')
   }
+  if (config.injectItemBudgetStart !== undefined
+    && (!Number.isInteger(config.injectItemBudgetStart) || config.injectItemBudgetStart < 40 || config.injectItemBudgetStart > 2000)) {
+    throw new Error('dsh-engram: injectItemBudgetStart must be an integer in [40, 2000]')
+  }
+  if (config.injectItemBudgetDecay !== undefined && (config.injectItemBudgetDecay < 0.5 || config.injectItemBudgetDecay > 1)) {
+    throw new Error('dsh-engram: injectItemBudgetDecay must be in [0.5, 1]')
+  }
+  if (config.injectItemBudgetFloor !== undefined
+    && (!Number.isInteger(config.injectItemBudgetFloor) || config.injectItemBudgetFloor < 8 || config.injectItemBudgetFloor > 200)) {
+    throw new Error('dsh-engram: injectItemBudgetFloor must be an integer in [8, 200]')
+  }
+  if (config.injectItemBudgetStart !== undefined && config.injectItemBudgetFloor !== undefined
+    && config.injectItemBudgetFloor > config.injectItemBudgetStart) {
+    throw new Error('dsh-engram: injectItemBudgetFloor must not exceed injectItemBudgetStart')
+  }
+  if (config.assessReminder !== undefined && typeof config.assessReminder !== 'boolean') {
+    throw new Error('dsh-engram: assessReminder must be a boolean')
+  }
   if (config.rankRecencyWeight !== undefined && (config.rankRecencyWeight < 0 || config.rankRecencyWeight > 2)) {
     throw new Error('dsh-engram: rankRecencyWeight must be in [0, 2]')
   }
@@ -204,6 +239,10 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     decayAfterDays: config.decayAfterDays ?? 30,
     decayImportanceBelow: config.decayImportanceBelow ?? 0.3,
     injectTokenBudget: config.injectTokenBudget ?? 1024,
+    injectItemBudgetStart: config.injectItemBudgetStart ?? 160,
+    injectItemBudgetDecay: config.injectItemBudgetDecay ?? 0.9,
+    injectItemBudgetFloor: config.injectItemBudgetFloor ?? 24,
+    assessReminder: config.assessReminder ?? true,
     rankRecencyWeight: config.rankRecencyWeight ?? 0.2,
     rankProofWeight: config.rankProofWeight ?? 0.1,
     queryRewrite: config.queryRewrite ?? true,

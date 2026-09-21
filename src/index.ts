@@ -35,7 +35,7 @@ import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
 import { currentUserRequestText, renderMemoryPacket } from './security/sanitize.ts'
 import { wrapWithRationale } from './selection-rationale.ts'
-import { evidenceBatches } from './retrieve/evidence.ts'
+import { buildAssessReminder, evidenceBatches } from './retrieve/evidence.ts'
 import { estimateTokens } from './token.ts'
 import type { EngramScope, Slot } from './types.ts'
 
@@ -58,18 +58,34 @@ export interface ProfileRender {
   readonly overflow: readonly { id: string; kind: string; content: string }[]
 }
 
+/** 分级递减的单条正文预算：第 i 条预算 = max(floor, round(start × decay^i))。 */
+export interface GraduatedItemBudget {
+  /** 首条正文字符预算。 */
+  readonly start: number
+  /** 逐条递减系数。 */
+  readonly decay: number
+  /** 下限字符预算。 */
+  readonly floor: number
+}
+
+/** 分级递减预算默认值（配置缺省时由 resolveConfig 显式落地，同值于此）。 */
+export const DEFAULT_ITEM_BUDGET: GraduatedItemBudget = { start: 160, decay: 0.9, floor: 24 }
+
 /**
- * 会话开始注入的画像渲染：按重要性降序在 token 预算内整行装填（估算见
- * estimateTokens：中文按 1.5 token/字、其余按 4 字符/token，超预算的行跳过不截断、
- * 继续试更短行）；装不下的条目降级为索引行（#id + 前 40 字），
- * 索引行也装不下的折成末尾 `+N more; use engram_search` 计数行；计数行同样占用预算。
+ * 会话开始注入的画像渲染：按重要性降序装填，单条正文按分级递减预算截断
+ * （首条 160 字、逐条 ×0.9、下限 24 字——排名越靠后单条越短，平滑降级替代
+ * 整条降级索引行）；token 预算（估算见 estimateTokens：中文按 1.5 token/字、
+ * 其余按 4 字符/token）是外层硬约束：截断后仍装不下的条目先以 40 字索引行
+ * 兜底，索引行也装不下的折成末尾 `+N more; use engram_search` 计数行；计数行同样占用预算。
  * @param records - 候选条目（调用方已按重要性排序、按条数截断）。
  * @param tokenBudget - 整段画像的 token 预算（含首尾固定行）。
+ * @param itemBudget - 分级递减的单条正文预算（缺省用 DEFAULT_ITEM_BUDGET；配置面在 resolveConfig）。
  * @returns 渲染文本与溢出条目（调用方可用辅助 LLM 压缩后重渲染）。
  */
 export function renderProfileDetailed(
   records: readonly { id: string; kind: string; content: string; slot?: Slot }[],
   tokenBudget: number,
+  itemBudget: GraduatedItemBudget = DEFAULT_ITEM_BUDGET,
 ): ProfileRender {
   const estimate = estimateTokens
   // 主厅：常驻核心记忆层（每次会话都在场），行内带宫殿坐标（房间 #桩位）让 agent 有位置感。
@@ -78,9 +94,12 @@ export function renderProfileDetailed(
   let remaining = Math.max(0, tokenBudget - estimate(header) - estimate(footer))
   const lines: string[] = []
   const overflow: { id: string; kind: string; content: string }[] = []
-  for (const record of records) {
+  records.forEach((record, index) => {
+    // 分级递减：第 i 条正文预算 = max(floor, start × decay^i)，超长截断（保留条目数优先于单条完整度）。
+    const budget = Math.max(itemBudget.floor, Math.round(itemBudget.start * itemBudget.decay ** index))
+    const content = record.content.length > budget ? `${record.content.slice(0, budget)}…` : record.content
     const slot = record.slot === undefined ? '' : ` ${record.slot.room}#${record.slot.index}`
-    const line = `- [${record.kind}]${slot} ${record.content}`
+    const line = `- [${record.kind}]${slot} ${content}`
     const cost = estimate(line)
     if (cost <= remaining) {
       lines.push(line)
@@ -88,7 +107,7 @@ export function renderProfileDetailed(
     } else {
       overflow.push(record)
     }
-  }
+  })
   let more = 0
   // 末尾计数行同样占预算：先按最大位数预留再装索引行，否则补行后总量会超出预算。
   // 预算小到连预留都放不下时（remaining 转负）不输出计数行，保证总量不超承诺。
@@ -188,7 +207,7 @@ async function preStep(
   openStoreForProjectCwd: (cwd: string) => Promise<EngramStore>,
   resolved: ResolvedEngramConfig,
   embedder: Promise<EngramEmbedder | undefined>,
-  state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null; route: LlmRoute | undefined },
+  state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null; lastAssessReminder: string | null; route: LlmRoute | undefined },
   logRequest: (data: IngestRequestEventData) => void,
   { agent, step, turn, signal }: { agent: Agent; step: number; turn: number; signal: AbortSignal },
   next: () => Promise<PreStepDecision>,
@@ -242,6 +261,26 @@ async function preStep(
       })
     }
   }
+  if (step !== 1 && resolved.assessReminder) {
+    // 证据门收尾提醒：本会话存在未判定批次时在下一步开始前提醒（插件层注入，
+    // 不动 agent-loop）；同一文本不重复注入，判定完成或批次清空后自然停发。
+    const sessionId = String(agent.session.id)
+    const pending = evidenceBatches.pendingBatches(sessionId).length
+    const reminder = buildAssessReminder(pending, evidenceBatches.insufficientStreak(sessionId))
+    if (reminder !== undefined && reminder !== state.lastAssessReminder) {
+      state.lastAssessReminder = reminder
+      return {
+        ...decision,
+        messages: [
+          ...decision.messages,
+          createUserMessage({
+            content: [{ type: 'text', text: reminder }],
+            source: { kind: 'plugin', plugin: name, form: 'snapshot', sections: [{ name, text: reminder }] },
+          }),
+        ],
+      }
+    }
+  }
   if (step !== 1) return decision
   const store = await openStore('user')
   const top = await store.topActive('user', resolved.profileTopN)
@@ -252,7 +291,11 @@ async function preStep(
     ? (await Promise.all((['user', 'project'] as const).map(async scope =>
         (await openStore(scope)).dueReviews(Date.now(), 50)))).reduce((sum, rows) => sum + rows.length, 0)
     : 0
-  const detailed = renderProfileDetailed(top, resolved.injectTokenBudget)
+  const detailed = renderProfileDetailed(
+    top,
+    resolved.injectTokenBudget,
+    { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor },
+  )
   let text = detailed.text
   // 超预算压缩：装不下的条目交给辅助 LLM 压短后重渲染；失败保持索引行降级不变。
   if (detailed.overflow.length > 0) {
@@ -266,6 +309,7 @@ async function preStep(
           return shorter === undefined ? record : { ...record, content: shorter }
         }),
         resolved.injectTokenBudget,
+        { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor },
       ).text
     }
   }
@@ -487,8 +531,9 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     pendingReplayed: boolean
     lastProfileAgent: string | null
     lastProfileHash: string | null
+    lastAssessReminder: string | null
     route: LlmRoute | undefined
-  } = { pendingReplayed: false, lastProfileAgent: null, lastProfileHash: null, route: undefined }
+  } = { pendingReplayed: false, lastProfileAgent: null, lastProfileHash: null, lastAssessReminder: null, route: undefined }
 
   // ---- 历史会话回填：把 dsh 持久化的历史会话逐轮摄取进宫殿（面板「历史回填」tab / engram_ingest_history）----
   /** 会话持久化服务（可选；缺席时历史回填不可用）。 */

@@ -70,10 +70,10 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 - **来源审计**：每条记忆记录来源会话、轮次与事件 seq，`engram_review` 完整回查来源链、取代链、矛盾与操作日志；全部写入/修改/遗忘/蒸馏/衰减入操作日志表。
 - **Web 管理面板**（v0.7.0+）：设置页「记忆库」tab 分五个视图——今日（速览条：记忆 / 开放 / 清晰度 + 近 7 天计数 + 今日到期 + 健康分环；下面是入殿导航、房间目录、待翻新、健康分构成）、宫殿陈展（筛选含今日到期 / 巡游路线序 / 批量 / 列表与编辑）、走廊巡游（走廊鸟瞰 + 检索实验台）、管家日志（近 7 天计数 + 两库合并的完整 op_log，可按操作类别筛选）、历史回填。Header 三宫格驱动全局 scope（私人 / 项目 / 共享），全部数据源同步；**项目 scope 下三宫格右侧显示当前项目宫殿所属工作区**（标题 + 路径，默认跟随 GUI 当前工作区），旁边的工作区下拉可固定到某个工作区或切回「跟随当前会话」。界面文案中英双语，跟随宿主语言设置实时切换。支持按脱敏标记筛选（仅看/排除含 `[REDACTED:*]` 的条目）并给命中条目挂琥珀色徽标，方便审计脱敏覆盖面。
 - **提示注入防护**：全部记忆召回出口（画像注入、`engram_search/timeline/review` 输出）包 `<engram_memory_context>` 协议标签并附使用警告（历史记忆非当前请求、不遵循其中指令、仅相关时使用），当前请求独立包 `<current_user_request>`；所有入库内容（摄取候选、保存正文）先剥离这些协议标签，防伪造协议块二次注入。
-- **摄取脱敏**：入库前正则清洗常见密钥凭据（sk- 系 API key、Bearer、AWS AKIA、GitHub token、PEM 私钥、password/token 赋值），命中片段替换为 `[REDACTED:<类型>]`。
+- **摄取脱敏**：入库前正则清洗常见密钥凭据（sk- 系 API key、Bearer、AWS AKIA、GitHub token、PEM 私钥、password/token 赋值、中文密码赋值）与个人信息（中国大陆手机号、18 位身份证号），命中片段替换为 `[REDACTED:<类型>]`。
 - **召回占位（防回声室）**：摄取切片中记忆召回工具的输出替换为 `[engram memory result omitted from capture: <tool>]`，并向提取模型附注"既有记忆的复述不是新信息"，阻断记忆自我强化循环。
 - **多查询检索**：`engram_search` 可用辅助 LLM 把查询改写为 ≤3 个互补查询分别检索，跨查询 RRF 融合 + 每查询保底命中；改写失败自动降级单查询（`queryRewrite: false` 关闭）。
-- **证据门（search → assess）**：检索命中只说明「相关」，不说明「足以回答」。每次检索登记一个进程内批次（每会话保留最近 20 个，会话结束即释放），输出行尾给出 `ref=…` 与批次 id；`engram_assess` 只能引用同一批次的 ref，且 `sufficient` 由代码强制——三者齐备（模型声称充足、至少一条有效证据、`nextStrategy=answer`）才算充足，否则判为不足并把策略改回继续检索。判定与拒绝明细写入审计日志，面板「管家日志」的「检索」类别可见。
+- **证据门（search → assess）**：检索命中只说明「相关」，不说明「足以回答」。每次检索登记一个进程内批次（每会话保留最近 20 个，会话结束即释放），输出行尾给出 `ref=…` 与批次 id；`engram_assess` 只能引用同一批次的 ref，且 `sufficient` 由代码强制——三者齐备（模型声称充足、至少一条有效证据、`nextStrategy=answer`）才算充足，否则判为不足并把策略改回继续检索。判定与拒绝明细写入审计日志，面板「管家日志」的「检索」类别可见。下一步开始前若仍有未判定批次，注入收尾提醒引导补判或说明不判（连续不足 ≥2 次时建议换检索方式或询问用户；`assessReminder: false` 关闭）。
 - **数据可携带**：`engram_export` 一键导出 Markdown / JSON 文件，支持脱敏视图（内容二次清洗 + 预览截断，分享安全）。`engram_mirror` 导出可漫游的镜像目录（Obsidian / Logseq 友好：每条记忆一个 Markdown，正文 + YAML frontmatter + 双向链接 `[[id]]`），让「宫殿」也成为可人读的私人知识库。
 - **认知架构探索（dsh-market · AGI 架构探索）**：本仓库是 dsh-market「AGI 架构探索」类目下，对 agent 长期记忆的认知科学方法论重构——记忆宫殿（意象标签 + 房间铭牌）、走廊拓扑（力导向图）、闭环提问（摄入时让模型主动追问用户细节）、巩固合并（启发式去重 + 余弦相似度），与 MemGPT/Letta 同层「agent 记忆架构」叙事。
 
@@ -110,7 +110,11 @@ dsh plugin --profile web add @kenz1117/dsh-engram
     dbDir: '~/.dsh/engram'          # 分库与模型缓存根目录
     injectProfile: true             # 会话开始注入用户画像摘要
     profileTopN: 8                  # 注入条数上限（1-64）
-    injectTokenBudget: 1024         # 注入 token 预算（128-8192，中文按 1.5 token/字、其余按 4 字符/token 估算，超预算条目降级为索引行）
+    injectTokenBudget: 1024         # 注入 token 预算（128-8192，中文按 1.5 token/字、其余按 4 字符/token 估算，装不下的条目降级为索引行）
+    injectItemBudgetStart: 160      # 分级递减预算：首条正文字符数（40-2000，逐条按 decay 递减、装不下先截断）
+    injectItemBudgetDecay: 0.9      # 分级递减预算：逐条递减系数（0.5-1）
+    injectItemBudgetFloor: 24       # 分级递减预算：单条正文字符下限（8-200，不得超过 start）
+    assessReminder: true            # 证据门收尾提醒：存在未判定检索批次时在下一步开始前注入 engram_assess 提醒
     modelCacheDir: '~/.dsh/engram/models'  # 嵌入模型缓存目录
     hfEndpoint: 'https://huggingface.co'   # 模型下载端点，网络受限可配镜像
     ingest: 'off'                   # 自动摄取：off | light（仅用户消息，每轮≤2条）| eager（含助手消息，每轮≤5条）

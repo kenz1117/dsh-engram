@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  EvidenceBatches, MAX_BATCHES_PER_SESSION, MAX_EVIDENCE_REFS, MAX_MISSING_CHARS,
-  assessEvidence, evidenceRefOf, isNextStrategy,
+  buildAssessReminder, EvidenceBatches, INSUFFICIENT_HINT_THRESHOLD, MAX_BATCHES_PER_SESSION,
+  MAX_EVIDENCE_REFS, MAX_MISSING_CHARS, assessEvidence, evidenceRefOf, isNextStrategy,
 } from '../src/retrieve/evidence.ts'
 import type { EvidenceBatch } from '../src/retrieve/evidence.ts'
 
@@ -151,6 +151,75 @@ describe('EvidenceBatches 注册表', () => {
     registry.register('sess-a', ['user/fact#1'])
     registry.clear('sess-a')
     expect(registry.get('sess-a', 'batch-1')).toBeUndefined()
+  })
+})
+
+describe('EvidenceBatches 判定登记与连续不足计数', () => {
+  /** 充足判定（有效证据 + answer 策略，代码不强制改写）。 */
+  const sufficientVerdict = (ref: string) => assessEvidence(batch(ref), {
+    sufficient: true, evidenceRefs: [ref], missing: '', nextStrategy: 'answer',
+  })
+  /** 不足判定（声称充足却拿不出证据，被强制改回检索）。 */
+  const insufficientVerdict = (ref: string) => assessEvidence(batch(ref), {
+    sufficient: true, evidenceRefs: [], missing: '缺', nextStrategy: 'answer',
+  })
+
+  it('recordVerdict 登记判定，pendingBatches 只列未判定批次（注册顺序）', () => {
+    const registry = new EvidenceBatches()
+    const first = registry.register('sess', ['user/fact#1'])
+    const second = registry.register('sess', ['user/fact#2'])
+    expect(registry.pendingBatches('sess').map(item => item.batchId)).toEqual(['batch-1', 'batch-2'])
+    registry.recordVerdict('sess', first.batchId, sufficientVerdict('user/fact#1'))
+    expect(registry.get('sess', first.batchId)?.verdict?.sufficient).toBe(true)
+    expect(registry.pendingBatches('sess').map(item => item.batchId)).toEqual([second.batchId])
+  })
+
+  it('recordVerdict 对不存在批次是 no-op（会话隔离或已淘汰）', () => {
+    const registry = new EvidenceBatches()
+    registry.register('sess-a', ['user/fact#1'])
+    expect(() => registry.recordVerdict('sess-b', 'batch-1', sufficientVerdict('user/fact#1'))).not.toThrow()
+    expect(registry.get('sess-b', 'batch-1')).toBeUndefined()
+    expect(registry.insufficientStreak('sess-b')).toBe(0)
+  })
+
+  it('insufficientStreak 连续不足累加，sufficient 清零，未判定不影响计数', () => {
+    const registry = new EvidenceBatches()
+    registry.register('sess', ['user/fact#1'])
+    expect(registry.insufficientStreak('sess')).toBe(0)
+    registry.recordVerdict('sess', 'batch-1', insufficientVerdict('user/fact#1'))
+    expect(registry.insufficientStreak('sess')).toBe(1)
+    registry.register('sess', ['user/fact#2'])
+    registry.recordVerdict('sess', 'batch-2', insufficientVerdict('user/fact#2'))
+    expect(registry.insufficientStreak('sess')).toBe(2)
+    registry.register('sess', ['user/fact#3'])
+    registry.recordVerdict('sess', 'batch-3', sufficientVerdict('user/fact#3'))
+    expect(registry.insufficientStreak('sess')).toBe(0)
+  })
+
+  it('clear 同时清批次与不足计数', () => {
+    const registry = new EvidenceBatches()
+    registry.register('sess', ['user/fact#1'])
+    registry.recordVerdict('sess', 'batch-1', insufficientVerdict('user/fact#1'))
+    registry.clear('sess')
+    expect(registry.pendingBatches('sess')).toEqual([])
+    expect(registry.insufficientStreak('sess')).toBe(0)
+  })
+})
+
+describe('buildAssessReminder', () => {
+  it('无待判定批次返回 undefined（不需要提醒）', () => {
+    expect(buildAssessReminder(0, 3)).toBeUndefined()
+  })
+
+  it('有待判定时给基础提醒；连续不足达到阈值后附换检索方式建议', () => {
+    const base = buildAssessReminder(1, 0)
+    expect(base).toContain('1 search batch(es)')
+    expect(base).toContain('engram_assess')
+    expect(base).not.toContain('insufficient')
+
+    const escalated = buildAssessReminder(2, INSUFFICIENT_HINT_THRESHOLD)
+    expect(escalated).toContain('2 search batch(es)')
+    expect(escalated).toContain('try a different room')
   })
 })
 

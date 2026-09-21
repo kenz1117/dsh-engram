@@ -619,6 +619,8 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         missing: typeof input.missing === 'string' ? input.missing : '',
         nextStrategy: typeof input.nextStrategy === 'string' ? input.nextStrategy : '',
       })
+      // 记录判定（收尾提醒据此知道批次已处理、连续不足时升级建议）。
+      if (sessionId !== undefined) evidenceBatches.recordVerdict(sessionId, batch.batchId, verdict)
       // 判定结果会回到模型上下文，写入审计日志（不进会话日志——下游插件禁止写未知事件类型）。
       const userStore = await deps.openStore('user')
       await userStore.audit('assess', batch.batchId, JSON.stringify({
