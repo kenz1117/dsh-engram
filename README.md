@@ -205,6 +205,7 @@ pnpm bundle
 感谢社区贡献者让这个项目更好：
 
 - **[@lujfsd](https://github.com/lujfsd)（路杰锋）** —— [PR #2](https://github.com/kenz1117/dsh-engram/pull/2)：适配新版 dsh 的 `sessionPersistence` 只读句柄（新版已移除 `load()`）、摄取逐条判宫殿（提炼输出新增 `scope`）、项目宫殿随工作区切换（`GET /api/engram/workspaces` + 面板工作区选择器），并把无 git 时的分库命名从「cwd 前 12 字符」改为 cwd 全量 sha256（修掉同前缀目录撞库）。随 PR 附 17 条测试与两份设计文档。
+- **[@f0909172434](https://github.com/f0909172434)** —— [PR #4](https://github.com/kenz1117/dsh-engram/pull/4)：遗留项目库迁移的归属治理——eager 迁移改名时补写 JSON 墓碑 sidecar（`<旧库名>.migrated-to`，独占创建 + 0o600，记录 `migratedTo` / `claimedByCwd` / `claimedAt`），后续工作区撞上同一旧命名时收到指向先前归属的告警；新增 `legacyMigration` 配置（`eager` 默认自动迁移 / `conservative` 不动旧库只告警），迁移结果细化为 `renamed` / `kept-both` / `deferred` / `already-migrated` 等状态。随 PR 附测试。
 
 ## 许可证
 

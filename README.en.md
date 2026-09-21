@@ -204,6 +204,7 @@ Profile text changes as the memory store changes — changes only land at turn b
 Thanks to the community contributors who made this project better:
 
 - **[@lujfsd](https://github.com/lujfsd)** — [PR #2](https://github.com/kenz1117/dsh-engram/pull/2): adapting to the new dsh `sessionPersistence` read-handle API (`load()` was removed upstream), per-candidate scope on capture (the extraction output now carries `scope`), the project palace following the active workspace (`GET /api/engram/workspaces` plus the panel workspace picker), and renaming the no-git store key from "first 12 chars of cwd" to a full cwd sha256 (fixing collisions between sibling directories) — with 17 new tests and two design documents.
+- **[@f0909172434](https://github.com/f0909172434)** — [PR #4](https://github.com/kenz1117/dsh-engram/pull/4): governance for ambiguous legacy database ownership — the eager rename now writes a JSON tombstone sidecar (`<old db>.migrated-to`, created exclusively with 0o600, recording `migratedTo` / `claimedByCwd` / `claimedAt`), and a later workspace hitting the same legacy name receives a warning naming the prior claim; a new `legacyMigration` config (`eager` migrates automatically by default / `conservative` leaves old databases untouched with a warning), with migration outcomes refined into `renamed` / `kept-both` / `deferred` / `already-migrated`. Ships with tests.
 
 ## License
 
