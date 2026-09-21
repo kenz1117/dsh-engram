@@ -1,7 +1,7 @@
 /**
  * dsh-engram：DeepSeek Harness 跨会话长期记忆插件（host 半）。
- * 注册 10 个 engram_ 工具、会话开始注入用户画像、自动摄取上一轮对话、
- * 蒸馏/衰减飞轮与审计能力。
+ * 注册 18 个 engram_ 工具、会话开始注入画像（curated block 优先于派生画像）、
+ * 自动摄取上一轮对话、蒸馏/衰减飞轮与审计能力。
  * @module @kenz1117/dsh-engram
  */
 
@@ -15,7 +15,7 @@ import { resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { createLocalEmbedder } from './embedder/local.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
-import { FINAL_INGEST_TIMEOUT_MS, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, replayPendingIngests } from './ingest/hook.ts'
+import { FINAL_INGEST_TIMEOUT_MS, ensureSessionSummary, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, lastTurnNumber, replayPendingIngests } from './ingest/hook.ts'
 import { estimateHistoryBackfill, runHistoryBackfill } from './ingest/history.ts'
 import type {
   HistoryBackfillDeps, HistoryBackfillRules, HistoryEstimate, HistoryLogSource, HistoryRunProgress, HistoryRunResult,
@@ -137,6 +137,33 @@ export function renderProfile(
   tokenBudget: number,
 ): string {
   return renderProfileDetailed(records, tokenBudget).text
+}
+
+/** curated block 段的标题行（模型据此知道这一段是人工维护的最高优先画像）。 */
+export const CURATED_HEADER =
+  'Curated profile (user-maintained via engram_profile_edit; authoritative over derived facts):'
+
+/**
+ * 画像渲染（curated 优先）：有 curated block 时其全文置于派生画像之前（模型可见的
+ * 第一段），并先从 token 预算中扣除自身占用，剩余预算才给派生条目装填；派生段
+ * 照旧走分级递减与索引行/计数行降级。curated 是用户显式维护的意志，即使超出剩余
+ * 预算也完整注入（与 due 行同理）；block 缺省时等同 renderProfileDetailed。
+ * @param curated - 当前态 curated block；undefined = 尚未编辑过。
+ * @param records - 派生画像候选条目（调用方已按重要性排序、按条数截断）。
+ * @param tokenBudget - 整段画像的 token 预算（curated 段与派生段共享）。
+ * @param itemBudget - 分级递减的单条正文预算（透传 renderProfileDetailed）。
+ * @returns 渲染文本与派生段的溢出条目。
+ */
+export function renderProfileWithCurated(
+  curated: { content: string } | undefined,
+  records: readonly { id: string; kind: string; content: string; slot?: Slot }[],
+  tokenBudget: number,
+  itemBudget: GraduatedItemBudget = DEFAULT_ITEM_BUDGET,
+): ProfileRender {
+  if (curated === undefined) return renderProfileDetailed(records, tokenBudget, itemBudget)
+  const curatedSection = `${CURATED_HEADER}\n${curated.content}`
+  const detailed = renderProfileDetailed(records, Math.max(0, tokenBudget - estimateTokens(curatedSection)), itemBudget)
+  return { text: `${curatedSection}\n${detailed.text}`, overflow: detailed.overflow }
 }
 
 /** 压缩辅助调用的输出 token 上限（40 字 × 若干条，短输出足够）。 */
@@ -283,15 +310,18 @@ async function preStep(
   }
   if (step !== 1) return decision
   const store = await openStore('user')
+  // curated block：engram_profile_edit 维护的画像段，优先于自动派生画像注入。
+  const curated = await store.getProfileBlock('user')
   const top = await store.topActive('user', resolved.profileTopN)
-  if (top.length === 0) return decision
+  if (top.length === 0 && curated === undefined) return decision
   // 今日待回忆提示（检索练习调度）：有到期条目时在画像末尾附一行，引导 agent 主动自测。
   // user + project 两库合并计数；50 为计数上限（超过显示 50+）。
   const dueTotal = resolved.reviewScheduling
     ? (await Promise.all((['user', 'project'] as const).map(async scope =>
         (await openStore(scope)).dueReviews(Date.now(), 50)))).reduce((sum, rows) => sum + rows.length, 0)
     : 0
-  const detailed = renderProfileDetailed(
+  const detailed = renderProfileWithCurated(
+    curated,
     top,
     resolved.injectTokenBudget,
     { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor },
@@ -303,7 +333,8 @@ async function preStep(
     if (compressed !== undefined) {
       // 辅助请求审计（压缩产物随注入消息进会话日志；请求本身落 op_log 供归因）。
       void openStore('user').then(auditStore => auditStore.audit('compress-request', 'AUX', JSON.stringify({ count: detailed.overflow.length }))).catch(() => { /* 审计失败不影响注入 */ })
-      text = renderProfileDetailed(
+      text = renderProfileWithCurated(
+        curated,
         top.map(record => {
           const shorter = compressed.get(record.id)
           return shorter === undefined ? record : { ...record, content: shorter }
@@ -789,24 +820,46 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     ctx.on('session/disposed', (session) => {
       const mode = resolved.ingest
       if (mode === 'off') return
+      // dispose 后事件源可能 detach：事件快照与 cwd 在同步段取一次，摄取与摘要共用。
+      const events = session.snapshotEvents() as unknown as readonly SessionEventLike[]
+      const sessionId = String(session.id)
+      const cwd = sessionCwd(session)
       void ingestFinalTurn({
-        events: session.snapshotEvents() as unknown as readonly SessionEventLike[],
-        sessionId: String(session.id),
+        events,
+        sessionId,
         turn: 0,
         slice: 'last',
         openStore: () => openStore('user'),
         openAuditStore: () => openStore('user'),
         // 末轮补做同样按该会话的 cwd 落项目宫殿并逐条判 scope。
-        ...ingestWriteRouting(sessionCwd(session), openStoreForProjectCwd, openStore),
+        ...ingestWriteRouting(cwd, openStoreForProjectCwd, openStore),
         embedder,
         mode,
         routeOverride: resolved.routeOverride,
         call: params => streamText(ctx, { ...params, sessionId: session.id }),
         logRequest: logIngestRequest,
         signal: AbortSignal.timeout(FINAL_INGEST_TIMEOUT_MS),
-      }).catch((error: unknown) => {
-        console.warn('[dsh-engram] 会话结束的末轮摄取异常（不影响对话）：', error)
       })
+        // 末轮摄取完成后收尾生成整场会话的一句话摘要：摄取失败（null）通常意味着
+        // LLM 不可达，摘要同样会失败，不再起调用。摘要用独立 5 秒预算，不吃摄取的超时额度。
+        .then(outcome => {
+          if (outcome === null) return undefined
+          return ensureSessionSummary({
+            events,
+            sessionId,
+            // 摘要落会话主库（与历史回填口径一致）：有 cwd 落该项目库，无 cwd 落 user 库。
+            openStore: () => (cwd === undefined ? openStore('user') : openStoreForProjectCwd(cwd)),
+            call: params => streamText(ctx, { ...params, sessionId: session.id }),
+            logRequest: logIngestRequest,
+            mode,
+            routeOverride: resolved.routeOverride,
+            signal: AbortSignal.timeout(FINAL_INGEST_TIMEOUT_MS),
+            round: lastTurnNumber(events),
+          })
+        })
+        .catch((error: unknown) => {
+          console.warn('[dsh-engram] 会话结束的收尾处理异常（不影响对话）：', error)
+        })
     })
   }
 

@@ -242,7 +242,7 @@ describe('EngramStore 宫殿与复习调度（schema v6）', () => {
     await reopened.close()
   })
 
-  it('真实 v5 库（无 v6 列）打开时迁移到 v6：建列建索引并保留数据', async () => {
+  it('真实 v5 库（无 v6 列）打开时迁移到最新 schema：建列建索引并保留数据', async () => {
     const path = join(dir, 'real-v5.db')
     const { DatabaseSync } = await import('node:sqlite')
     const raw = new DatabaseSync(path)
@@ -281,10 +281,12 @@ describe('EngramStore 宫殿与复习调度（schema v6）', () => {
     expect((await migrated.get(asMemoryId('legacy-1')))?.slot).toEqual({ room: '事实厅', index: 2 })
     await migrated.close()
     const check = new DatabaseSync(path)
-    expect((check.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value).toBe('6')
+    expect((check.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value).toBe('9')
     const indexes = (check.prepare('PRAGMA index_list(nodes)').all() as unknown as { name: string }[]).map(row => row.name)
     expect(indexes).toContain('nodes_slot')
     expect(indexes).toContain('nodes_review_due')
+    expect(indexes).toContain('nodes_kind_created')
+    expect(indexes).toContain('nodes_session_created')
     check.close()
   })
 
@@ -304,6 +306,6 @@ describe('EngramStore 宫殿与复习调度（schema v6）', () => {
     const check = new DatabaseSync(path)
     const version = (check.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value
     check.close()
-    expect(version).toBe('6')
+    expect(version).toBe('9')
   })
 })

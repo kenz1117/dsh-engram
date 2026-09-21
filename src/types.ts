@@ -178,6 +178,53 @@ export interface TimelineQuery {
   readonly limit?: number
 }
 
+/** episode 情景时间线的时间邻近扩展缺省窗口：锚点 createdAt ± 60 分钟。 */
+export const EPISODE_PROXIMITY_MS_DEFAULT = 60 * 60 * 1000
+/** episode 情景时间线缺省返回条数上限。 */
+export const EPISODE_TIMELINE_LIMIT_DEFAULT = 100
+
+/** episode 情景记忆时间线查询：独立于通用 TimelineQuery 的情景线索。
+ *  缺省模式按 since/until/sessionId 过滤 episode 条目并按来源会话分组；
+ *  around 指定时切换为时间邻近扩展模式（以锚点 createdAt 为中心开窗，
+ *  忽略 since/until/sessionId——窗口语义下日期过滤只会截断扩展结果）。 */
+export interface EpisodeTimelineQuery {
+  readonly scopes: readonly EngramScope[]
+  /** 起始时间（epoch 毫秒，含）；缺省不限。 */
+  readonly since?: number
+  /** 结束时间（epoch 毫秒，含）；缺省不限。 */
+  readonly until?: number
+  /** 只看该来源会话（source_session_id 精确匹配）的情景。 */
+  readonly sessionId?: string
+  /** 时间邻近扩展锚点（任意 active 记忆 id，不限于 episode）；该库中不存在时 loud 失败。 */
+  readonly around?: MemoryId
+  /** 邻近窗口毫秒数（around 模式）；缺省 EPISODE_PROXIMITY_MS_DEFAULT。 */
+  readonly proximityMs?: number
+  /** 返回条数上限（组模式按条数、around 模式按邻居数）；缺省 EPISODE_TIMELINE_LIMIT_DEFAULT。 */
+  readonly limit?: number
+}
+
+/** 按来源会话分组的一组情景（组内条目按创建时间升序）。 */
+export interface EpisodeSessionGroup {
+  /** 来源会话 id；null = 无会话来源（显式保存或来源链缺失）。 */
+  readonly sessionId: string | null
+  readonly episodes: readonly MemoryRecord[]
+  /** 组内最早创建时间（组的排序键，会话起点）。 */
+  readonly startedAt: number
+  /** 组内最晚创建时间（会话跨度展示用）。 */
+  readonly endedAt: number
+  /** 摄取期生成的一句话会话摘要（组头展示）；未生成过或缺省不携带。 */
+  readonly summary?: string
+}
+
+/** episode 情景时间线结果。 */
+export interface EpisodeTimelineResult {
+  /** 按会话分组的情景（组按 startedAt 倒序，最新会话在前）；around 模式下为空数组。 */
+  readonly groups: readonly EpisodeSessionGroup[]
+  /** 时间邻近扩展（query.around 指定时返回）：锚点条目 + 窗口内的 episode 邻居
+   *  （排除锚点自身，按创建时间升序；limit 约束邻居数）。 */
+  readonly around?: { readonly anchor: MemoryRecord; readonly neighbors: readonly MemoryRecord[] }
+}
+
 /** 更新请求：旧条目转 archived 并建立 supersedes 边（from=新，to=旧）。 */
 export interface UpdateInput {
   readonly id: MemoryId
@@ -189,6 +236,26 @@ export interface UpdateInput {
   readonly embedding?: Float32Array
   /** 意象铭牌替换；缺省继承旧条目。 */
   readonly imagery?: ImageryLabel
+}
+
+/** 画像 curated block 的单条版本记录（追加式版本链，rollback 数据源）。 */
+export interface ProfileBlockVersion {
+  readonly scope: EngramScope
+  /** 版本号：从 1 起单调递增，回滚也产生新版本（历史永不改写）。 */
+  readonly version: number
+  readonly content: string
+  /** 产生方式：edit 人工/模型编辑；rollback 回滚到历史版本的内容。 */
+  readonly source: 'edit' | 'rollback'
+  readonly at: number
+}
+
+/** 画像 curated block 当前态：会话开始注入时优先于自动派生画像。 */
+export interface ProfileBlock {
+  readonly scope: EngramScope
+  readonly content: string
+  /** 当前版本号（乐观锁基准：编辑时必须携带此值）。 */
+  readonly version: number
+  readonly updatedAt: number
 }
 
 /** 一条操作日志（审计视图行）。 */

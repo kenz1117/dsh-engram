@@ -5,9 +5,9 @@
  */
 
 import type {
-  DecayOptions, EngramEdgeType, EngramScope, ExportData, ForgettingTombstone,
-  ForgottenAuditRow, ListFilter, ListResult,
-  MemoryId, MemoryOutcome, MemoryRecord, OperationLogRow,
+  DecayOptions, EngramEdgeType, EngramScope, EpisodeTimelineQuery, EpisodeTimelineResult, ExportData,
+  ForgettingTombstone, ForgottenAuditRow, ListFilter, ListResult,
+  MemoryId, MemoryOutcome, MemoryRecord, OperationLogRow, ProfileBlock, ProfileBlockVersion,
   ReviewGrade, ReviewView, SearchQuery, SearchResult, Slot, StoreStats, TimelineQuery, UpdateInput, WriteInput,
 } from '../types.ts'
 
@@ -54,6 +54,15 @@ export interface EngramStore {
   search(query: SearchQuery, queryVector: Float32Array | undefined): Promise<SearchResult>
   /** 时间线查询：缺省按 createdAt 倒序，order='tour' 时按固定巡游路线桩位顺序。 */
   timeline(query: TimelineQuery): Promise<MemoryRecord[]>
+  /**
+   * episode 情景记忆独立时间线：按日期范围/来源会话过滤 episode 条目并按会话分组；
+   * query.around 指定时切换为时间邻近扩展（锚点不存在抛 EngramError(NOT_FOUND)）。
+   */
+  episodeTimeline(query: EpisodeTimelineQuery): Promise<EpisodeTimelineResult>
+  /** 写入会话一句话摘要（upsert，摄取期会话循环结束处调用；op_log 记 'session-summary'）。 */
+  setSessionSummary(sessionId: string, summary: string): Promise<void>
+  /** 读取会话摘要；未生成过返回 undefined。 */
+  getSessionSummary(sessionId: string): Promise<string | undefined>
   /** 修正：旧条目转 archived，建立 supersedes 边（from=新，to=旧），返回新条目。 */
   update(input: UpdateInput): Promise<MemoryRecord>
   /** 软删（可恢复）。 */
@@ -89,6 +98,18 @@ export interface EngramStore {
   routeList(): Promise<RouteStop[]>
   /** 门牌快照：全库 active 条目的 (房间, caption) 列表（门牌评分上下文）。 */
   listPlacards(): Promise<PlacardRow[]>
+  /** 画像 curated block 当前态；该 scope 从未编辑过返回 undefined。 */
+  getProfileBlock(scope: EngramScope): Promise<ProfileBlock | undefined>
+  /**
+   * 写入画像 curated block（乐观锁）：expectedVersion 与当前版本一致才写入并产生
+   * 新版本（版本链追加，回滚与编辑同构）；expectedVersion 为 undefined 仅允许首次创建。
+   * @throws EngramError(code=VERSION_CONFLICT) 版本不匹配（并发编辑）或库已有 block 而未带版本。
+   */
+  saveProfileBlock(scope: EngramScope, expectedVersion: number | undefined, content: string, source: ProfileBlockVersion['source']): Promise<ProfileBlock>
+  /** 画像 block 版本历史（按版本号倒序，最多 limit 条）。 */
+  listProfileBlockVersions(scope: EngramScope, limit: number): Promise<ProfileBlockVersion[]>
+  /** 取某一版本的画像 block 内容（rollback 数据源）；不存在返回 undefined。 */
+  getProfileBlockVersion(scope: EngramScope, version: number): Promise<ProfileBlockVersion | undefined>
   /** 从 archived/forgotten 恢复为 active。 */
   restore(id: MemoryId): Promise<MemoryRecord>
   /** 画像注入/蒸馏取材：指定 scope 的 active 条目按 importance、confidence 倒序取前 n。 */

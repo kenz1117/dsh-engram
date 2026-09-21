@@ -311,6 +311,52 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             })
             return
           }
+          if (req.method === 'GET' && route === 'episode-timeline') {
+            // 情景时间线：单库按日期范围/来源会话分组浏览（组头带摄取期生成的会话摘要）；
+            // around 非空时切换为邻近扩展（锚点 ± windowMinutes 窗口）。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const since = toNumber(url.searchParams.get('since'))
+            const until = toNumber(url.searchParams.get('until'))
+            const sessionId = url.searchParams.get('sessionId') ?? undefined
+            const around = url.searchParams.get('around') ?? undefined
+            const windowMinutes = Math.min(24 * 60, Math.max(1, toNumber(url.searchParams.get('windowMinutes')) ?? 60))
+            const limit = Math.min(200, Math.max(1, toNumber(url.searchParams.get('limit')) ?? 100))
+            const store = await storeFor(scope)
+            if (around !== undefined && around !== '') {
+              const result = await store.episodeTimeline({ scopes: [scope], around: around as never, proximityMs: windowMinutes * 60_000, limit })
+              const view = result.around!
+              json(res, 200, {
+                around: {
+                  anchor: {
+                    id: view.anchor.id, kind: view.anchor.kind, content: view.anchor.content, createdAt: view.anchor.createdAt,
+                  },
+                  neighbors: view.neighbors.map(record => ({
+                    id: record.id, kind: record.kind, content: record.content, createdAt: record.createdAt,
+                  })),
+                },
+              })
+              return
+            }
+            const result = await store.episodeTimeline({
+              scopes: [scope],
+              ...(since === undefined ? {} : { since }),
+              ...(until === undefined ? {} : { until }),
+              ...(sessionId === undefined || sessionId === '' ? {} : { sessionId }),
+              limit,
+            })
+            json(res, 200, {
+              groups: result.groups.map(group => ({
+                sessionId: group.sessionId,
+                ...(group.summary === undefined ? {} : { summary: group.summary }),
+                startedAt: group.startedAt,
+                endedAt: group.endedAt,
+                episodes: group.episodes.map(record => ({
+                  id: record.id, kind: record.kind, content: record.content, createdAt: record.createdAt,
+                })),
+              })),
+            })
+            return
+          }
           if (req.method === 'GET' && route === 'activity') {
             // 最近活动：合并两库 op_log 倒序（摄取/检索改写/压缩/蒸馏/条目操作全貌）。
             const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
@@ -582,6 +628,16 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'GET' && route === 'models') {
             // 已注册的 provider 与模型清单：面板「辅助模型」下拉的数据源。
             json(res, 200, await deps.history.models())
+            return
+          }
+          if (req.method === 'GET' && route === 'profile-block') {
+            // 画像 curated block 审计视图：当前态 + 版本历史（新→旧，最多 20 条）。
+            // 面板 diff 审计用；编辑走 engram_profile_edit 工具（乐观锁在存储层）。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const store = await storeFor(scope)
+            const block = await store.getProfileBlock(scope)
+            const versions = await store.listProfileBlockVersions(scope, 20)
+            json(res, 200, { scope, block: block ?? null, versions })
             return
           }
           if (req.method === 'GET' && route === 'history-backfill') {

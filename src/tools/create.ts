@@ -1,5 +1,5 @@
 /**
- * 17 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
+ * 19 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
  * scope 决定读写哪个分库；嵌入缺失时检索结果显式标记降级。
  * @module @kenz1117/dsh-engram/tools/create
  */
@@ -17,7 +17,7 @@ import type { LlmRoute } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
 import type { EngramKind, EngramScope, ImageryLabel } from '../types.ts'
 import type { MemoryRecord, SearchHit } from '../types.ts'
-import { asMemoryId } from '../types.ts'
+import { EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asMemoryId } from '../types.ts'
 import { renderMemoryPacket, sanitizeProtocolText } from '../security/sanitize.ts'
 import { redactSecrets } from '../security/redact.ts'
 import {
@@ -77,6 +77,23 @@ function sessionCwdOf(exec: ToolRunContext): string | undefined {
   return cwd === undefined || cwd === '' ? undefined : cwd
 }
 
+/** 工具入参时间解析：ISO 或可解析日期字符串 → epoch 毫秒；缺省 undefined；不可解析 loud 失败。 */
+function parseTimeParam(raw: string | undefined, toolName: string, field: string): number | undefined {
+  if (raw === undefined) return undefined
+  const ms = Date.parse(raw)
+  if (Number.isNaN(ms)) throw new Error(`${toolName}: ${field} 不是可解析时间 ${raw}`)
+  return ms
+}
+
+/** 工具入参正数解析（分钟/条数等计数）：缺省 fallback；非有限数字或越界 loud 失败。 */
+function parseCountParam(raw: number | undefined, toolName: string, field: string, fallback: number, min: number, max: number): number {
+  if (raw === undefined) return fallback
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) throw new Error(`${toolName}: ${field} 必须是有限数字，收到 ${String(raw)}`)
+  const value = Math.floor(raw)
+  if (value < min || value > max) throw new Error(`${toolName}: ${field} 需在 ${String(min)}-${String(max)} 之间，收到 ${String(value)}`)
+  return value
+}
+
 /** 历史回填估算的模型可读文本（零成本，先看数再决定跑不跑）。 */
 function renderHistoryEstimate(estimate: HistoryEstimate): string {
   if (estimate.unavailable !== undefined) return `历史回填不可用：${estimate.unavailable}`
@@ -119,7 +136,7 @@ const STRATEGY_HINT: Record<NextStrategy, string> = {
   answer: '可以据此作答',
   search_keyword: '换关键词再检索（engram_search）',
   search_room: '收窄到具体房间再检索（engram_search 带 room）',
-  search_timeline: '按时间线找（engram_timeline）',
+  search_timeline: '按时间线找（engram_timeline 或 engram_episode_timeline 查情景）',
   ask_user: '向用户澄清缺失的信息',
   stop: '不回答，并向用户说明缺少什么',
 }
@@ -195,8 +212,8 @@ async function rewriteQueries(deps: ToolDeps, exec: ToolRunContext, query: strin
 }
 
 /**
- * 构造 17 个工具定义（engram_save/search/assess/timeline/update/forget/report/review/review_queue/
- * stats/export/distill/examine/neighbors/audit_forgotten/tour/ingest_history）。
+ * 构造 19 个工具定义（engram_save/search/assess/timeline/episode_timeline/update/forget/report/review/review_queue/
+ * stats/export/distill/examine/neighbors/audit_forgotten/tour/ingest_history/profile_edit）。
  * @param baseDeps - 分库打开器、嵌入器、辅助 LLM、导出目录。
  * @returns 可直接 register 的工具定义数组（execute 已绑定会话 cwd 的项目宫殿路由）。
  */
@@ -652,14 +669,8 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const input = args as { scope?: unknown; topic?: string; since?: string; until?: string; order?: unknown }
       const scopes = scopesOf(input.scope)
       const order = input.order === 'tour' ? 'tour' : 'time'
-      const parseTime = (raw: string | undefined, field: string): number | undefined => {
-        if (raw === undefined) return undefined
-        const ms = Date.parse(raw)
-        if (Number.isNaN(ms)) throw new Error(`engram_timeline: ${field} 不是可解析时间 ${raw}`)
-        return ms
-      }
-      const since = parseTime(input.since, 'since')
-      const until = parseTime(input.until, 'until')
+      const since = parseTimeParam(input.since, 'engram_timeline', 'since')
+      const until = parseTimeParam(input.until, 'engram_timeline', 'until')
       const results = await Promise.all(scopes.map(async (scope) => {
         const store = await deps.openStore(scope)
         return store.timeline({
@@ -682,6 +693,80 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       }))
       const tail = order === 'tour' ? '\n（按固定巡游路线桩位顺序；未上路线者按创建时间排末尾）' : ''
       return { text: renderMemoryPacket(`${body.join('\n') || '时间线为空'}${tail}`, 'tool_timeline', input.topic ?? '（对话继续）') }
+    },
+  })
+
+  const episodeTimeline = defineTool({
+    name: 'engram_episode_timeline',
+    description: 'episode 情景记忆的独立时间线：按日期范围与来源会话浏览经历，输出按会话分组（组间新→旧，组内时间升序），适合回答「那天/那段时间我们做了什么」。around 传锚点记忆 id 时切换为时间邻近扩展——列出锚点创建时刻 ± 窗口内的情景（忽略日期过滤），回答「当时前后还发生了什么」。',
+    parameters: {
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
+      since: { type: 'string', description: '起始日期（ISO 或可解析日期）' },
+      until: { type: 'string', description: '结束日期' },
+      sessionId: { type: 'string', description: '只看该来源会话的情景（id 精确匹配，从本工具输出的「会话 …」组头取得）' },
+      around: { type: 'string', description: '锚点记忆 id：切换为时间邻近扩展模式（与 since/until/sessionId 互斥，此时忽略它们）' },
+      windowMinutes: { type: 'number', description: `邻近窗口分钟数（around 模式，默认 ${String(EPISODE_PROXIMITY_MS_DEFAULT / 60000)}）` },
+      limit: { type: 'number', description: `最多返回条数（默认 ${String(EPISODE_TIMELINE_LIMIT_DEFAULT)}）` },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args) {
+      const input = args as { scope?: unknown; since?: string; until?: string; sessionId?: string; around?: string; windowMinutes?: number; limit?: number }
+      const scopes = scopesOf(input.scope)
+      const since = parseTimeParam(input.since, 'engram_episode_timeline', 'since')
+      const until = parseTimeParam(input.until, 'engram_episode_timeline', 'until')
+      const limit = parseCountParam(input.limit, 'engram_episode_timeline', 'limit', EPISODE_TIMELINE_LIMIT_DEFAULT, 1, 500)
+      const sessionId = input.sessionId?.trim()
+      const aroundId = input.around?.trim()
+      // 输出行与 engram_timeline 同一格式，模型无需区分两种时间线的行文。
+      const renderRow = (record: MemoryRecord): string =>
+        `${new Date(record.createdAt).toISOString()} [${record.scope}/${record.kind}] ${truncateItem(record.content)}（id=${record.id}）`
+      if (aroundId !== undefined && aroundId !== '') {
+        const windowMinutes = parseCountParam(input.windowMinutes, 'engram_episode_timeline', 'windowMinutes', EPISODE_PROXIMITY_MS_DEFAULT / 60000, 1, 24 * 60)
+        const anchor = asMemoryId(aroundId)
+        // 邻近扩展在锚点所在的库执行：id 全局唯一，先定位持有它的分库。
+        for (const scope of scopes) {
+          const store = await deps.openStore(scope)
+          if (await store.get(anchor) === undefined) continue
+          const result = await store.episodeTimeline({ scopes: [scope], around: anchor, proximityMs: windowMinutes * 60_000, limit })
+          const around = result.around!
+          const lines = around.neighbors.length === 0
+            ? [`锚点：${renderRow(around.anchor)}`, '邻近窗口内没有情景记忆。']
+            : [
+                `锚点：${renderRow(around.anchor)}`,
+                `邻近情景（±${String(windowMinutes)} 分钟，${String(around.neighbors.length)} 条，按时间正序）：`,
+                ...around.neighbors.map(renderRow),
+              ]
+          const body = enforceBudget(lines)
+          return { text: renderMemoryPacket(body.join('\n'), 'tool_episode_timeline', aroundId) }
+        }
+        throw new Error(`engram_episode_timeline: 锚点 ${aroundId} 不存在`)
+      }
+      const results = await Promise.all(scopes.map(async (scope) => {
+        const store = await deps.openStore(scope)
+        return store.episodeTimeline({
+          scopes: [scope],
+          ...(since === undefined ? {} : { since }),
+          ...(until === undefined ? {} : { until }),
+          ...(sessionId === undefined || sessionId === '' ? {} : { sessionId }),
+          limit,
+        })
+      }))
+      // 组排序键是时间（跨 scope 有共同尺度），全局重排后按序渲染。
+      const groups = results.flatMap(result => result.groups).sort((a, b) => b.startedAt - a.startedAt)
+      const lines: string[] = []
+      for (const group of groups) {
+        lines.push(group.sessionId === null
+          ? `[无会话来源] ${new Date(group.startedAt).toISOString()} ~ ${new Date(group.endedAt).toISOString()}（${String(group.episodes.length)} 条）`
+          : `[会话 ${group.sessionId}] ${new Date(group.startedAt).toISOString()} ~ ${new Date(group.endedAt).toISOString()}（${String(group.episodes.length)} 条）`)
+        // 组头摘要：摄取期生成的一句话概括，模型不用逐条展开就能定位目标会话。
+        if (group.summary !== undefined) lines.push(`  摘要：${group.summary}`)
+        for (const record of group.episodes) lines.push(`- ${renderRow(record)}`)
+      }
+      const body = enforceBudget(lines)
+      return { text: renderMemoryPacket(body.join('\n') || '情景时间线为空', 'tool_episode_timeline', sessionId ?? '（对话继续）') }
     },
   })
 
@@ -1272,7 +1357,87 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     },
   })
 
-  const tools = [save, search, assess, timeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten, ingestHistory]
+  /**
+   * 画像可编辑：维护会话开始注入的 curated block（注入时优先于自动派生画像）。
+   * view 查看当前内容与版本历史；edit 编辑（乐观锁，冲突 loud 失败）；rollback
+   * 把历史版本的内容作为新版本写入（版本链只增不改，可反复回滚）。
+   */
+  const profileEdit = defineTool({
+    name: 'engram_profile_edit',
+    description: '编辑会话开始注入的用户画像 curated block（注入时位于自动派生画像之前，是画像的最高优先层）。action=view 查看当前内容与版本历史；action=edit 编辑（乐观锁：须带当前 expectedVersion，版本冲突会报错，重读最新版本后再改；首次创建省略 expectedVersion）；action=rollback 回滚（把 toVersion 版本的内容作为新版本写入，历史不改写）。内容入库前做协议剥离与密钥脱敏。',
+    parameters: {
+      action: { type: 'string', enum: ['view', 'edit', 'rollback'], required: true, description: 'view 查看 / edit 编辑 / rollback 回滚' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '作用域，默认 user' },
+      content: { type: 'string', description: 'edit 必填：新的画像内容（多行文本，会话开始按原文注入）' },
+      expectedVersion: { type: 'integer', description: 'edit 带上=并发保护（乐观锁）；省略=仅当尚无 block 时创建 v1' },
+      toVersion: { type: 'integer', description: 'rollback 必填：要回滚到的历史版本号（用 view 查得）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args) {
+      const input = args as { action?: unknown; scope?: unknown; content?: unknown; expectedVersion?: unknown; toVersion?: unknown }
+      const action = input.action === 'edit' || input.action === 'rollback' || input.action === 'view' ? input.action : undefined
+      if (action === undefined) throw new Error('engram_profile_edit: action 必须是 view / edit / rollback 之一')
+      const scope = scopeOf(input.scope, 'user')
+      const store = await deps.openStore(scope)
+      if (action === 'view') {
+        const block = await store.getProfileBlock(scope)
+        if (block === undefined) {
+          return { text: `${scope} 库暂无 curated 画像 block。用 action=edit（省略 expectedVersion）即可创建 v1；创建后会话开始时优先于自动派生画像注入。` }
+        }
+        const versions = await store.listProfileBlockVersions(scope, 10)
+        return {
+          text: [
+            `当前 curated 画像（${scope}，v${block.version}）：`,
+            block.content,
+            '',
+            `版本历史（最近 ${versions.length} 条，新→旧；rollback 用 toVersion 指定）：`,
+            ...versions.map(version =>
+              `- v${version.version} · ${version.source === 'rollback' ? '回滚' : '编辑'} · ${new Date(version.at).toISOString().slice(0, 16).replace('T', ' ')} · ${version.content.length} 字`),
+          ].join('\n'),
+        }
+      }
+      if (action === 'edit') {
+        if (typeof input.content !== 'string' || input.content.trim() === '') throw new Error('engram_profile_edit: edit 需要 content 参数')
+        let expectedVersion: number | undefined
+        if (input.expectedVersion !== undefined) {
+          if (!Number.isInteger(input.expectedVersion)) throw new Error('engram_profile_edit: expectedVersion 必须是整数（用 action=view 查得）')
+          expectedVersion = input.expectedVersion as number
+        }
+        // 入库前协议剥离 + 密钥脱敏，与 engram_save/update 同一防线。
+        const content = redactSecrets(sanitizeProtocolText(input.content))
+        if (content.trim() === '') throw new Error('engram_profile_edit: 清洗后内容为空（原文只含协议标签或密钥）')
+        const block = await store.saveProfileBlock(scope, expectedVersion, content, 'edit')
+        // 编辑记录入 op_log（面板管家日志可见；target_id 用 scope）。
+        await store.audit('profile-edit', scope, JSON.stringify({
+          action: 'edit',
+          fromVersion: expectedVersion ?? null,
+          toVersion: block.version,
+          chars: content.length,
+        }))
+        return { text: `curated 画像已写入（${scope}，v${block.version}）。下一轮会话开始时将优先于自动派生画像注入。` }
+      }
+      // rollback：取历史版本内容，作为新版本写入（乐观锁同样适用）。
+      if (!Number.isInteger(input.toVersion)) throw new Error('engram_profile_edit: rollback 需要 toVersion（目标历史版本号，用 action=view 查得）')
+      const target = await store.getProfileBlockVersion(scope, input.toVersion as number)
+      if (target === undefined) throw new Error(`engram_profile_edit: ${scope} 库不存在版本 v${input.toVersion}（用 action=view 查看版本历史）`)
+      const current = await store.getProfileBlock(scope)
+      if (current === undefined) throw new Error(`engram_profile_edit: ${scope} 库尚无 curated 画像 block，无从回滚`)
+      const updated = await store.saveProfileBlock(scope, current.version, target.content, 'rollback')
+      await store.audit('profile-edit', scope, JSON.stringify({
+        action: 'rollback',
+        fromVersion: current.version,
+        toVersion: updated.version,
+        restoredFrom: target.version,
+        chars: target.content.length,
+      }))
+      return { text: `已把 v${target.version} 的内容作为 v${updated.version} 写入（${scope}；版本链只增不改，可继续回滚）。` }
+    },
+  })
+
+  const tools = [save, search, assess, timeline, episodeTimeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten, ingestHistory, profileEdit]
   // 执行前把该会话的 cwd 放进 ALS 上下文：project scope 的分库解析据此归属（并发会话互不串味）。
   return tools.map(tool => ({
     ...tool,

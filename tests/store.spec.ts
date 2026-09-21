@@ -1,9 +1,10 @@
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openEngramStore } from '../src/store/sqlite.ts'
 import { asMemoryId } from '../src/types.ts'
+import type { MemoryRecord } from '../src/types.ts'
 import type { EngramStore } from '../src/store/interface.ts'
 
 let dir: string
@@ -185,7 +186,7 @@ describe('EngramStore (sqlite)', () => {
     const db2 = new DatabaseSync(path)
     const version = (db2.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value
     db2.close()
-    expect(version).toBe('6')
+    expect(version).toBe('9')
   })
 
   it('v3 库打开时顺序迁移到 v5（数据保留，修订表可用）', async () => {
@@ -326,5 +327,157 @@ describe('渐进式披露：getMany / neighbors', () => {
     const ops = await store.recentOps(10)
     expect(ops.some(op => op.op === 'write-merge' && op.targetId === a.id)).toBe(true)
     expect(await store.reinforce(asMemoryId('missing'), '{}')).toBeUndefined()
+  })
+})
+
+describe('episodeTimeline (episode 情景独立时间线)', () => {
+  const MINUTE = 60_000
+  /** 基准时刻：2026-09-01 10:00 UTC。 */
+  const base = Date.parse('2026-09-01T10:00:00Z')
+
+  beforeEach(() => {
+    // createdAt 由 store 内部 Date.now() 决定：用假时钟精确控制写入时刻。
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** 把系统时间拨到指定时刻再写入一条；sessionId 未传时为无会话来源（null）。 */
+  async function writeAt(at: number, input: { content: string; kind?: 'episode' | 'fact'; sessionId?: string }): Promise<MemoryRecord> {
+    vi.setSystemTime(at)
+    return store.write({
+      scope: 'user',
+      kind: input.kind ?? 'episode',
+      content: input.content,
+      ...(input.sessionId === undefined ? {} : { sourceSessionId: input.sessionId }),
+    })
+  }
+
+  it('日期范围只命中窗口内的 episode，其他 kind 不入时间线', async () => {
+    const d1 = await writeAt(base, { content: '周一事件', sessionId: 's1' })
+    await writeAt(base + 30 * MINUTE, { kind: 'fact', content: '周一事实' })
+    const d2 = await writeAt(base + 24 * 60 * MINUTE, { content: '周二事件', sessionId: 's1' })
+    const ranged = await store.episodeTimeline({ scopes: ['user'], since: base, until: base + 24 * 60 * MINUTE - 1 })
+    expect(ranged.groups).toHaveLength(1)
+    expect(ranged.groups[0]!.episodes.map(episode => episode.id)).toEqual([d1.id])
+    // 不限范围时同会话条目归同组（跨天不拆），组内按时间升序。
+    const all = await store.episodeTimeline({ scopes: ['user'] })
+    expect(all.groups).toHaveLength(1)
+    expect(all.groups[0]!.episodes.map(episode => episode.id)).toEqual([d1.id, d2.id])
+    expect(all.groups[0]!.startedAt).toBe(base)
+    expect(all.groups[0]!.endedAt).toBe(base + 24 * 60 * MINUTE)
+  })
+
+  it('按来源会话分组：组间新→旧，组内时间升序；无会话来源单独成组', async () => {
+    await writeAt(base, { content: '早会记录', sessionId: 's-old' })
+    await writeAt(base + 5 * MINUTE, { content: '早会后续', sessionId: 's-old' })
+    await writeAt(base + 60 * MINUTE, { content: '下午的事', sessionId: 's-new' })
+    await writeAt(base + 90 * MINUTE, { content: '显式保存无会话' })
+    const result = await store.episodeTimeline({ scopes: ['user'] })
+    // 组排序键是组内最早条目：无会话组(90m) > s-new(60m) > s-old(0m)。
+    expect(result.groups.map(group => group.sessionId)).toEqual([null, 's-new', 's-old'])
+    expect(result.groups[0]!.episodes.map(episode => episode.content)).toEqual(['显式保存无会话'])
+    expect(result.groups[2]!.episodes.map(episode => episode.content)).toEqual(['早会记录', '早会后续'])
+    expect(result.groups[2]!.startedAt).toBe(base)
+    expect(result.groups[2]!.endedAt).toBe(base + 5 * MINUTE)
+  })
+
+  it('sessionId 过滤只返回该会话', async () => {
+    await writeAt(base, { content: 'A 会话事件', sessionId: 's-a' })
+    await writeAt(base + MINUTE, { content: 'B 会话事件', sessionId: 's-b' })
+    const result = await store.episodeTimeline({ scopes: ['user'], sessionId: 's-a' })
+    expect(result.groups).toHaveLength(1)
+    expect(result.groups[0]!.sessionId).toBe('s-a')
+    expect(result.groups[0]!.episodes.map(episode => episode.content)).toEqual(['A 会话事件'])
+  })
+
+  it('around 邻近扩展：默认 ±60 分钟窗口内 episode 升序，排除锚点与非 episode；锚点缺失 loud 失败', async () => {
+    const anchor = await writeAt(base, { kind: 'fact', content: '锚点事实' })
+    await writeAt(base - 30 * MINUTE, { content: '前 30 分钟' })
+    await writeAt(base + 45 * MINUTE, { content: '后 45 分钟' })
+    await writeAt(base + 90 * MINUTE, { content: '窗口外的情景' })
+    const result = await store.episodeTimeline({ scopes: ['user'], around: asMemoryId(anchor.id) })
+    expect(result.around!.anchor.id).toBe(anchor.id)
+    expect(result.around!.neighbors.map(episode => episode.content)).toEqual(['前 30 分钟', '后 45 分钟'])
+    expect(result.groups).toEqual([])
+    await expect(store.episodeTimeline({ scopes: ['user'], around: asMemoryId('nope') })).rejects.toThrow(/不存在/)
+  })
+
+  it('proximityMs 自定义窗口；limit 截断邻居与条目数', async () => {
+    const anchor = await writeAt(base, { content: '锚点情景' })
+    await writeAt(base - 10 * MINUTE, { content: '前 10 分钟' })
+    await writeAt(base + 20 * MINUTE, { content: '后 20 分钟' })
+    const narrow = await store.episodeTimeline({ scopes: ['user'], around: asMemoryId(anchor.id), proximityMs: 15 * MINUTE })
+    expect(narrow.around!.neighbors.map(episode => episode.content)).toEqual(['前 10 分钟'])
+    const capped = await store.episodeTimeline({ scopes: ['user'], around: asMemoryId(anchor.id), limit: 1 })
+    expect(capped.around!.neighbors).toHaveLength(1)
+    // 组模式同样受 limit 约束（按条数截断，DESC 取最近的）。
+    const limited = await store.episodeTimeline({ scopes: ['user'], limit: 1 })
+    expect(limited.groups.flatMap(group => group.episodes)).toHaveLength(1)
+    expect(limited.groups[0]!.episodes[0]!.content).toBe('后 20 分钟')
+  })
+
+  it('episode 时间线索引在新建库就位', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(join(dir, 'user.db'))
+    const indexes = (db.prepare('PRAGMA index_list(nodes)').all() as unknown as { name: string }[]).map(row => row.name)
+    db.close()
+    expect(indexes).toContain('nodes_kind_created')
+    expect(indexes).toContain('nodes_session_created')
+  })
+
+  it('session_summaries 表在新建库与 v8 迁移后就位，schema_version 升到 9', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(join(dir, 'user.db'))
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as unknown as { name: string }[])
+      .map(row => row.name)
+    const version = (db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value
+    db.close()
+    expect(tables).toContain('session_summaries')
+    expect(version).toBe('9')
+    // v8 旧库（手工降版）重开时经 MIGRATIONS['8'] 建出摘要表，数据零搬运。
+    const legacyPath = join(dir, 'legacy-v8.db')
+    const legacy = await openEngramStore(legacyPath)
+    await legacy.close()
+    const raw = new DatabaseSync(legacyPath)
+    raw.prepare("UPDATE meta SET value = '8' WHERE key = 'schema_version'").run()
+    raw.prepare('DROP TABLE session_summaries').run()
+    raw.close()
+    const reopened = await openEngramStore(legacyPath)
+    await reopened.close()
+    const raw2 = new DatabaseSync(legacyPath)
+    const tables2 = (raw2.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as unknown as { name: string }[])
+      .map(row => row.name)
+    raw2.close()
+    expect(tables2).toContain('session_summaries')
+  })
+
+  it('会话摘要 upsert/读取；episodeTimeline 组头带出摘要，未生成的组缺省', async () => {
+    await writeAt(base, { content: 's1 的事件', sessionId: 's1' })
+    await writeAt(base + MINUTE, { content: 's2 的事件', sessionId: 's2' })
+    // 未写入过：读取 undefined，组头不带 summary 键（exactOptionalPropertyTypes 不允许显式 undefined）。
+    expect(await store.getSessionSummary('s1')).toBeUndefined()
+    const before = await store.episodeTimeline({ scopes: ['user'] })
+    expect('summary' in before.groups.find(group => group.sessionId === 's1')!).toBe(false)
+    // 写入后：读取命中，组头带摘要。
+    await store.setSessionSummary('s1', '为记忆宫殿补齐了会话摘要链路')
+    expect(await store.getSessionSummary('s1')).toBe('为记忆宫殿补齐了会话摘要链路')
+    const after = await store.episodeTimeline({ scopes: ['user'] })
+    expect(after.groups.find(group => group.sessionId === 's1')?.summary).toBe('为记忆宫殿补齐了会话摘要链路')
+    expect('summary' in after.groups.find(group => group.sessionId === 's2')!).toBe(false)
+    // upsert 覆盖：同会话重跑生成新摘要时替换旧值（每会话只存一条）。
+    await store.setSessionSummary('s1', '覆盖后的新摘要')
+    expect(await store.getSessionSummary('s1')).toBe('覆盖后的新摘要')
+    // 无会话来源的组永远没有摘要。
+    await writeAt(base + 2 * MINUTE, { content: '显式保存无会话' })
+    const mixed = await store.episodeTimeline({ scopes: ['user'] })
+    expect('summary' in mixed.groups.find(group => group.sessionId === null)!).toBe(false)
+  })
+
+  it('purge 清空会话摘要', async () => {
+    await store.setSessionSummary('s1', '会被 purge 清掉的摘要')
+    await store.purge()
+    expect(await store.getSessionSummary('s1')).toBeUndefined()
   })
 })

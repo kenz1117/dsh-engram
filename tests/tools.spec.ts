@@ -1,7 +1,7 @@
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { openEngramStore } from '../src/store/sqlite.ts'
 import type { EngramStore } from '../src/store/interface.ts'
@@ -370,12 +370,44 @@ describe('engram tools', () => {
     expect(result.text).toContain('记忆甲内容')
   })
 
-  it('工具集恰为 17 个且名字正确', () => {
+  it('工具集恰为 19 个且名字正确', () => {
     expect([...tools.keys()].sort()).toEqual([
-      'engram_assess', 'engram_audit_forgotten', 'engram_distill', 'engram_examine', 'engram_export', 'engram_forget',
-      'engram_ingest_history', 'engram_neighbors', 'engram_report', 'engram_review', 'engram_review_queue',
-      'engram_save', 'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
+      'engram_assess', 'engram_audit_forgotten', 'engram_distill', 'engram_episode_timeline', 'engram_examine',
+      'engram_export', 'engram_forget', 'engram_ingest_history', 'engram_neighbors', 'engram_profile_edit',
+      'engram_report', 'engram_review', 'engram_review_queue', 'engram_save', 'engram_search', 'engram_stats',
+      'engram_timeline', 'engram_tour', 'engram_update',
     ])
+  })
+
+  it('engram_episode_timeline 日期范围按会话分组；around 邻近扩展与锚点缺失 loud 失败', async () => {
+    vi.useFakeTimers()
+    try {
+      const base = Date.parse('2026-09-01T10:00:00Z')
+      vi.setSystemTime(base)
+      const anchor = await store.write({ scope: 'user', kind: 'episode', content: '周一讨论部署', sourceSessionId: 'sess-a' })
+      vi.setSystemTime(base + 30 * 60_000)
+      await store.write({ scope: 'user', kind: 'episode', content: '周一排查端口', sourceSessionId: 'sess-a' })
+      vi.setSystemTime(base + 24 * 60 * 60_000)
+      await store.write({ scope: 'user', kind: 'episode', content: '周二复盘', sourceSessionId: 'sess-b' })
+      // 摘要只给 sess-a：组头渲染「摘要：」行，另一个会话组不受影响。
+      await store.setSessionSummary('sess-a', '周一围绕部署排查的一场会话')
+      const ranged = await tools.get('engram_episode_timeline')!.execute(
+        { scope: 'user', since: '2026-09-01', until: '2026-09-01T23:59:59Z' }, fakeExec) as { text: string }
+      expect(ranged.text).toContain('<engram_memory_context source="tool_episode_timeline">')
+      expect(ranged.text).toContain('[会话 sess-a]')
+      expect(ranged.text).toContain('摘要：周一围绕部署排查的一场会话')
+      expect(ranged.text).toContain('周一讨论部署')
+      expect(ranged.text).not.toContain('周二复盘')
+      const around = await tools.get('engram_episode_timeline')!.execute(
+        { scope: 'user', around: anchor.id }, fakeExec) as { text: string }
+      expect(around.text).toContain('锚点：')
+      expect(around.text).toContain('周一排查端口')
+      expect(around.text).not.toContain('周二复盘')
+      await expect(tools.get('engram_episode_timeline')!.execute({ scope: 'user', around: 'nope' }, fakeExec))
+        .rejects.toThrow(/不存在/)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('engram_ingest_history 缺省只估算；环境不支持时明确说明', async () => {

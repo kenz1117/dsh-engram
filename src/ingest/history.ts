@@ -20,7 +20,7 @@ import type { ResolvedHistoryRules } from '../config.ts'
 import type { EngramEmbedder } from '../embedder/interface.ts'
 import type { LlmRoute, SessionEventLike } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
-import { INGEST_DONE_OP, encodeTurnKey, ingestPreviousTurn, ingestWriteRouting } from './hook.ts'
+import { INGEST_DONE_OP, encodeTurnKey, ensureSessionSummary, ingestPreviousTurn, ingestWriteRouting } from './hook.ts'
 import type { IngestDeps, IngestMode, IngestWriteRouting } from './hook.ts'
 
 /** 历史会话 header 的窄视图（session-persistence 的 SessionHeader 子集，只依赖用到的字段）。 */
@@ -414,6 +414,19 @@ export async function runHistoryBackfill(
       }
       progress.turnsDone += 1
     }
+    // 会话收尾：生成一句话摘要（增强信息，失败静默），供情景时间线组头展示。
+    await ensureSessionSummary({
+      events: candidate.events,
+      sessionId: candidate.header.id,
+      openStore: () => candidate.openStore(),
+      call: deps.call,
+      logRequest: deps.logRequest,
+      mode: deps.mode,
+      routeOverride,
+      signal,
+      // 摘要请求挂在会话最后一轮的 round 上（请求日志按轮次归档，摘要是会话级收尾动作）。
+      round: candidate.turns[candidate.turns.length - 1],
+    })
     progress.sessionsDone += 1
     onProgress({ ...progress, currentSession: candidate.header.id })
   }

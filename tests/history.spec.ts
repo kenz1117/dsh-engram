@@ -220,7 +220,8 @@ describe('runHistoryBackfill', () => {
     expect(result.sessionsDone).toBe(2)
     expect(result.turnsDone).toBe(3)
     expect(result.memoriesWritten).toBe(3)
-    expect(calls.count).toBe(3)
+    // 3 轮摄取 + 2 次会话收尾摘要（每会话一次）。
+    expect(calls.count).toBe(5)
     // 各自落在自己 cwd 的库：alpha 2 条、beta 1 条，且 scope 标记为 project。
     const alpha = await storeFor('/repo/alpha')
     const beta = await storeFor('/repo/beta')
@@ -270,13 +271,15 @@ describe('runHistoryBackfill', () => {
     const calls = { count: 0 }
     const deps = { ...makeDeps(source, calls), now: () => NOW }
     await runHistoryBackfill(deps, DEFAULTS, {}, () => undefined, new AbortController().signal)
-    expect(calls.count).toBe(2)
+    // 2 轮摄取 + 1 次会话收尾摘要。
+    expect(calls.count).toBe(3)
     const second = await runHistoryBackfill(deps, DEFAULTS, {}, () => undefined, new AbortController().signal)
     expect(second.memoriesWritten).toBe(0)
     expect(second.turnsSkipped).toBe(2)
     // 跳过原因可解释：重跑时两轮都因「已摄取」跳过。
     expect(second.skipReasons['already-ingested']).toBe(2)
-    expect(calls.count).toBe(2)
+    // 摘要同样幂等（已存在即跳过）：计数不变。
+    expect(calls.count).toBe(3)
     expect(await (await storeFor('/repo/a')).topActive('project', 10)).toHaveLength(2)
   })
 
@@ -345,10 +348,63 @@ describe('runHistoryBackfill', () => {
     const calls = { count: 0 }
     const deps = { ...makeDeps(source, calls), now: () => NOW }
     const result = await runHistoryBackfill(deps, DEFAULTS, {}, () => undefined, new AbortController().signal)
-    expect(calls.count).toBe(0)
+    // 摘要是会话级增强信息，不受轮次节流影响：轮次 0 次调用，摘要 1 次。
+    expect(calls.count).toBe(1)
     expect(result.memoriesWritten).toBe(0)
     expect(result.turnsSkipped).toBe(1)
     // 跳过原因要能解释「为什么没写东西」。
     expect(result.skipReasons['low-activity']).toBe(1)
+  })
+
+  it('会话收尾生成一句话摘要，落在会话主库；重跑不再调摘要', async () => {
+    const source = makeSource([{ id: 'a', createdAt: NOW - 1000, cwd: '/repo/alpha', turns: [1, 2] }])
+    const calls = { count: 0 }
+    const deps = {
+      ...makeDeps(source, calls),
+      now: () => NOW,
+      call: async (params: { purpose: string }) => {
+        calls.count += 1
+        // 摘要与提炼是两种调用：purpose 区分，摘要返回纯文本（不是 JSON 数组）。
+        if (params.purpose === 'engram-session-summary') return `一场围绕 /repo/alpha 的会话摘要（第 ${String(calls.count)} 次调用）`
+        return JSON.stringify([{ kind: 'fact', content: '提炼事实', importance: 0.6 }])
+      },
+    }
+    await runHistoryBackfill(deps, DEFAULTS, {}, () => undefined, new AbortController().signal)
+    expect(calls.count).toBe(3)
+    // 摘要落会话主库（cwd 对应的项目库），不是 user 库。
+    expect(await (await storeFor('/repo/alpha')).getSessionSummary('a')).toBe('一场围绕 /repo/alpha 的会话摘要（第 3 次调用）')
+    expect(await (await storeFor('user')).getSessionSummary('a')).toBeUndefined()
+    // 重跑：轮次与摘要均已存在，不再起任何辅助调用。
+    await runHistoryBackfill(deps, DEFAULTS, {}, () => undefined, new AbortController().signal)
+    expect(calls.count).toBe(3)
+  })
+
+  it('摘要调用失败静默跳过：不进 failures、不阻断回填', async () => {
+    const source = makeSource([{ id: 'a', createdAt: NOW - 1000, cwd: '/repo/a', turns: [1] }])
+    const deps = {
+      ...makeDeps(source, { count: 0 }),
+      now: () => NOW,
+      call: async (params: { purpose: string }) => {
+        // 摘要调用抛错（模拟限流/超时）；轮次提炼照常。
+        if (params.purpose === 'engram-session-summary') throw new Error('summary rate limited')
+        return JSON.stringify([{ kind: 'fact', content: '提炼事实', importance: 0.6 }])
+      },
+    }
+    const result = await runHistoryBackfill(deps, DEFAULTS, {}, () => undefined, new AbortController().signal)
+    expect(result.state).toBe('done')
+    expect(result.memoriesWritten).toBe(1)
+    expect(result.failures).toHaveLength(0)
+    expect(await (await storeFor('/repo/a')).getSessionSummary('a')).toBeUndefined()
+  })
+
+  it('日志里没有可用路由时连摘要也跳过（不调 LLM）', async () => {
+    const source = makeSource([{ id: 'a', createdAt: NOW - 1000, cwd: '/repo/a', turns: [1] }])
+    const calls = { count: 0 }
+    const deps = { ...makeDeps(source, calls), now: () => NOW, routeOverride: undefined }
+    const result = await runHistoryBackfill(deps, DEFAULTS, {}, () => undefined, new AbortController().signal)
+    // 轮次摄取与摘要都依赖可用路由：无路由时两者都不起调用。
+    expect(calls.count).toBe(0)
+    expect(result.memoriesWritten).toBe(0)
+    expect(await (await storeFor('/repo/a')).getSessionSummary('a')).toBeUndefined()
   })
 })

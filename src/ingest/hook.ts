@@ -3,6 +3,8 @@
  * 候选事实写入记忆库。读取源是日志（model-visible ⟺ logged），辅助调用的
  * 请求由调用方经 logRequest append 到会话日志。候选以低 confidence 写入，
  * 检索命中时提升。异步执行不阻塞请求，失败由调用方捕获计数（不重试）。
+ * 另含会话收尾摘要（ensureSessionSummary）：整场会话一句话概括，实时 dispose
+ * 与历史回填共用。
  * @module @kenz1117/dsh-engram/ingest/hook
  */
 
@@ -485,6 +487,95 @@ export async function ingestFinalTurn(deps: IngestDeps): Promise<IngestOutcome |
     }
     console.warn('[dsh-engram] 会话结束的末轮摄取失败（已记入待补做队列，不影响对话）：', error)
     return null
+  }
+}
+
+/** 会话摘要提示词：一句话概括整场会话，供情景时间线的组头展示。 */
+const SESSION_SUMMARY_SYSTEM = [
+  '概括下面这段会话：用一句话（不超过 60 字）说明这场会话主要做了什么、达成了什么结果。',
+  '直接输出摘要本身，不要前缀、引号或任何解释。',
+].join('\n')
+/** 会话摘要输出 token 上限（一句话足够）。 */
+const SESSION_SUMMARY_MAX_TOKENS = 160
+/** 会话摘要的输入截断上限（字符）：摘要只需主题级信息，超长会话截尾。 */
+const SESSION_SUMMARY_TEXT_LIMIT = 4000
+
+/** 收集整场会话的对话文本（用户跳过插件注入快照 + 助手），脱敏后拼接并截断。 */
+function collectSessionText(events: readonly SessionEventLike[]): string {
+  const texts: string[] = []
+  for (const event of events) {
+    if (event.type === 'user/message') {
+      const data = event.data as { source?: { kind?: unknown }; content?: { type?: unknown; text?: unknown }[] } | null
+      if (data?.source?.kind === 'plugin') continue
+      const segments = (data?.content ?? [])
+        .filter(block => block?.type === 'text' && typeof block.text === 'string')
+        .map(block => block.text as string)
+      if (segments.length > 0) texts.push(...segments)
+    } else if (event.type === 'assistant/message') {
+      const data = event.data as { content?: { type?: unknown; text?: unknown }[] } | null
+      const segments = (data?.content ?? [])
+        .filter(block => block?.type === 'text' && typeof block.text === 'string')
+        .map(block => block.text as string)
+      if (segments.length > 0) texts.push(...segments)
+    }
+  }
+  const cleaned = texts.map(text => redactSecrets(sanitizeProtocolText(text))).filter(text => text !== '')
+  const joined = cleaned.join('\n')
+  return joined.length > SESSION_SUMMARY_TEXT_LIMIT ? `${joined.slice(0, SESSION_SUMMARY_TEXT_LIMIT)}…` : joined
+}
+
+/** 会话摘要依赖：实时会话收尾与历史回填共用同一套提炼与守卫。 */
+export interface SessionSummaryDeps {
+  /** 整场会话的事件（摘要是会话级，不是单轮切片）。 */
+  readonly events: readonly SessionEventLike[]
+  /** 会话 id（摘要在 session_summaries 表的存储键）。 */
+  readonly sessionId: string
+  /** 摘要落库目标（会话主库：有 cwd 落该项目库，无 cwd 落 user 库）。 */
+  readonly openStore: () => Promise<EngramStore>
+  /** 辅助 LLM 调用。 */
+  readonly call: IngestDeps['call']
+  /** 辅助调用请求记入会话日志（model-visible ⟺ logged）。 */
+  readonly logRequest: IngestDeps['logRequest']
+  /** 档位（请求日志负载字段）。 */
+  readonly mode: Exclude<IngestMode, 'off'>
+  /** 显式路由覆盖；缺省从日志解析。 */
+  readonly routeOverride: LlmRoute | undefined
+  /** 取消信号。 */
+  readonly signal: AbortSignal
+  /** 摘要请求挂在的轮次号（请求日志按轮次归档；缺省按 0 记）。 */
+  readonly round: number | undefined
+}
+
+/**
+ * 会话循环结束处生成一句话摘要（情景时间线组头的增强信息）：
+ * 已有摘要直接跳过（重跑幂等，不再起 LLM）；无可用路由 / 已中止 / 无对话文本同样跳过。
+ * LLM 失败静默：摘要是增强信息，实时路径挂在 dispose 观察器、回填路径在批次循环里，
+ * 一次限流/超时都不值得升级为告警或失败。
+ */
+export async function ensureSessionSummary(deps: SessionSummaryDeps): Promise<void> {
+  if (deps.signal.aborted) return
+  const route = deps.routeOverride ?? routeFromEvents(deps.events)
+  if (route === undefined) return
+  const dialog = collectSessionText(deps.events)
+  if (dialog === '') return
+  const store = await deps.openStore()
+  if (await store.getSessionSummary(deps.sessionId) !== undefined) return
+  const userText = `概括下面这段会话：\n${dialog}`
+  deps.logRequest({ route, round: deps.round ?? 0, userText, maxTokens: SESSION_SUMMARY_MAX_TOKENS, mode: deps.mode })
+  try {
+    const raw = await deps.call({
+      route,
+      system: SESSION_SUMMARY_SYSTEM,
+      userText,
+      maxTokens: SESSION_SUMMARY_MAX_TOKENS,
+      purpose: 'engram-session-summary',
+      signal: deps.signal,
+    })
+    const summary = raw.trim()
+    if (summary === '') return
+    await store.setSessionSummary(deps.sessionId, summary)
+  } catch {
+    // 静默：摘要缺失只影响组头展示。
   }
 }
 

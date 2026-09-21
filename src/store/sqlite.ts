@@ -9,7 +9,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { EngramError, asMemoryId } from '../types.ts'
+import { EngramError, EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asMemoryId } from '../types.ts'
 import { assignSlot } from '../palace/slots.ts'
 import { nextSchedule } from '../review/sm2.ts'
 import { scorePlacard } from '../imagery/score.ts'
@@ -17,20 +17,27 @@ import type {
   DecayOptions, EngramEdgeType, EngramScope, ExportData, ForgettingTombstone,
   ForgottenAuditRow, ImageryLabel,
   ListFilter, ListResult, MemoryEdge, MemoryId, MemoryOutcome,
-  MemoryRecord, ReviewGrade, ReviewView, SearchHit, SearchResult, Slot, StoreStats,
+  MemoryRecord, ProfileBlock, ProfileBlockVersion, ReviewGrade, ReviewView, SearchHit, SearchResult, Slot, StoreStats,
   TimelineQuery, UpdateInput, WriteInput,
+  EpisodeTimelineQuery, EpisodeTimelineResult,
 } from '../types.ts'
 import type { EngramStore, RoomState } from './interface.ts'
 
 /** 当前 schema 版本；结构性变更必须 +1。可空列与伴随表走增量迁移（见 openEngramStore 的迁移段）。 */
-const SCHEMA_VERSION = 6
+const SCHEMA_VERSION = 9
 /** 增量迁移表：key 为起始版本，value 为升到下一版本的 SQL（可多语句）。
  *  v2 → v3：nodes 补可空列 outcome（使用效果回报）。
  *  v3 → v4：新增 nodes_revisions 修订表（update 归档旧条目时的内容快照）。
  *  v4 → v5：nodes 补 imagery_json 列（意象铭牌：caption + sensoryTags + emotionalValence + provisional）。
  *  v5 → v6：桩位（slot_room/slot_index）、意象质量分（imagery_score）、SM-2 调度
  *   （next_review_at/ease_factor/interval_days/review_reps）+ 固定巡游路线表 tour_routes。
- *   全部可空或带默认值，存量条目零搬运；排桩由 backfillSlots 幂等补齐。 */
+ *   全部可空或带默认值，存量条目零搬运；排桩由 backfillSlots 幂等补齐。
+ *  v6 → v7：画像 curated block 两表（profile_blocks 当前态 + profile_block_versions
+ *   追加式版本链）。scope 作主键，每 scope 至多一个 block；版本链只增不改，rollback 数据源。
+ *  v7 → v8：episode 情景时间线两个专用索引（kind+created_at 日期范围扫描、
+ *   source_session_id+created_at 会话过滤）。列自 v1 就存在，纯索引迁移，零数据搬运。
+ *  v8 → v9：会话摘要表 session_summaries（摄取期 LLM 生成的一句话会话摘要，
+ *   组头展示用；与 nodes 无外键，会话 id 仅作逻辑关联）。 */
 const MIGRATIONS: Readonly<Record<string, string>> = {
   '2': 'ALTER TABLE nodes ADD COLUMN outcome TEXT',
   '3': `CREATE TABLE IF NOT EXISTS nodes_revisions (
@@ -48,6 +55,16 @@ const MIGRATIONS: Readonly<Record<string, string>> = {
       position INTEGER PRIMARY KEY, node_id TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS nodes_slot ON nodes (slot_room, slot_index);
     CREATE INDEX IF NOT EXISTS nodes_review_due ON nodes (next_review_at);`,
+  '6': `CREATE TABLE IF NOT EXISTS profile_blocks (
+    scope TEXT PRIMARY KEY, content TEXT NOT NULL, version INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS profile_block_versions (
+      scope TEXT NOT NULL, version INTEGER NOT NULL, content TEXT NOT NULL,
+      source TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (scope, version));`,
+  '7': `CREATE INDEX IF NOT EXISTS nodes_kind_created ON nodes (kind, created_at);
+    CREATE INDEX IF NOT EXISTS nodes_session_created ON nodes (source_session_id, created_at);`,
+  '8': `CREATE TABLE IF NOT EXISTS session_summaries (
+    session_id TEXT PRIMARY KEY, summary TEXT NOT NULL, updated_at INTEGER NOT NULL);`,
 }
 /** RRF 融合常数：score = Σ 1/(K + rank)。 */
 const RRF_K = 60
@@ -272,8 +289,18 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       importance REAL NOT NULL, superseded_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS tour_routes (
       position INTEGER PRIMARY KEY, node_id TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS profile_blocks (
+      scope TEXT PRIMARY KEY, content TEXT NOT NULL, version INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS profile_block_versions (
+      scope TEXT NOT NULL, version INTEGER NOT NULL, content TEXT NOT NULL,
+      source TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (scope, version));
+    CREATE TABLE IF NOT EXISTS session_summaries (
+      session_id TEXT PRIMARY KEY, summary TEXT NOT NULL, updated_at INTEGER NOT NULL);
     CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(node_id UNINDEXED, content, tokenize='unicode61');
     CREATE INDEX IF NOT EXISTS nodes_scope_status ON nodes (scope, status);
+    CREATE INDEX IF NOT EXISTS nodes_kind_created ON nodes (kind, created_at);
+    CREATE INDEX IF NOT EXISTS nodes_session_created ON nodes (source_session_id, created_at);
   `)
   // v6 索引不在此处建：旧库此刻还没有 slot_room / next_review_at 列（迁移在后面才跑），
   // 对已存在的表建这两个索引会抛 no such column。新建库走下方补建，旧库由 MIGRATIONS['5'] 建。
@@ -390,6 +417,21 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlPurgeFts = db.prepare('DELETE FROM nodes_fts')
   const sqlPurgeLog = db.prepare('DELETE FROM op_log')
   const sqlPurgeRoutes = db.prepare('DELETE FROM tour_routes')
+  const sqlPurgeProfileBlocks = db.prepare('DELETE FROM profile_blocks')
+  const sqlPurgeProfileVersions = db.prepare('DELETE FROM profile_block_versions')
+  const sqlPurgeSessionSummaries = db.prepare('DELETE FROM session_summaries')
+  // 画像 curated block：当前态读写 + 版本链追加/查询。
+  const sqlProfileBlockGet = db.prepare('SELECT scope, content, version, updated_at FROM profile_blocks WHERE scope = ?')
+  const sqlProfileBlockUpsert = db.prepare(`INSERT INTO profile_blocks (scope, content, version, updated_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(scope) DO UPDATE SET content = excluded.content, version = excluded.version, updated_at = excluded.updated_at`)
+  const sqlProfileVersionInsert = db.prepare('INSERT INTO profile_block_versions (scope, version, content, source, at) VALUES (?, ?, ?, ?, ?)')
+  const sqlProfileVersionsList = db.prepare('SELECT scope, version, content, source, at FROM profile_block_versions WHERE scope = ? ORDER BY version DESC LIMIT ?')
+  const sqlProfileVersionGet = db.prepare('SELECT scope, version, content, source, at FROM profile_block_versions WHERE scope = ? AND version = ?')
+  // 会话摘要：upsert（每会话一条，重跑覆盖）+ 单查 + 按会话 id 批量查（episodeTimeline 组头）。
+  const sqlSessionSummaryUpsert = db.prepare(`INSERT INTO session_summaries (session_id, summary, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET summary = excluded.summary, updated_at = excluded.updated_at`)
+  const sqlSessionSummaryGet = db.prepare('SELECT session_id, summary FROM session_summaries WHERE session_id = ?')
+  const sqlSessionSummaryMany = db.prepare('SELECT session_id, summary FROM session_summaries WHERE session_id IN (SELECT value FROM json_each(?))')
 
   /** FTS 道：按 scope 集合检索（占位符动态生成，scope 集合由调用方去重）；rooms 非空时只查指定房间。 */
   const ftsSearch = (match: string, scopes: readonly EngramScope[], rooms: readonly string[] | undefined): NodeRow[] => {
@@ -662,6 +704,78 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       return rows.map(rowToRecord)
     },
 
+    async episodeTimeline(query: EpisodeTimelineQuery): Promise<EpisodeTimelineResult> {
+      const limit = Math.max(1, Math.floor(query.limit ?? EPISODE_TIMELINE_LIMIT_DEFAULT))
+      const placeholders = query.scopes.map(() => '?').join(',')
+      // 时间邻近扩展模式：锚点不限 kind（事实/决策也可作锚），邻居只取 episode；
+      // 窗口覆盖日期过滤（窗口语义下日期过滤只会截断扩展结果）。
+      if (query.around !== undefined) {
+        const anchorRow = getRow(query.around)
+        if (anchorRow === undefined) throw new EngramError('NOT_FOUND', `邻近扩展锚点 ${query.around} 不存在`)
+        const window = Math.max(0, Math.floor(query.proximityMs ?? EPISODE_PROXIMITY_MS_DEFAULT))
+        const rows = db.prepare(`SELECT * FROM nodes
+            WHERE kind = 'episode' AND status = 'active' AND scope IN (${placeholders})
+              AND id != ? AND created_at >= ? AND created_at <= ?
+            ORDER BY created_at ASC LIMIT ?`)
+          .all(...query.scopes, query.around, anchorRow.created_at - window, anchorRow.created_at + window, limit) as unknown as NodeRow[]
+        return { groups: [], around: { anchor: rowToRecord(anchorRow), neighbors: rows.map(rowToRecord) } }
+      }
+      const params: (string | number | null)[] = [
+        ...query.scopes,
+        query.since ?? null, query.since ?? null,
+        query.until ?? null, query.until ?? null,
+        query.sessionId ?? null, query.sessionId ?? null,
+        limit,
+      ]
+      const rows = db.prepare(`SELECT * FROM nodes
+          WHERE kind = 'episode' AND status = 'active' AND scope IN (${placeholders})
+            AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at <= ?)
+            AND (? IS NULL OR source_session_id = ?)
+          ORDER BY created_at DESC LIMIT ?`)
+        .all(...params) as unknown as NodeRow[]
+      // 按来源会话分组：DESC 遍历后组内反转成升序；组按会话起点倒序（最新会话在前）。
+      const bySession = new Map<string | null, MemoryRecord[]>()
+      for (const row of rows) {
+        const record = rowToRecord(row)
+        const bucket = bySession.get(record.sourceSessionId)
+        if (bucket === undefined) bySession.set(record.sourceSessionId, [record])
+        else bucket.push(record)
+      }
+      const groups = [...bySession.entries()].map(([sessionId, episodesDesc]) => {
+        const episodes = [...episodesDesc].reverse()
+        return {
+          sessionId,
+          episodes,
+          startedAt: episodes[0]!.createdAt,
+          endedAt: episodes[episodes.length - 1]!.createdAt,
+        }
+      })
+      groups.sort((a, b) => b.startedAt - a.startedAt)
+      // 组头摘要：按会话 id 批量取（一次查询），命中的组带 summary（可选字段条件展开）。
+      const sessionIds = groups.map(g => g.sessionId).filter((id): id is string => id !== null)
+      const summaries = new Map<string, string>()
+      if (sessionIds.length > 0) {
+        const rows = sqlSessionSummaryMany.all(JSON.stringify(sessionIds)) as unknown as { session_id: string; summary: string }[]
+        for (const row of rows) summaries.set(row.session_id, row.summary)
+      }
+      return {
+        groups: groups.map(group => {
+          const summary = group.sessionId === null ? undefined : summaries.get(group.sessionId)
+          return { ...group, ...(summary === undefined ? {} : { summary }) }
+        }),
+      }
+    },
+
+    async setSessionSummary(sessionId: string, summary: string): Promise<void> {
+      sqlSessionSummaryUpsert.run(sessionId, summary, Date.now())
+      sqlLog.run(Date.now(), 'session-summary', sessionId, JSON.stringify({ length: summary.length }))
+    },
+
+    async getSessionSummary(sessionId: string): Promise<string | undefined> {
+      const row = sqlSessionSummaryGet.get(sessionId) as unknown as { session_id: string; summary: string } | undefined
+      return row?.summary
+    },
+
     async update(input: UpdateInput) {
       const old = getRow(input.id)
       if (old === undefined) throw new EngramError('NOT_FOUND', `条目 ${input.id} 不存在`)
@@ -842,6 +956,57 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       return rows.filter((row): row is { room: string | null; caption: string } => typeof row.caption === 'string' && row.caption !== '')
     },
 
+    async getProfileBlock(scope: EngramScope): Promise<ProfileBlock | undefined> {
+      const row = sqlProfileBlockGet.get(scope) as unknown as { scope: string; content: string; version: number; updated_at: number } | undefined
+      if (row === undefined) return undefined
+      return { scope: row.scope as EngramScope, content: row.content, version: row.version, updatedAt: row.updated_at }
+    },
+
+    async saveProfileBlock(scope: EngramScope, expectedVersion: number | undefined, content: string, source: ProfileBlockVersion['source']): Promise<ProfileBlock> {
+      if (content.trim() === '') throw new EngramError('EMPTY_CONTENT', '画像 block 内容不能为空')
+      const current = sqlProfileBlockGet.get(scope) as unknown as { version: number } | undefined
+      // 乐观锁：未带版本仅允许首次创建；带版本必须与当前一致（并发编辑 loud 失败）。
+      if (current === undefined && expectedVersion !== undefined) {
+        throw new EngramError('VERSION_CONFLICT', `画像 block 不存在（${scope}），不能带 expectedVersion=${String(expectedVersion)} 编辑；先传 undefined 创建`)
+      }
+      if (current !== undefined && expectedVersion !== current.version) {
+        throw new EngramError('VERSION_CONFLICT', `画像 block 版本冲突（${scope}）：当前 v${String(current.version)}，请求基于 v${String(expectedVersion)}；请重读最新版本后再改`)
+      }
+      const nextVersion = current === undefined ? 1 : current.version + 1
+      const now = Date.now()
+      // 版本行先落（rollback 数据源），再更新当前态；同一事务保证两表一致。
+      withTransaction(() => {
+        sqlProfileVersionInsert.run(scope, nextVersion, content, source, now)
+        sqlProfileBlockUpsert.run(scope, content, nextVersion, now)
+      })
+      return { scope, content, version: nextVersion, updatedAt: now }
+    },
+
+    async listProfileBlockVersions(scope: EngramScope, limit: number): Promise<ProfileBlockVersion[]> {
+      const rows = sqlProfileVersionsList.all(scope, Math.max(1, limit)) as unknown as
+        { scope: string; version: number; content: string; source: string; at: number }[]
+      return rows.map(row => ({
+        scope: row.scope as EngramScope,
+        version: row.version,
+        content: row.content,
+        source: row.source === 'rollback' ? 'rollback' : 'edit',
+        at: row.at,
+      }))
+    },
+
+    async getProfileBlockVersion(scope: EngramScope, version: number): Promise<ProfileBlockVersion | undefined> {
+      const row = sqlProfileVersionGet.get(scope, version) as unknown as
+        { scope: string; version: number; content: string; source: string; at: number } | undefined
+      if (row === undefined) return undefined
+      return {
+        scope: row.scope as EngramScope,
+        version: row.version,
+        content: row.content,
+        source: row.source === 'rollback' ? 'rollback' : 'edit',
+        at: row.at,
+      }
+    },
+
     async restore(id: MemoryId) {
       const row = getRow(id)
       if (row === undefined) throw new EngramError('NOT_FOUND', `条目 ${id} 不存在`)
@@ -1012,6 +1177,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         sqlPurgeFts.run()
         sqlPurgeLog.run()
         sqlPurgeRoutes.run()
+        sqlPurgeProfileBlocks.run()
+        sqlPurgeProfileVersions.run()
+        sqlPurgeSessionSummaries.run()
       })
     },
 

@@ -520,6 +520,33 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .logScope { color: var(--dsw-alias-label-tertiary); }
 .logDetail { color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------- 画像 curated block（当前内容 + 版本历史 + 行级 diff，只读审计卡） ---------- */
+.profileCard { display: flex; flex-direction: column; gap: var(--space-3); }
+.profileHeading { margin: 0; font-size: var(--fs-micro); font-weight: 600; color: var(--dsw-alias-label-secondary); }
+.profileContent { margin: 0; padding: var(--space-3); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--radius-control); background: var(--dsw-alias-bg-layer-1); font-family: inherit; font-size: var(--fs-body); line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; }
+.profilePickerRow { display: flex; gap: var(--space-4); flex-wrap: wrap; }
+.profilePickerRow label { display: flex; flex-direction: column; gap: var(--space-1); }
+.profileSelect { padding: var(--space-1) var(--space-2); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--radius-control); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font-size: var(--fs-micro); }
+.profileDiff { border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--radius-control); font-size: var(--fs-micro); line-height: 1.6; max-height: 220px; overflow-y: auto; }
+.profileDiffAdd { padding: 0 var(--space-2); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent); color: var(--dsw-alias-label-primary); white-space: pre-wrap; word-break: break-word; }
+.profileDiffDel { padding: 0 var(--space-2); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent); color: var(--dsw-alias-label-tertiary); text-decoration: line-through; white-space: pre-wrap; word-break: break-word; }
+.profileDiffSame { padding: 0 var(--space-2); color: var(--dsw-alias-label-tertiary); white-space: pre-wrap; word-break: break-word; }
+
+/* 情景时间线视图（episodes tab）：过滤行 + 会话组卡 + 邻近扩展卡。 */
+.episodeRangeSep { color: var(--dsw-alias-label-tertiary); font-size: var(--fs-body); }
+.episodeAround { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 35%, var(--dsw-alias-border-l2)); }
+.episodeAroundHead { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2); font-size: var(--fs-ctrl); color: var(--dsw-alias-label-primary); }
+.episodeHead { display: flex; flex-direction: column; gap: var(--space-1); padding-bottom: var(--space-2); margin-bottom: var(--space-2); border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.episodeSummary { margin: 0; font-size: var(--fs-ctrl); font-weight: 500; color: var(--dsw-alias-label-primary); line-height: 1.5; }
+.episodeSummaryMissing { color: var(--dsw-alias-label-tertiary); font-weight: 400; }
+.episodeHeadMeta { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+.episodeRow { display: flex; align-items: baseline; gap: var(--space-2); padding: var(--space-1) 0; font-size: var(--fs-body); }
+.episodeRow + .episodeRow { border-top: 1px solid color-mix(in srgb, var(--dsw-alias-border-l2) 55%, transparent); }
+.episodeRowTime { flex: none; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
+.episodeRowKind { flex: none; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+.episodeRowText { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-primary); }
+.episodeRow .button { flex: none; height: 22px; padding: 0 8px; font-size: var(--fs-micro); }
+
 @media (max-width: 960px) {
   .hero { grid-template-columns: 1fr; }
   .heroMetrics { gap: var(--space-5); }

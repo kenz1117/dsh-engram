@@ -243,6 +243,36 @@ export type EngramKey =
   | 'skipNoTurn'
   | 'skipNoRoute'
   | 'skipUnparsable'
+  | 'opProfileEdit'
+  | 'profileOpCreate'
+  | 'profileOpEdit'
+  | 'profileOpRollback'
+  | 'profileTitle'
+  | 'profileEmpty'
+  | 'profileEmptyHint'
+  | 'profileCurrent'
+  | 'profileHistory'
+  | 'profileSourceEdit'
+  | 'profileSourceRollback'
+  | 'profileDiffBase'
+  | 'profileDiffTarget'
+  | 'profileDiffNone'
+  | 'profileLoadFailed'
+  | 'tabEpisodes'
+  | 'episodeSince'
+  | 'episodeUntil'
+  | 'episodeSessionId'
+  | 'episodeApply'
+  | 'episodeReset'
+  | 'episodeHint'
+  | 'episodeNoGroups'
+  | 'episodeNoSession'
+  | 'episodeSummaryMissing'
+  | 'episodeEntries'
+  | 'episodeNearby'
+  | 'episodeAroundTitle'
+  | 'episodeAroundEmpty'
+  | 'episodeClose'
 
 /** kind 数据值 → 词典键（面板与走廊图共用一份，避免两处各自硬编码房间名）。 */
 export const KIND_KEY: Readonly<Record<string, EngramKey>> = {
@@ -490,6 +520,36 @@ export const zh: Record<EngramKey, string> = {
   skipNoTurn: '无此轮',
   skipNoRoute: '日志无路由',
   skipUnparsable: '提炼输出不可解析',
+  opProfileEdit: '画像修订',
+  profileOpCreate: '创建 v{to} · {chars} 字',
+  profileOpEdit: '编辑 v{from}→v{to} · {chars} 字',
+  profileOpRollback: '回滚 v{from}→v{to}（还原 v{restored}）· {chars} 字',
+  profileTitle: '画像 curated block',
+  profileEmpty: '尚无 curated 画像',
+  profileEmptyHint: '在会话里让 agent 调 engram_profile_edit 创建；创建后会话开始时优先于自动派生画像注入。',
+  profileCurrent: '当前内容 · v{n}',
+  profileHistory: '版本历史（新→旧）',
+  profileSourceEdit: '编辑',
+  profileSourceRollback: '回滚',
+  profileDiffBase: '基准版本',
+  profileDiffTarget: '对比版本',
+  profileDiffNone: '两个版本内容相同',
+  profileLoadFailed: '画像加载失败',
+  tabEpisodes: '往事时间线',
+  episodeSince: '开始日期',
+  episodeUntil: '结束日期',
+  episodeSessionId: '会话 id（可选）',
+  episodeApply: '应用',
+  episodeReset: '重置',
+  episodeHint: '按会话分组浏览经历；组头是摄取时生成的一句话摘要，点条目的「邻近」看当时前后还发生了什么',
+  episodeNoGroups: '该范围内没有情景记忆',
+  episodeNoSession: '无会话来源',
+  episodeSummaryMissing: '（该会话尚未生成摘要：跑一次历史回填即可补上）',
+  episodeEntries: '{n} 条情景',
+  episodeNearby: '邻近',
+  episodeAroundTitle: '时间邻近扩展',
+  episodeAroundEmpty: '邻近窗口内没有其他情景',
+  episodeClose: '收起',
 }
 
 /** 英文词典。整页采用「Memory Palace」语言：palace / room (kind group) / memory / placard / tour / curator / corridor。
@@ -729,4 +789,34 @@ export const en: Record<EngramKey, string> = {
   skipNoTurn: 'no such turn',
   skipNoRoute: 'no route in log',
   skipUnparsable: 'unparsable output',
+  opProfileEdit: 'profile revised',
+  profileOpCreate: 'created v{to} · {chars} chars',
+  profileOpEdit: 'edited v{from}→v{to} · {chars} chars',
+  profileOpRollback: 'rolled back v{from}→v{to} (restored v{restored}) · {chars} chars',
+  profileTitle: 'Curated profile block',
+  profileEmpty: 'No curated profile yet',
+  profileEmptyHint: 'Ask the agent to call engram_profile_edit in a session; once created it is injected ahead of the derived profile at session start.',
+  profileCurrent: 'Current content · v{n}',
+  profileHistory: 'Version history (newest first)',
+  profileSourceEdit: 'edited',
+  profileSourceRollback: 'rollback',
+  profileDiffBase: 'Base version',
+  profileDiffTarget: 'Compare version',
+  profileDiffNone: 'The two versions are identical',
+  profileLoadFailed: 'Failed to load profile',
+  tabEpisodes: 'Episode timeline',
+  episodeSince: 'From date',
+  episodeUntil: 'To date',
+  episodeSessionId: 'Session id (optional)',
+  episodeApply: 'Apply',
+  episodeReset: 'Reset',
+  episodeHint: 'Browse experiences grouped by session; group heads carry a one-line summary generated at ingest. Click "Nearby" on an entry to see what else happened around that moment',
+  episodeNoGroups: 'No episodes in this range',
+  episodeNoSession: 'No session origin',
+  episodeSummaryMissing: '(No summary yet for this session: run a history backfill to add one)',
+  episodeEntries: '{n} episodes',
+  episodeNearby: 'Nearby',
+  episodeAroundTitle: 'Time proximity expansion',
+  episodeAroundEmpty: 'No other episodes within the proximity window',
+  episodeClose: 'Collapse',
 }

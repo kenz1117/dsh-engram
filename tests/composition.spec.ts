@@ -287,6 +287,42 @@ describe('dsh-engram real Loader composition', () => {
     expect(evil.status).toBe(403)
   })
 
+  it('情景时间线 HTTP 链路：组头带会话摘要，around 查邻近扩展', { timeout: 60_000 }, async () => {
+    let anchorId = ''
+    const loaded = await loadComposition([], undefined, async (dbDir) => {
+      // 在宿主打开前预置两个来源会话的情景 + 一份会话摘要。
+      const store = await openEngramStore(join(dbDir, 'user.db'))
+      anchorId = (await store.write({ scope: 'user', kind: 'episode', content: '周一：讨论了记忆宫殿的摘要链路', sourceSessionId: 'sess-1' })).id
+      await store.write({ scope: 'user', kind: 'episode', content: '周一：补齐了组头渲染', sourceSessionId: 'sess-1' })
+      await store.write({ scope: 'user', kind: 'episode', content: '周五：重构了时间线查询', sourceSessionId: 'sess-2' })
+      await store.setSessionSummary('sess-1', '一场关于会话摘要的会话')
+      await store.close()
+    })
+    const port = loaded.webServer.port
+
+    // 组模式：按会话分组（组间新→旧），sess-1 组头带摘要，sess-2 未生成不带 summary 键。
+    const timeline = await call(port, 'GET', '/api/engram/episode-timeline?scope=user')
+    expect(timeline.status).toBe(200)
+    const groups = (timeline.json as {
+      groups: { sessionId: string | null; summary?: string; startedAt: number; endedAt: number; episodes: { id: string; kind: string; content: string; createdAt: number }[] }[]
+    }).groups
+    expect(groups).toHaveLength(2)
+    const withSummary = groups.find(group => group.sessionId === 'sess-1')!
+    expect(withSummary.summary).toBe('一场关于会话摘要的会话')
+    expect(withSummary.episodes).toHaveLength(2)
+    const withoutSummary = groups.find(group => group.sessionId === 'sess-2')!
+    expect('summary' in withoutSummary).toBe(false)
+    // 行精简为四字段：kind 原样透传（episode）。
+    expect(withSummary.episodes[0]?.kind).toBe('episode')
+
+    // 邻近扩展：以 sess-1 首条为锚点，±60 分钟窗口内的另两条情景按时间升序返回。
+    const around = await call(port, 'GET', `/api/engram/episode-timeline?scope=user&around=${encodeURIComponent(anchorId)}`)
+    expect(around.status).toBe(200)
+    const view = (around.json as { around: { anchor: { id: string }; neighbors: { content: string }[] } }).around
+    expect(view.anchor.id).toBe(anchorId)
+    expect(view.neighbors).toHaveLength(2)
+  })
+
   it('会话 dispose 且事件源不可用时，摄取不产生未处理 rejection', { timeout: 60_000 }, async () => {
     // 回归：disposed 观察器是 fire-and-forget，逃逸的 rejection 会被宿主 fail-loud 当致命错误
     // 直接退出进程（社区 issue #1：turnStarts 读 undefined.length）。

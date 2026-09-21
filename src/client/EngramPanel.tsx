@@ -111,6 +111,7 @@ const OP_KEY: Record<string, EngramKey> = {
   'search-rewrite-request': 'opSearchRewrite',
   'compress-request': 'opCompressRequest',
   'distill-request': 'opDistillRequest',
+  'profile-edit': 'opProfileEdit',
 }
 const REL_KEY: Record<string, EngramKey> = {
   supersededBy: 'relSupersededBy',
@@ -145,6 +146,26 @@ function opLabel(t: T, op: string): string {
 /** 操作日志 detail 的本地化：write/update/superseded 的小对象转中文键值；摄取/蒸馏请求的完整 JSON 保持原样（审计诚实性优先）。 */
 function formatOpDetail(t: T, op: string, detail: string | null): string {
   if (detail === null) return ''
+  // 画像修订的小对象转成语义句（创建/编辑/回滚三式，与工具的 audit detail 键对齐）。
+  if (op === 'profile-edit') {
+    try {
+      const parsed = JSON.parse(detail) as { action?: unknown; fromVersion?: unknown; toVersion?: unknown; restoredFrom?: unknown; chars?: unknown }
+      const to = Number(parsed.toVersion)
+      const chars = Number(parsed.chars)
+      if (parsed.action === 'edit' && parsed.fromVersion === null) {
+        return ' ' + t('profileOpCreate', { to, chars })
+      }
+      const from = Number(parsed.fromVersion)
+      if (parsed.action === 'edit') return ' ' + t('profileOpEdit', { from, to, chars })
+      const restored = Number(parsed.restoredFrom)
+      if (parsed.action === 'rollback' && Number.isInteger(from) && Number.isInteger(to) && Number.isInteger(restored)) {
+        return ' ' + t('profileOpRollback', { from, to, restored, chars })
+      }
+    } catch {
+      // detail 不是预期的 JSON：落到底部原样展示。
+    }
+    return ` ${detail}`
+  }
   if (op !== 'write' && op !== 'update' && op !== 'superseded') return ` ${detail}`
   try {
     const parsed = JSON.parse(detail) as Record<string, unknown>
@@ -768,7 +789,7 @@ const LOG_GROUPS: Readonly<Record<LogFilter, readonly string[] | null>> = {
   write: ['write', 'update', 'forget', 'restore', 'decay', 'superseded', 'outcome-report'],
   ingest: ['ingest-request', 'ingest-done'],
   retrieve: ['search-rewrite-request', 'compress-request', 'assess'],
-  organize: ['distill-request', 'consolidation', 'slot-assign', 'slot-backfill', 'room-open', 'review-answer'],
+  organize: ['distill-request', 'consolidation', 'slot-assign', 'slot-backfill', 'room-open', 'review-answer', 'profile-edit'],
 }
 const LOG_FILTER_KEY: Readonly<Record<LogFilter, EngramKey>> = {
   all: 'logFilterAll',
@@ -796,6 +817,130 @@ function logDotClass(op: string): string {
   const group = logGroupOf(op)
   const base = styles.logDot ?? ''
   return group === 'all' ? base : `${base} ${styles[LOG_DOT[group]] ?? ''}`
+}
+
+/** 行级 LCS 对齐：把两段文本按行 diff，输出 same/add/del 序列（行数少，O(n·m) DP 足够）。 */
+function lineDiff(oldText: string, newText: string): readonly { kind: 'same' | 'add' | 'del'; text: string }[] {
+  const a = oldText.split('\n')
+  const b = newText.split('\n')
+  const m = a.length
+  const n = b.length
+  // dp[i][j] = a[i..] 与 b[j..] 的最长公共子序列长度（末行/末列补 0）。
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0))
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i]![j] = a[i] === b[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!)
+    }
+  }
+  const rows: { kind: 'same' | 'add' | 'del'; text: string }[] = []
+  let i = 0
+  let j = 0
+  while (i < m && j < n) {
+    if (a[i] === b[j]) { rows.push({ kind: 'same', text: a[i]! }); i += 1; j += 1 }
+    else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) { rows.push({ kind: 'del', text: a[i]! }); i += 1 }
+    else { rows.push({ kind: 'add', text: b[j]! }); j += 1 }
+  }
+  while (i < m) { rows.push({ kind: 'del', text: a[i]! }); i += 1 }
+  while (j < n) { rows.push({ kind: 'add', text: b[j]! }); j += 1 }
+  return rows
+}
+
+/** profile-block 路由的响应体（block 为 null = 该 scope 尚未创建 curated block）。 */
+interface ProfileBlockView {
+  scope: string
+  block: { content: string; version: number; updatedAt: number } | null
+  versions: readonly { version: number; content: string; source: string; at: number }[]
+}
+
+/**
+ * 画像 curated block 审计卡：当前内容 + 版本历史 + 任意两版本的行级 diff。
+ * 只读视图（编辑走 engram_profile_edit 工具，乐观锁在存储层）；scope/project 变化时重载。
+ */
+function ProfileCard({ t, scope, project }: { t: T; scope: 'user' | 'project' | 'shared'; project: string | null }): React.ReactElement {
+  const [data, setData] = useState<ProfileBlockView | null>(null)
+  const [failed, setFailed] = useState(false)
+  const [baseVersion, setBaseVersion] = useState<number | null>(null)
+  const [targetVersion, setTargetVersion] = useState<number | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    api<ProfileBlockView>(`profile-block?scope=${scope}`, undefined, true)
+      .then((view) => {
+        if (cancelled) return
+        setData(view)
+        setFailed(false)
+        // 默认对比：基准 = 上一版，目标 = 当前版（仅一版时不启用 diff）。
+        setBaseVersion(view.versions.length > 1 ? view.versions[1]!.version : null)
+        setTargetVersion(view.versions.length > 0 ? view.versions[0]!.version : null)
+      })
+      .catch(() => { if (!cancelled) setFailed(true) })
+    return () => { cancelled = true }
+  }, [scope, project])
+  if (failed) {
+    return <div className={styles.expandLoading}>{t('profileLoadFailed')}</div>
+  }
+  if (data === null) {
+    return <div className={styles.expandLoading}>{t('loading')}</div>
+  }
+  if (data.block === null) {
+    return (
+      <div className={styles.expandLoading}>
+        <p>{t('profileEmpty')}</p>
+        <p className={styles.sectionHint}>{t('profileEmptyHint')}</p>
+      </div>
+    )
+  }
+  const versions = data.versions
+  const byVersion = new Map(versions.map(version => [version.version, version]))
+  const base = baseVersion === null ? undefined : byVersion.get(baseVersion)
+  const target = targetVersion === null ? undefined : byVersion.get(targetVersion)
+  const diffRows = base !== undefined && target !== undefined ? lineDiff(base.content, target.content) : []
+  const hasDiff = diffRows.some(row => row.kind !== 'same')
+  return (
+    <div className={styles.profileCard}>
+      <h5 className={styles.profileHeading}>{t('profileCurrent', { n: data.block.version })}</h5>
+      <pre className={styles.profileContent}>{data.block.content}</pre>
+      {versions.length > 1 && (
+        <>
+          <h5 className={styles.profileHeading}>{t('profileHistory')}</h5>
+          <div className={styles.profilePickerRow}>
+            <label>
+              <span className={styles.sectionHint}>{t('profileDiffBase')}</span>
+              <select className={styles.profileSelect} value={baseVersion ?? undefined}
+                onChange={event => { setBaseVersion(Number(event.target.value)) }}>
+                {versions.map(version => (
+                  <option key={version.version} value={version.version}>
+                    v{version.version} · {version.source === 'rollback' ? t('profileSourceRollback') : t('profileSourceEdit')}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span className={styles.sectionHint}>{t('profileDiffTarget')}</span>
+              <select className={styles.profileSelect} value={targetVersion ?? undefined}
+                onChange={event => { setTargetVersion(Number(event.target.value)) }}>
+                {versions.map(version => (
+                  <option key={version.version} value={version.version}>
+                    v{version.version} · {version.source === 'rollback' ? t('profileSourceRollback') : t('profileSourceEdit')}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {base !== undefined && target !== undefined && (
+            <div className={styles.profileDiff}>
+              {hasDiff
+                ? diffRows.map((row, index) => (
+                  <div key={index} className={
+                    row.kind === 'add' ? styles.profileDiffAdd : row.kind === 'del' ? styles.profileDiffDel : styles.profileDiffSame
+                  }>{row.kind === 'add' ? '+ ' : row.kind === 'del' ? '- ' : '  '}{row.text}</div>
+                ))
+                : <div className={styles.sectionHint}>{t('profileDiffNone')}</div>}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
 }
 
 /**
@@ -1081,6 +1226,148 @@ function CorridorPanel({ t, scope, project, onSelect }: {
   if (graph === null) return <div className={styles.expandLoading}>{t('corridorLoad')}</div>
   if (graph.nodes.length === 0) return <div className={styles.empty}>{t('corridorEmpty')}</div>
   return <CorridorMap scope={scope} nodes={graph.nodes} edges={graph.edges} onSelect={onSelect} t={t} />
+}
+
+/** GET /api/engram/episode-timeline 的情景行（host 已精简为四字段）。 */
+interface EpisodeRowView {
+  readonly id: string
+  readonly kind: string
+  readonly content: string
+  readonly createdAt: number
+}
+
+/** GET /api/engram/episode-timeline 的组模式返回（组头带摄取期生成的会话摘要）。 */
+interface EpisodeGroupsView {
+  readonly groups: ReadonlyArray<{
+    readonly sessionId: string | null
+    readonly summary?: string | undefined
+    readonly startedAt: number
+    readonly endedAt: number
+    readonly episodes: readonly EpisodeRowView[]
+  }>
+}
+
+/** 邻近扩展（around 模式）返回：锚点条目 + 窗口内的情景邻居。 */
+interface EpisodeAroundView {
+  readonly anchor: EpisodeRowView
+  readonly neighbors: readonly EpisodeRowView[]
+}
+
+/**
+ * 情景时间线视图：按会话分组浏览 episode 往事，组头展示摄取期生成的一句话摘要；
+ * 条目点「邻近」展开该时刻 ± 窗口的时间邻近扩展卡（回答「当时前后还发生了什么」）。
+ */
+function EpisodeTimelineView({ t, scope, project, reloadTick }: {
+  t: T
+  scope: 'user' | 'project' | 'shared'
+  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
+  project: string | null
+  reloadTick: number
+}): React.ReactElement {
+  const [sinceDate, setSinceDate] = useState('')
+  const [untilDate, setUntilDate] = useState('')
+  const [sessionIdInput, setSessionIdInput] = useState('')
+  /** 已应用的过滤条件：date/文本输入不即时触发请求，点「应用」才生效。 */
+  const [applied, setApplied] = useState<{ readonly since: string; readonly until: string; readonly sessionId: string }>({ since: '', until: '', sessionId: '' })
+  const [data, setData] = useState<EpisodeGroupsView | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+  /** 邻近扩展卡（null = 未展开）；busy 防重复点击。 */
+  const [around, setAround] = useState<EpisodeAroundView | null>(null)
+  const [aroundBusy, setAroundBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const params = new URLSearchParams({ scope })
+    // date input 值按本地时区折算成当天首尾毫秒（T00:00:00 / T23:59:59.999）。
+    if (applied.since !== '') params.set('since', String(new Date(`${applied.since}T00:00:00`).getTime()))
+    if (applied.until !== '') params.set('until', String(new Date(`${applied.until}T23:59:59.999`).getTime()))
+    if (applied.sessionId !== '') params.set('sessionId', applied.sessionId)
+    api<EpisodeGroupsView>(`episode-timeline?${params.toString()}`)
+      .then(d => { if (!cancelled) { setData(d); setFailed(null) } })
+      .catch((err: Error) => { if (!cancelled) setFailed(err.message) })
+    return () => { cancelled = true }
+  }, [scope, project, applied, reloadTick])
+
+  /** 展开邻近扩展：以该条目为锚点查同库 ±60 分钟窗口内的情景（窗口由 host 缺省）。 */
+  const openAround = (id: string): void => {
+    setAroundBusy(true)
+    api<EpisodeAroundView>(`episode-timeline?scope=${scope}&around=${encodeURIComponent(id)}`)
+      .then(d => { setAround(d); setAroundBusy(false); setFailed(null) })
+      .catch((err: Error) => { setFailed(err.message); setAroundBusy(false) })
+  }
+
+  /** 条目行：时刻 + 房间 + 内容 + 邻近按钮；id 放 title 便于复制。 */
+  const renderRow = (row: EpisodeRowView): React.ReactElement => (
+    <div key={row.id} className={styles.episodeRow} title={row.id}>
+      <time className={styles.episodeRowTime}>{fmtTime(row.createdAt)}</time>
+      <span className={styles.episodeRowKind}>{kindLabel(t, row.kind)}</span>
+      <span className={styles.episodeRowText}>{row.content}</span>
+      <button type="button" className={styles.button} disabled={aroundBusy}
+        onClick={() => { openAround(row.id) }}>
+        {t('episodeNearby')}
+      </button>
+    </div>
+  )
+
+  return (
+    <>
+      {/* 过滤行：日期范围 + 可选会话 id；「应用」后生效，「重置」回到全量。 */}
+      <div className={styles.toolbarRow}>
+        <input type="date" className={styles.input} value={sinceDate} aria-label={t('episodeSince')}
+          onChange={event => { setSinceDate(event.target.value) }} />
+        <span className={styles.episodeRangeSep} aria-hidden="true">–</span>
+        <input type="date" className={styles.input} value={untilDate} aria-label={t('episodeUntil')}
+          onChange={event => { setUntilDate(event.target.value) }} />
+        <input className={`${styles.input} ${styles.search}`} placeholder={t('episodeSessionId')} value={sessionIdInput}
+          onChange={event => { setSessionIdInput(event.target.value) }} />
+        <button type="button" className={`${styles.button} ${styles.primary}`}
+          onClick={() => { setApplied({ since: sinceDate, until: untilDate, sessionId: sessionIdInput.trim() }); setAround(null) }}>
+          {t('episodeApply')}
+        </button>
+        <button type="button" className={styles.button}
+          onClick={() => {
+            setSinceDate(''); setUntilDate(''); setSessionIdInput('')
+            setApplied({ since: '', until: '', sessionId: '' }); setAround(null)
+          }}>
+          {t('episodeReset')}
+        </button>
+      </div>
+      {failed !== null && <div className={styles.expandLoading}>{t('loadFailed', { msg: failed })}</div>}
+      {around !== null && (
+        <section className={`${styles.panelCard} ${styles.episodeAround}`}>
+          <header className={styles.episodeAroundHead}>
+            <b>{t('episodeAroundTitle')}</b>
+            <button type="button" className={styles.button} onClick={() => { setAround(null) }}>
+              {t('episodeClose')}
+            </button>
+          </header>
+          {renderRow(around.anchor)}
+          {around.neighbors.length === 0
+            ? <p className={styles.sectionHint}>{t('episodeAroundEmpty')}</p>
+            : around.neighbors.map(renderRow)}
+        </section>
+      )}
+      {data === null && failed === null && <div className={styles.expandLoading}>{t('loading')}</div>}
+      {data !== null && data.groups.length === 0 && <div className={styles.empty}>{t('episodeNoGroups')}</div>}
+      {data?.groups.map(group => (
+        <section key={group.sessionId ?? 'none'} className={styles.panelCard}>
+          <header className={styles.episodeHead}>
+            {group.summary === undefined
+              ? <p className={`${styles.episodeSummary} ${styles.episodeSummaryMissing}`}>{t('episodeSummaryMissing')}</p>
+              : <p className={styles.episodeSummary}>{group.summary}</p>}
+            <span className={styles.episodeHeadMeta}>
+              {group.sessionId === null ? t('episodeNoSession') : `#${group.sessionId}`}
+              {' · '}
+              {new Date(group.startedAt).toLocaleDateString()} ~ {new Date(group.endedAt).toLocaleDateString()}
+              {' · '}
+              {t('episodeEntries', { n: group.episodes.length })}
+            </span>
+          </header>
+          <div>{group.episodes.map(renderRow)}</div>
+        </section>
+      ))}
+    </>
+  )
 }
 
 /** 宫殿健康分卡：5 维 0-100 + 总分 + 每维度进度条。 */
@@ -1609,8 +1896,8 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   /** 批量遗忘的两段式确认。 */
   const [confirmForget, setConfirmForget] = useState(false)
-  /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / log 管家日志 / backfill 历史回填。 */
-  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'log' | 'backfill'>('today')
+  /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / episodes 往事时间线 / log 管家日志 / backfill 历史回填。 */
+  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'episodes' | 'log' | 'backfill'>('today')
   /** 项目宫殿来源（持久化）：'follow' = 跟随 GUI 当前工作区；其它值 = 固定的 host 分库 dbName。 */
   const [projectMode, setProjectMode] = usePersistedString('library.project', 'follow')
   /** GUI 当前工作区（与侧边栏同一判定）与 host 的项目宫殿清单。 */
@@ -1873,7 +2160,7 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
         )}
       </div>
 
-      {/* 顶部 Tab Bar：五个视图（今日 / 宫殿 / 走廊 / 日志 / 回填；按「先管家后陈展」语义排序）。
+      {/* 顶部 Tab Bar：六个视图（今日 / 宫殿 / 走廊 / 往事 / 日志 / 回填；按「先管家后陈展」语义排序）。
           原常驻管家日报条已收进「今日」视图的速览卡，其余计数移入「日志」。 */}
       <div className={styles.tabs} role="tablist">
         <button type="button" role="tab"
@@ -1894,6 +2181,12 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
           aria-selected={activeTab === 'corridor'}
           onClick={() => { setActiveTab('corridor') }}>
           {t('tabCorridor')}
+        </button>
+        <button type="button" role="tab"
+          className={activeTab === 'episodes' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
+          aria-selected={activeTab === 'episodes'}
+          onClick={() => { setActiveTab('episodes') }}>
+          {t('tabEpisodes')}
         </button>
         <button type="button" role="tab"
           className={activeTab === 'log' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
@@ -2083,6 +2376,14 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
             <aside className={styles.sideCol}>
               <section className={styles.section}>
                 <div className={styles.sectionHead}>
+                  <h4 className={styles.sectionTitle}>{t('profileTitle')}</h4>
+                </div>
+                <div className={styles.panelCard}>
+                  <ProfileCard t={t} scope={scope} project={projectSelector} />
+                </div>
+              </section>
+              <section className={styles.section}>
+                <div className={styles.sectionHead}>
                   <h4 className={styles.sectionTitle}>{t('roomsTitle')}</h4>
                   <span className={styles.sectionHint}>{t('roomsHint')}</span>
                 </div>
@@ -2125,6 +2426,18 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
               </div>
             </section>
           </div>
+        </div>
+      )}
+
+      {activeTab === 'episodes' && (
+        <div className={styles.tabPanel}>
+          <section className={styles.section}>
+            <div className={styles.sectionHead}>
+              <h4 className={styles.sectionTitle}>{t('tabEpisodes')}</h4>
+              <span className={styles.sectionHint}>{t('episodeHint')}</span>
+            </div>
+            <EpisodeTimelineView t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
+          </section>
         </div>
       )}
 

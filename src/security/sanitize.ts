@@ -26,7 +26,7 @@ const MEMORY_CONTEXT_TAGS: readonly string[] = [
 ]
 
 /** 记忆包来源标记：turn_start 会话开始注入；tool_* 召回工具输出。 */
-export type MemoryPacketSource = 'turn_start' | 'tool_search' | 'tool_timeline' | 'tool_review'
+export type MemoryPacketSource = 'turn_start' | 'tool_search' | 'tool_timeline' | 'tool_episode_timeline' | 'tool_review'
 
 /**
  * 清洗记忆正文：剥离全部记忆上下文块（含未闭合的尾部残块，直接丢弃到标签起点）、

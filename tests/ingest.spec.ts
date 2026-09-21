@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
-  ACTIVITY_THRESHOLD, INGEST_DONE_OP, INGEST_PENDING_OP, activityScore, encodeTurnKey, ingestFinalTurn,
+  ACTIVITY_THRESHOLD, INGEST_DONE_OP, INGEST_PENDING_OP, activityScore, encodeTurnKey, ensureSessionSummary, ingestFinalTurn,
   ingestPreviousTurn, ingestWriteRouting, isChitchat, forbidsCapture, lastTurnNumber, lastTurnSlice, markPendingIngest,
   previousTurnSlice, replayPendingIngests, throttleDecision, turnSlice, turnSignals,
 } from '../src/ingest/hook.ts'
@@ -424,6 +424,62 @@ describe('ingestFinalTurn', () => {
     const outcome = await ingestFinalTurn(baseDeps({ events: undefined as never }))
     expect(outcome).toBeNull()
     expect((await store.listAuditDetails(INGEST_PENDING_OP)).length).toBe(0)
+  })
+})
+
+describe('ensureSessionSummary', () => {
+  const summaryEvents = [
+    turnStart(1),
+    userMsg('帮我排查部署失败的问题', 2),
+    assistantMsg('定位到是环境变量缺失，修复后部署成功', 3),
+    routeHeader(4),
+  ]
+
+  const summaryDeps = (overrides?: Partial<Parameters<typeof ensureSessionSummary>[0]>) => ({
+    events: summaryEvents,
+    sessionId: 'sess-ingest-1',
+    openStore: async () => store,
+    call: async () => '围绕部署排查修复环境变量缺失的一场会话',
+    logRequest: (_data: IngestRequestEventData) => undefined,
+    mode: 'light' as const,
+    routeOverride: undefined,
+    signal: new AbortController().signal,
+    round: 1,
+    ...overrides,
+  })
+
+  it('生成摘要落库，请求日志挂在给定轮次上', async () => {
+    const logged: IngestRequestEventData[] = []
+    await ensureSessionSummary(summaryDeps({ logRequest: data => logged.push(data) }))
+    expect(await store.getSessionSummary('sess-ingest-1')).toBe('围绕部署排查修复环境变量缺失的一场会话')
+    expect(logged).toHaveLength(1)
+    expect(logged[0]?.round).toBe(1)
+    expect(logged[0]?.maxTokens).toBe(160)
+    expect(logged[0]?.mode).toBe('light')
+  })
+
+  it('已有摘要时幂等跳过，不再起 LLM 调用', async () => {
+    await store.setSessionSummary('sess-ingest-1', '既有摘要')
+    let calls = 0
+    await ensureSessionSummary(summaryDeps({ call: async () => { calls += 1; return '新摘要' } }))
+    expect(calls).toBe(0)
+    expect(await store.getSessionSummary('sess-ingest-1')).toBe('既有摘要')
+  })
+
+  it('LLM 失败静默：不抛出、不写摘要', async () => {
+    await ensureSessionSummary(summaryDeps({ call: async () => { throw new Error('限流') } }))
+    expect(await store.getSessionSummary('sess-ingest-1')).toBeUndefined()
+  })
+
+  it('无可用路由或整场无对话文本（仅插件注入快照）时跳过', async () => {
+    let calls = 0
+    const counting = async (): Promise<string> => { calls += 1; return '不应发生' }
+    // 无 routeHeader 且无路由覆盖：路由解析失败跳过。
+    await ensureSessionSummary(summaryDeps({ events: [turnStart(1), userMsg('你好', 2)], call: counting }))
+    // 只有插件注入快照：对话文本为空跳过。
+    await ensureSessionSummary(summaryDeps({ events: [turnStart(1), pluginMsg('系统上下文', 2)], call: counting }))
+    expect(calls).toBe(0)
+    expect(await store.getSessionSummary('sess-ingest-1')).toBeUndefined()
   })
 })
 
