@@ -1370,6 +1370,187 @@ function EpisodeTimelineView({ t, scope, project, reloadTick }: {
   )
 }
 
+/** GET /api/engram/entities 的行（host 返回 { entity, memoryCount }，entity 为实体记录的显示字段）。 */
+interface EntityListItemView {
+  readonly entity: {
+    readonly id: string
+    readonly name: string
+    readonly kind: string
+    readonly aliases: readonly string[]
+  }
+  readonly memoryCount: number
+}
+
+/** GET /api/engram/entities 返回（updated_at 倒序，附总数）。 */
+interface EntityListView {
+  readonly items: readonly EntityListItemView[]
+  readonly total: number
+}
+
+/** GET /api/engram/entity 返回：实体 + 关联 active 记忆（创建时间倒序）。 */
+interface EntityDetailView {
+  readonly entity: EntityListItemView['entity']
+  readonly memories: readonly MemoryRow[]
+}
+
+/** GET /api/engram/facts 返回的单条事实（面板只读显示所需字段）。 */
+interface FactView {
+  readonly id: string
+  readonly content: string
+  readonly validAt: number
+  readonly invalidAt: number | null
+  readonly replacedBy: string | null
+}
+
+/** GET /api/engram/facts 返回（valid_at 倒序，附总数）。 */
+interface EntityFactsView {
+  readonly items: readonly FactView[]
+  readonly total: number
+}
+
+/** 实体类别数据值 → 词典键（筛选 chips、列表行与详情卡共用一份映射）。 */
+const ENTITY_KIND_KEY: Record<string, EngramKey> = {
+  person: 'entityKindPerson',
+  project: 'entityKindProject',
+  tool: 'entityKindTool',
+  concept: 'entityKindConcept',
+  other: 'entityKindOther',
+}
+const ENTITY_KINDS = ['person', 'project', 'tool', 'concept', 'other'] as const
+
+/** 实体行的类别标签（未知 kind 回退「其他」）。 */
+function entityKindLabel(t: T, kind: string): string {
+  return t(ENTITY_KIND_KEY[kind] ?? 'entityKindOther')
+}
+
+/**
+ * 实体词典视图：浏览摄取期从记忆中抽取的实体（人物/项目/工具/概念），
+ * 类别 chips + 名称/别名子串过滤；点「查看」展开该实体牵出的关联记忆卡。
+ */
+function EntityView({ t, scope, project, reloadTick }: {
+  t: T
+  scope: 'user' | 'project' | 'shared'
+  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
+  project: string | null
+  reloadTick: number
+}): React.ReactElement {
+  const [kind, setKind] = useState<'all' | (typeof ENTITY_KINDS)[number]>('all')
+  const [q, setQ] = useState('')
+  const [data, setData] = useState<EntityListView | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+  /** 展开的实体详情卡（null = 未展开）；busy 防重复点击。 */
+  const [detail, setDetail] = useState<EntityDetailView | null>(null)
+  const [facts, setFacts] = useState<EntityFactsView | null>(null)
+  const [detailBusy, setDetailBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const params = new URLSearchParams({ scope })
+    if (kind !== 'all') params.set('kind', kind)
+    if (q !== '') params.set('q', q)
+    api<EntityListView>(`entities?${params.toString()}`)
+      .then(d => { if (!cancelled) { setData(d); setFailed(null) } })
+      .catch((err: Error) => { if (!cancelled) setFailed(err.message) })
+    return () => { cancelled = true }
+  }, [scope, project, kind, q, reloadTick])
+
+  /** 展开实体详情：实体记录 + 关联记忆 + 事实链全貌（含已失效，看事实如何演变）。 */
+  const openDetail = (id: string): void => {
+    setDetailBusy(true)
+    Promise.all([
+      api<EntityDetailView>(`entity?scope=${scope}&id=${encodeURIComponent(id)}`),
+      api<EntityFactsView>(`facts?scope=${scope}&entityId=${encodeURIComponent(id)}&includeInvalid=1`),
+    ])
+      .then(([d, f]) => { setDetail(d); setFacts(f); setDetailBusy(false); setFailed(null) })
+      .catch((err: Error) => { setFailed(err.message); setDetailBusy(false) })
+  }
+
+  /** 详情卡里的关联记忆行：时刻 + 房间 + 内容（只读观测，不提供编辑入口）。 */
+  const renderMemory = (row: MemoryRow): React.ReactElement => (
+    <div key={row.id} className={styles.episodeRow} title={row.id}>
+      <time className={styles.episodeRowTime}>{fmtTime(row.createdAt)}</time>
+      <span className={styles.episodeRowKind}>{kindLabel(t, row.kind)}</span>
+      <span className={styles.episodeRowText}>{row.content}</span>
+    </div>
+  )
+
+  /** 详情卡里的事实行：生效日期 + 状态标签 + 陈述；失效行标「已失效」。 */
+  const renderFact = (fact: FactView): React.ReactElement => (
+    <div key={fact.id} className={styles.episodeRow} title={fact.id}>
+      <time className={styles.episodeRowTime}>{new Date(fact.validAt).toLocaleDateString()}</time>
+      <span className={styles.episodeRowKind}>{fact.invalidAt === null ? t('factValid') : t('factInvalid')}</span>
+      <span className={styles.episodeRowText}>{fact.content}</span>
+    </div>
+  )
+
+  return (
+    <>
+      {/* 过滤行：类别 chips；切换过滤时收起已展开的详情卡，避免与新列表错位。 */}
+      <div className={styles.chipRow}>
+        {([
+          ['all', t('entityKindAll')],
+          ...ENTITY_KINDS.map(option => [option, t(ENTITY_KIND_KEY[option] ?? 'entityKindOther')] as const),
+        ] as const).map(([value, label]) => (
+          <button key={value} type="button" aria-pressed={kind === value}
+            className={kind === value ? `${styles.chip} ${styles.chipOn}` : styles.chip}
+            onClick={() => { setKind(value); setDetail(null); setFacts(null) }}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className={styles.toolbarRow}>
+        <input className={`${styles.input} ${styles.search}`} placeholder={t('entitySearchPlaceholder')} value={q}
+          onChange={event => { setQ(event.target.value.trim()); setDetail(null); setFacts(null) }} />
+        {data !== null && <span className={styles.sectionHint}>{t('entityCount', { n: data.total })}</span>}
+      </div>
+      {failed !== null && <div className={styles.expandLoading}>{t('loadFailed', { msg: failed })}</div>}
+      {detail !== null && (
+        <section className={`${styles.panelCard} ${styles.episodeAround}`}>
+          <header className={styles.episodeAroundHead}>
+            <b>{detail.entity.name}</b>
+            <span className={styles.episodeRowKind}>{entityKindLabel(t, detail.entity.kind)}</span>
+            <button type="button" className={styles.button} onClick={() => { setDetail(null); setFacts(null) }}>
+              {t('episodeClose')}
+            </button>
+          </header>
+          {detail.entity.aliases.length > 0 && (
+            <p className={styles.sectionHint}>{`${t('entityAliases')}：${detail.entity.aliases.join('、')}`}</p>
+          )}
+          {detail.memories.length === 0
+            ? <p className={styles.sectionHint}>{t('entityNoMemories')}</p>
+            : <div>{detail.memories.map(renderMemory)}</div>}
+          {facts !== null && (
+            <>
+              <p className={styles.sectionHint}>{t('factSection', { n: facts.total })}</p>
+              {facts.items.length === 0
+                ? <p className={styles.sectionHint}>{t('factEmpty')}</p>
+                : <div>{facts.items.map(renderFact)}</div>}
+            </>
+          )}
+        </section>
+      )}
+      {data === null && failed === null && <div className={styles.expandLoading}>{t('loading')}</div>}
+      {data !== null && data.items.length === 0 && <div className={styles.empty}>{t('entityEmpty')}</div>}
+      {data !== null && data.items.map(item => (
+        <div key={item.entity.id} className={styles.episodeRow} title={item.entity.id}>
+          <span className={styles.episodeRowKind}>{entityKindLabel(t, item.entity.kind)}</span>
+          <span className={styles.episodeRowText}>
+            {item.entity.name}
+            {item.entity.aliases.length > 0 && (
+              <small className={styles.sectionHint}>{`（${item.entity.aliases.join('、')}）`}</small>
+            )}
+          </span>
+          <span className={styles.episodeRowTime}>{t('entityMemories', { n: item.memoryCount })}</span>
+          <button type="button" className={styles.button} disabled={detailBusy}
+            onClick={() => { openDetail(item.entity.id) }}>
+            {t('entityOpen')}
+          </button>
+        </div>
+      ))}
+    </>
+  )
+}
+
 /** 宫殿健康分卡：5 维 0-100 + 总分 + 每维度进度条。 */
 interface HealthReport {
   readonly overall: number
@@ -1896,8 +2077,8 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   /** 批量遗忘的两段式确认。 */
   const [confirmForget, setConfirmForget] = useState(false)
-  /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / episodes 往事时间线 / log 管家日志 / backfill 历史回填。 */
-  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'episodes' | 'log' | 'backfill'>('today')
+  /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / episodes 往事时间线 / entities 实体词典 / log 管家日志 / backfill 历史回填。 */
+  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'episodes' | 'entities' | 'log' | 'backfill'>('today')
   /** 项目宫殿来源（持久化）：'follow' = 跟随 GUI 当前工作区；其它值 = 固定的 host 分库 dbName。 */
   const [projectMode, setProjectMode] = usePersistedString('library.project', 'follow')
   /** GUI 当前工作区（与侧边栏同一判定）与 host 的项目宫殿清单。 */
@@ -2189,6 +2370,12 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
           {t('tabEpisodes')}
         </button>
         <button type="button" role="tab"
+          className={activeTab === 'entities' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
+          aria-selected={activeTab === 'entities'}
+          onClick={() => { setActiveTab('entities') }}>
+          {t('tabEntities')}
+        </button>
+        <button type="button" role="tab"
           className={activeTab === 'log' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
           aria-selected={activeTab === 'log'}
           onClick={() => { setActiveTab('log') }}>
@@ -2437,6 +2624,18 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
               <span className={styles.sectionHint}>{t('episodeHint')}</span>
             </div>
             <EpisodeTimelineView t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
+          </section>
+        </div>
+      )}
+
+      {activeTab === 'entities' && (
+        <div className={styles.tabPanel}>
+          <section className={styles.section}>
+            <div className={styles.sectionHead}>
+              <h4 className={styles.sectionTitle}>{t('tabEntities')}</h4>
+              <span className={styles.sectionHint}>{t('entityHint')}</span>
+            </div>
+            <EntityView t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
           </section>
         </div>
       )}

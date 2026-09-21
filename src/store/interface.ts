@@ -5,7 +5,9 @@
  */
 
 import type {
-  DecayOptions, EngramEdgeType, EngramScope, EpisodeTimelineQuery, EpisodeTimelineResult, ExportData,
+  DecayOptions, EngramEdgeType, EngramScope, EntityDetail, EntityId, EntityListFilter,
+  EntityListResult, EntityMention, EntityRecord, EpisodeTimelineQuery, EpisodeTimelineResult, ExportData,
+  FactListFilter, FactListResult, FactRecord, FactWriteInput,
   ForgettingTombstone, ForgottenAuditRow, ListFilter, ListResult,
   MemoryId, MemoryOutcome, MemoryRecord, OperationLogRow, ProfileBlock, ProfileBlockVersion,
   ReviewGrade, ReviewView, SearchQuery, SearchResult, Slot, StoreStats, TimelineQuery, UpdateInput, WriteInput,
@@ -140,6 +142,28 @@ export interface EngramStore {
   reinforce(id: MemoryId, note: string): Promise<MemoryRecord | undefined>
   /** 蒸馏写入原语：单事务内写新条目、归档全部旧条目并逐条建立 supersedes 边。 */
   supersedeMany(input: WriteInput, oldIds: readonly MemoryId[]): Promise<MemoryRecord>
+  /**
+   * 实体消解：提及按归一化名（trim + 压缩空白 + 小写）与既有实体的 name/aliases 精确
+   * 匹配，未命中新建；返回与提及同序的实体列表。第一版不做相似度合并。
+   */
+  resolveEntities(mentions: readonly EntityMention[]): Promise<readonly EntityRecord[]>
+  /** 关联记忆与实体（幂等；id 不校验存在性——调用方只传 resolveEntities 的产出）。 */
+  linkNodeEntities(nodeId: MemoryId, entityIds: readonly EntityId[]): Promise<void>
+  /** 批量取各记忆关联的实体；无关联的记忆不出现在结果 Map 中。 */
+  entitiesOfNodes(nodeIds: readonly MemoryId[]): Promise<ReadonlyMap<MemoryId, readonly EntityRecord[]>>
+  /** 实体词典分页列表（updated_at 倒序），memoryCount 只统计 active 关联。 */
+  listEntities(filter: EntityListFilter): Promise<EntityListResult>
+  /** 实体详情：实体 + 关联 active 记忆（创建时间倒序，至多 memoryLimit 条）；id 不存在返回 undefined。 */
+  entityDetail(id: EntityId, memoryLimit: number): Promise<EntityDetail | undefined>
+  /**
+   * 批量写入事实（schema v11）：每条独立落库。输入声明 replaces 且目标事实存在时，
+   * 目标置 invalid_at = now 并回指 replaced_by = 新事实 id（软失效，历史链保留）；
+   * replaces 指向不存在的 id 时按无取代写入（不失败——摄取/工具路径的引用可能过期）。
+   * 不校验 entityId 存在性（调用方只传 resolveEntities 的产出）。
+   */
+  writeFacts(inputs: readonly FactWriteInput[]): Promise<readonly FactRecord[]>
+  /** 事实链查询：按实体取事实；asOf 时点过滤，includeInvalid 展开全链（valid_at 倒序，附总数）。 */
+  factsOfEntity(filter: FactListFilter): Promise<FactListResult>
   /** 写入一条结构化审计记录（辅助 LLM 请求等，不进会话日志——下游插件禁止写未知事件类型）。 */
   audit(op: string, targetId: string, detail: string | null): Promise<void>
   /** 幂等键查重：op_log 中是否已存在指定 op+detail 的记录。 */

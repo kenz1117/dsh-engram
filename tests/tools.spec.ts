@@ -120,6 +120,37 @@ describe('engram tools', () => {
       .rejects.toThrow(/清洗后内容为空/)
   })
 
+  it('engram_save 单条带 entities：消解落词典并关联到新记忆', async () => {
+    await tools.get('engram_save')!.execute(
+      {
+        content: 'ken 负责 dsh-engram 插件', kind: 'fact', scope: 'user',
+        entities: [{ name: 'ken', kind: 'person', aliases: ['阿肯'] }, { name: 'dsh-engram', kind: 'project' }],
+      }, fakeExec)
+    // 两个实体落词典。
+    const list = await store.listEntities({ limit: 10, offset: 0 })
+    expect(list.total).toBe(2)
+    // 关联反查命中两条。
+    const record = (await store.topActive('user', 10)).find(item => item.content === 'ken 负责 dsh-engram 插件')!
+    const linked = (await store.entitiesOfNodes([record.id])).get(record.id) ?? []
+    expect(linked.map(entity => entity.name).sort()).toEqual(['dsh-engram', 'ken'])
+  })
+
+  it('engram_save items 批量带 entities：逐条消解关联；坏提及丢弃不报错', async () => {
+    const result = await tools.get('engram_save')!.execute({
+      items: [
+        { content: '批量事实一', kind: 'fact', entities: [{ name: 'postgres', kind: 'tool' }] },
+        { content: '批量偏好二', kind: 'preference', entities: [{ name: '   ' }, { name: 'x'.repeat(81) }] },
+      ],
+      scope: 'user',
+    }, fakeExec) as { count: number; failed: unknown[] }
+    expect(result.count).toBe(2)
+    expect(result.failed).toEqual([])
+    // 只有 postgres 落词典：第二条的坏提及（空名/缺名）被边界校验丢弃，不影响保存。
+    const list = await store.listEntities({ limit: 10, offset: 0 })
+    expect(list.total).toBe(1)
+    expect(list.items[0]!.entity.name).toBe('postgres')
+  })
+
   it('engram_save items 批量保存多条', async () => {
     const result = await tools.get('engram_save')!.execute({
       items: [
@@ -277,6 +308,18 @@ describe('engram tools', () => {
     expect(result.text).toContain('4000')
   })
 
+  it('engram_search 带 asOf：头部时点回看注记，行尾附关联实体的时点事实', async () => {
+    const saved = await store.write({ scope: 'user', kind: 'fact', content: '部署在 4000 端口' })
+    const [ken] = await store.resolveEntities([{ name: 'ken', kind: 'person' }])
+    await store.linkNodeEntities(saved.id, [ken!.id])
+    await store.writeFacts([{ entityId: ken!.id, content: 'ken 的服务跑在 4000 端口' }])
+    const result = await tools.get('engram_search')!.execute(
+      { query: '端口', scope: 'user', asOf: '2027-01-01' }, fakeExec) as { text: string }
+    expect(result.text).toContain('时点回看')
+    expect(result.text).toContain('2027-01-01')
+    expect(result.text).toContain('时点事实: ken 的服务跑在 4000 端口')
+  })
+
   it('engram_update 走 supersedes 链', async () => {
     const saved = await store.write({ scope: 'user', kind: 'decision', content: '选 pnpm' })
     const result = await tools.get('engram_update')!.execute(
@@ -288,6 +331,85 @@ describe('engram tools', () => {
   it('engram_update 不存在的 id 报错并提示 scope', async () => {
     await expect(tools.get('engram_update')!.execute(
       { id: 'nope', content: 'x', scope: 'user' }, fakeExec)).rejects.toThrow(/scope/)
+  })
+
+  it('engram_facts 写入：单条落表、取代软失效、坏条目进 failed', async () => {
+    const [ken] = await store.resolveEntities([{ name: 'ken', kind: 'person' }])
+    const [old] = await store.writeFacts([{ entityId: ken!.id, content: 'ken 用 vim 编辑' }])
+    const result = await tools.get('engram_facts')!.execute(
+      { facts: [
+        { entity: 'ken', content: 'ken 改用 VSCode', replaces: old!.id },
+        { entity: 'ken', content: '' },
+        { content: '缺实体名的事实' },
+      ] }, fakeExec) as { count: number; text: string }
+    expect(result.count).toBe(1)
+    expect(result.text).toContain('已写入 1 条事实')
+    expect(result.text).toContain('其中 1 条声明取代旧事实')
+    expect(result.text).toContain('（取代 ')
+    expect(result.text).toContain('2 条失败：#2 content 缺失或为空；#3 需要 entity 或 entityId')
+    // 写入模式返回纯文本，不经过 renderMemoryPacket，无输出包。
+    expect(result.text).not.toContain('<engram_memory_context')
+    // 取代链：旧事实软失效并回指后继。
+    const full = await store.factsOfEntity({ entityId: ken!.id, includeInvalid: true, limit: 10, offset: 0 })
+    expect(full.total).toBe(2)
+    expect(full.items.find(fact => fact.id === old!.id)?.replacedBy).toBeTruthy()
+  })
+
+  it('engram_facts 参数校验：facts 与查询互斥、空数组 loud 失败', async () => {
+    await expect(tools.get('engram_facts')!.execute(
+      { facts: [{ entity: 'ken', content: 'x' }], entity: 'ken' }, fakeExec))
+      .rejects.toThrow(/不能同时使用/)
+    await expect(tools.get('engram_facts')!.execute(
+      { facts: [] }, fakeExec)).rejects.toThrow(/必须是非空数组/)
+  })
+
+  it('engram_facts 按名查询：未命中不新建；近邻回候选；歧义要 entityId', async () => {
+    const empty = await tools.get('engram_facts')!.execute({ entity: 'kenny' }, fakeExec) as { total: number; text: string }
+    expect(empty.total).toBe(0)
+    expect(empty.text).toContain('未找到实体「kenny」')
+    expect(empty.text).toContain('词典中没有近似名称')
+    await store.resolveEntities([{ name: 'kenny.smith', kind: 'person' }])
+    const near = await tools.get('engram_facts')!.execute({ entity: 'kenny' }, fakeExec) as { text: string }
+    expect(near.text).toContain('近似候选：kenny.smith（id=')
+    expect(near.text).toContain('可用 entityId 精确查询')
+    // 查询路径不经过消解，词典不增长。
+    expect((await store.listEntities({ limit: 10, offset: 0 })).total).toBe(1)
+    // 歧义：主名与另一实体的别名归一化同名 → 要求 entityId。
+    const [a] = await store.resolveEntities([{ name: 'ken', kind: 'person' }])
+    await store.resolveEntities([{ name: 'ken.wang', kind: 'person', aliases: ['KEN'] }])
+    const ambiguous = await tools.get('engram_facts')!.execute({ entity: 'ken' }, fakeExec) as { total: number; text: string }
+    expect(ambiguous.total).toBe(0)
+    expect(ambiguous.text).toContain('匹配到 2 个实体')
+    expect(ambiguous.text).toContain('请用 entityId 指定')
+    const direct = await tools.get('engram_facts')!.execute({ entityId: a!.id }, fakeExec) as { total: number; text: string }
+    expect(direct.text).toContain('没有符合条件的事实')
+  })
+
+  it('engram_facts entityId 查询：includeInvalid 全链与 asOf 时点过滤', async () => {
+    const [ken] = await store.resolveEntities([{ name: 'ken', kind: 'person' }])
+    // 假时钟控制事实生效与失效时刻：asOf 断言完全由时间窗决定。
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.parse('2026-09-01T10:00:00Z'))
+    const [old] = await store.writeFacts([{ entityId: ken!.id, content: 'ken 用 vim 编辑' }])
+    vi.setSystemTime(Date.parse('2026-09-10T10:00:00Z'))
+    await store.writeFacts([{ entityId: ken!.id, content: 'ken 改用 VSCode', replaces: old!.id }])
+    vi.useRealTimers()
+    const full = await tools.get('engram_facts')!.execute(
+      { entityId: ken!.id, includeInvalid: true }, fakeExec) as { total: number; text: string }
+    expect(full.total).toBe(2)
+    // 查询模式单命中走 renderMemoryPacket，输出带 engram_memory_context 包裹。
+    expect(full.text).toContain('<engram_memory_context source="tool_facts">')
+    expect(full.text).toContain('全链含已失效')
+    expect(full.text).toContain('（已失效 2026-09-10')
+    const past = await tools.get('engram_facts')!.execute(
+      { entityId: ken!.id, asOf: '2026-09-05' }, fakeExec) as { total: number; text: string }
+    expect(past.total).toBe(1)
+    expect(past.text).toContain('时点 2026-09-05')
+    expect(past.text).toContain('ken 用 vim 编辑')
+    expect(past.text).not.toContain('ken 改用 VSCode')
+    const beforeAll = await tools.get('engram_facts')!.execute(
+      { entityId: ken!.id, asOf: '2026-08-01' }, fakeExec) as { text: string }
+    expect(beforeAll.text).toContain('没有符合条件的事实')
   })
 
   it('engram_forget 后 engram_search 不再命中', async () => {
@@ -370,12 +492,12 @@ describe('engram tools', () => {
     expect(result.text).toContain('记忆甲内容')
   })
 
-  it('工具集恰为 19 个且名字正确', () => {
+  it('工具集恰为 20 个且名字正确', () => {
     expect([...tools.keys()].sort()).toEqual([
       'engram_assess', 'engram_audit_forgotten', 'engram_distill', 'engram_episode_timeline', 'engram_examine',
-      'engram_export', 'engram_forget', 'engram_ingest_history', 'engram_neighbors', 'engram_profile_edit',
-      'engram_report', 'engram_review', 'engram_review_queue', 'engram_save', 'engram_search', 'engram_stats',
-      'engram_timeline', 'engram_tour', 'engram_update',
+      'engram_export', 'engram_facts', 'engram_forget', 'engram_ingest_history', 'engram_neighbors',
+      'engram_profile_edit', 'engram_report', 'engram_review', 'engram_review_queue', 'engram_save',
+      'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
     ])
   })
 

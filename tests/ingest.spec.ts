@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   ACTIVITY_THRESHOLD, INGEST_DONE_OP, INGEST_PENDING_OP, activityScore, encodeTurnKey, ensureSessionSummary, ingestFinalTurn,
   ingestPreviousTurn, ingestWriteRouting, isChitchat, forbidsCapture, lastTurnNumber, lastTurnSlice, markPendingIngest,
-  previousTurnSlice, replayPendingIngests, throttleDecision, turnSlice, turnSignals,
+  parseEntityMentions, parseFactMentions, previousTurnSlice, replayPendingIngests, throttleDecision,
+  turnSlice, turnSignals,
 } from '../src/ingest/hook.ts'
 import type { IngestRequestEventData } from '../src/ingest/hook.ts'
 import { openEngramStore } from '../src/store/sqlite.ts'
@@ -698,5 +699,163 @@ describe('摄取写入四态', () => {
     expect(dup.written).toBe(1)
     expect(dup.dropped).toBe(1)
     expect(dup.merged).toBe(0)
+  })
+
+  it('merge 路径带实体：实体挂到被强化的既有条目，不新建记忆', async () => {
+    const existing = await store.write({ scope: 'user', kind: 'preference', content: '既有偏好条目', embedding: unitVec([1, 0]) })
+    const outcome = await ingestPreviousTurn(baseDeps({
+      embedder: Promise.resolve(fixedEmbedder({ '用户最喜欢的编程语言是 TypeScript': [1, 0] })),
+      call: async () => JSON.stringify([
+        { content: '用户最喜欢的编程语言是 TypeScript', kind: 'preference', importance: 0.8,
+          entities: [{ name: 'TypeScript', kind: 'tool' }] },
+      ]),
+    }))
+    expect(outcome.merged).toBe(1)
+    expect((await store.stats()).total).toBe(1)
+    const linked = (await store.entitiesOfNodes([existing.id])).get(existing.id) ?? []
+    expect(linked.map(entity => entity.name)).toEqual(['TypeScript'])
+  })
+})
+
+describe('parseEntityMentions（模型输出边界校验）', () => {
+  it('合法提及保留：name 去空白、aliases 过滤非字符串与空值', () => {
+    expect(parseEntityMentions([
+      { name: '  DeepSeek Harness  ', kind: 'project', aliases: ['DSH', '', 42, '   '] },
+      { name: 'ken', kind: 'person' },
+    ])).toEqual([
+      { name: 'DeepSeek Harness', kind: 'project', aliases: ['DSH'] },
+      { name: 'ken', kind: 'person' },
+    ])
+  })
+
+  it('非法条目一律丢弃：非数组、非对象、缺 name、空名、超长名；kind 非法回退 other', () => {
+    expect(parseEntityMentions('不是数组')).toEqual([])
+    expect(parseEntityMentions([null, 42, '字符串', { noName: true }])).toEqual([])
+    expect(parseEntityMentions([{ name: 42 }, { name: '   ' }, { name: 'x'.repeat(81) }])).toEqual([])
+    expect(parseEntityMentions([{ name: '某物', kind: 'creature' }])).toEqual([{ name: '某物', kind: 'other' }])
+  })
+})
+
+describe('摄取管线实体关联（schema v10）', () => {
+  it('accept 路径：候选 entities 消解落词典并挂到新记忆', async () => {
+    const outcome = await ingestPreviousTurn(baseDeps({
+      call: async () => JSON.stringify([
+        { content: '用户在开发 dsh-engram 记忆插件', kind: 'fact', importance: 0.7,
+          entities: [{ name: 'ken', kind: 'person', aliases: ['阿肯'] }, { name: 'dsh-engram', kind: 'project' }] },
+      ]),
+    }))
+    expect(outcome.written).toBe(1)
+    // 两个实体落词典。
+    expect((await store.listEntities({ limit: 10, offset: 0 })).total).toBe(2)
+    // 关联反查命中两条。
+    const record = (await store.topActive('user', 10))[0]!
+    const linked = (await store.entitiesOfNodes([record.id])).get(record.id) ?? []
+    expect(linked.map(entity => entity.name).sort()).toEqual(['dsh-engram', 'ken'])
+  })
+
+  it('候选无 entities 字段时不写词典', async () => {
+    await ingestPreviousTurn(baseDeps())
+    expect((await store.listEntities({ limit: 10, offset: 0 })).total).toBe(0)
+    expect((await store.topActive('user', 10)).length).toBe(2)
+  })
+
+  it('实体消解失败静默：记忆照常落库，不阻塞摄取', async () => {
+    // 词典层故障（如磁盘损坏）：消解抛错被吞掉，候选处置不受影响。
+    const failing: EngramStore = {
+      ...store,
+      resolveEntities: async () => { throw new Error('实体词典故障') },
+    }
+    const outcome = await ingestPreviousTurn(baseDeps({
+      openStore: async () => failing,
+      call: async () => JSON.stringify([
+        { content: '词典故障也照常落库的记忆', kind: 'fact',
+          entities: [{ name: 'ken', kind: 'person' }] },
+      ]),
+    }))
+    expect(outcome.written).toBe(1)
+    expect((await store.topActive('user', 10)).some(record => record.content === '词典故障也照常落库的记忆')).toBe(true)
+    expect((await store.listEntities({ limit: 10, offset: 0 })).total).toBe(0)
+  })
+})
+
+describe('parseFactMentions（模型输出边界校验）', () => {
+  it('合法提及保留：entity 与 content 去空白', () => {
+    expect(parseFactMentions([
+      { entity: '  ken  ', content: '  ken 用 vim 编辑  ' },
+      { entity: 'dsh-engram', content: '存储引擎是 SQLite' },
+    ])).toEqual([
+      { entity: 'ken', content: 'ken 用 vim 编辑' },
+      { entity: 'dsh-engram', content: '存储引擎是 SQLite' },
+    ])
+  })
+
+  it('非法条目一律丢弃：非数组、非对象、缺 entity/content、空值、超长', () => {
+    expect(parseFactMentions('不是数组')).toEqual([])
+    expect(parseFactMentions([null, 42, '字符串', { entity: 'ken' }, { content: 'x' }])).toEqual([])
+    expect(parseFactMentions([
+      { entity: '   ', content: '事实内容' },
+      { entity: 'ken', content: '   ' },
+      { entity: 'x'.repeat(81), content: '事实内容' },
+      { entity: 'ken', content: 'x'.repeat(501) },
+    ])).toEqual([])
+  })
+})
+
+describe('摄取管线事实抽取（schema v11）', () => {
+  it('accept 路径：候选 facts 按归一化实体名对上后写入事实表并带来源记忆', async () => {
+    const outcome = await ingestPreviousTurn(baseDeps({
+      call: async () => JSON.stringify([
+        { content: '用户把 dsh-engram 的存储迁到了 SQLite', kind: 'fact', importance: 0.7,
+          entities: [{ name: 'dsh-engram', kind: 'project' }],
+          facts: [{ entity: 'dsh-engram', content: 'dsh-engram 的存储引擎是 SQLite' }] },
+      ]),
+    }))
+    expect(outcome.written).toBe(1)
+    const [entity] = (await store.listEntities({ q: 'dsh-engram', limit: 10, offset: 0 })).items
+    const { items: facts } = await store.factsOfEntity({ entityId: entity!.entity.id, limit: 10, offset: 0 })
+    expect(facts.map(fact => fact.content)).toEqual(['dsh-engram 的存储引擎是 SQLite'])
+    // 来源记忆回指抽出该事实的候选条目。
+    const record = (await store.topActive('user', 10))[0]!
+    expect(facts[0]?.sourceNodeId).toBe(record.id)
+  })
+
+  it('facts.entity 对不上同批实体时整条丢弃', async () => {
+    await ingestPreviousTurn(baseDeps({
+      call: async () => JSON.stringify([
+        { content: '候选带一条孤儿事实', kind: 'fact',
+          entities: [{ name: 'ken', kind: 'person' }],
+          facts: [
+            { entity: 'ghost', content: '幽灵事实：没有对应实体' },
+            { entity: 'ken', content: 'ken 的事实：正常落表' },
+          ] },
+      ]),
+    }))
+    // 孤儿事实不落表，幽灵实体也不进词典。
+    expect((await store.listEntities({ limit: 10, offset: 0 })).total).toBe(1)
+    const [entity] = (await store.listEntities({ q: 'ken', limit: 10, offset: 0 })).items
+    const { items: facts } = await store.factsOfEntity({ entityId: entity!.entity.id, limit: 10, offset: 0 })
+    expect(facts.map(fact => fact.content)).toEqual(['ken 的事实：正常落表'])
+  })
+
+  it('事实写入失败静默：记忆照常落库，不阻塞摄取', async () => {
+    // 事实表故障（如磁盘损坏）：与实体消解同纪律，只跳过增强数据。
+    const failing: EngramStore = {
+      ...store,
+      writeFacts: async () => { throw new Error('事实表故障') },
+    }
+    const outcome = await ingestPreviousTurn(baseDeps({
+      openStore: async () => failing,
+      call: async () => JSON.stringify([
+        { content: '事实表故障也照常落库的记忆', kind: 'fact',
+          entities: [{ name: 'ken', kind: 'person' }],
+          facts: [{ entity: 'ken', content: '这条事实写不进去' }] },
+      ]),
+    }))
+    expect(outcome.written).toBe(1)
+    expect((await store.topActive('user', 10)).some(record => record.content === '事实表故障也照常落库的记忆')).toBe(true)
+    // 实体已落词典、关联已建，只有事实写入被吞。
+    const [entity] = (await store.listEntities({ q: 'ken', limit: 10, offset: 0 })).items
+    const { total } = await store.factsOfEntity({ entityId: entity!.entity.id, limit: 10, offset: 0 })
+    expect(total).toBe(0)
   })
 })

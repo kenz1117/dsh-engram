@@ -66,9 +66,10 @@ const llmDouble = {
 }
 
 const EXPECTED_TOOLS = [
-  'engram_assess', 'engram_audit_forgotten', 'engram_distill', 'engram_examine', 'engram_export', 'engram_forget',
-  'engram_ingest_history', 'engram_neighbors', 'engram_report', 'engram_review', 'engram_review_queue',
-  'engram_save', 'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
+  'engram_assess', 'engram_audit_forgotten', 'engram_distill', 'engram_episode_timeline', 'engram_examine',
+  'engram_export', 'engram_facts', 'engram_forget', 'engram_ingest_history', 'engram_neighbors', 'engram_profile_edit',
+  'engram_report', 'engram_review', 'engram_review_queue', 'engram_save', 'engram_search', 'engram_stats',
+  'engram_timeline', 'engram_tour', 'engram_update',
 ]
 
 /** 预置到 user 库的待补做摄取键（跨会话 pending 重放用例用）。 */
@@ -184,14 +185,14 @@ async function call(port: number, method: 'GET' | 'POST', path: string, body?: u
 }
 
 describe('dsh-engram real Loader composition', () => {
-  it('装载后 17 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
+  it('装载后 20 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
     const names = () => loaded.tools.schemas().map(schema => schema.name)
     for (const expected of EXPECTED_TOOLS) {
       expect(names()).toContain(expected)
     }
 
-    // HMR 安全：卸载 engram 行后 17 个工具全部释放（tools 服务仍在，其余工具不受影响）。
+    // HMR 安全：卸载 engram 行后 20 个工具全部释放（tools 服务仍在，其余工具不受影响）。
     const entry = [...loaded.loader.entries()]
       .find(candidate => candidate.options.name === '@kenz1117/dsh-engram')
     expect(entry).toBeDefined()
@@ -321,6 +322,54 @@ describe('dsh-engram real Loader composition', () => {
     const view = (around.json as { around: { anchor: { id: string }; neighbors: { content: string }[] } }).around
     expect(view.anchor.id).toBe(anchorId)
     expect(view.neighbors).toHaveLength(2)
+  })
+
+  it('实体词典 HTTP 链路：列表带关联记忆数，详情返回实体与关联记忆，缺 id 与未找到有明确状态码', { timeout: 60_000 }, async () => {
+    let kenId = ''
+    const loaded = await loadComposition([], undefined, async (dbDir) => {
+      // 在宿主打开前预置一条记忆并挂载两个实体（ken 消解时带别名）。
+      const store = await openEngramStore(join(dbDir, 'user.db'))
+      const record = await store.write({ scope: 'user', kind: 'fact', content: 'ken 负责 dsh-engram 插件的开发' })
+      const [ken, project] = await store.resolveEntities([
+        { name: 'ken', kind: 'person' },
+        { name: 'dsh-engram', kind: 'project', aliases: ['记忆插件'] },
+      ])
+      await store.linkNodeEntities(record.id, [ken!.id, project!.id])
+      kenId = String(ken!.id)
+      await store.close()
+    })
+    const port = loaded.webServer.port
+
+    // 列表：scope 回显、total 计数、每行带关联 active 记忆数。
+    const list = await call(port, 'GET', '/api/engram/entities?scope=user')
+    expect(list.status).toBe(200)
+    const listJson = list.json as {
+      scope: string
+      total: number
+      items: { entity: { name: string; kind: string; aliases: string[] }; memoryCount: number }[]
+    }
+    expect(listJson.scope).toBe('user')
+    expect(listJson.total).toBe(2)
+    const kenItem = listJson.items.find(item => item.entity.name === 'ken')!
+    expect(kenItem.entity.kind).toBe('person')
+    expect(kenItem.memoryCount).toBe(1)
+    const projectItem = listJson.items.find(item => item.entity.name === 'dsh-engram')!
+    expect(projectItem.entity.aliases).toEqual(['记忆插件'])
+
+    // 详情：实体记录 + 最近关联记忆。
+    const detail = await call(port, 'GET', `/api/engram/entity?scope=user&id=${encodeURIComponent(kenId)}`)
+    expect(detail.status).toBe(200)
+    const detailJson = detail.json as { entity: { name: string; kind: string }; memories: { content: string }[] }
+    expect(detailJson.entity.name).toBe('ken')
+    expect(detailJson.entity.kind).toBe('person')
+    expect(detailJson.memories).toHaveLength(1)
+    expect(detailJson.memories[0]!.content).toContain('dsh-engram')
+
+    // 缺 id 400；不存在的 id 404。
+    const missingId = await call(port, 'GET', '/api/engram/entity?scope=user')
+    expect(missingId.status).toBe(400)
+    const notFound = await call(port, 'GET', '/api/engram/entity?scope=user&id=no-such-entity')
+    expect(notFound.status).toBe(404)
   })
 
   it('会话 dispose 且事件源不可用时，摄取不产生未处理 rejection', { timeout: 60_000 }, async () => {

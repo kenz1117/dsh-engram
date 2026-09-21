@@ -9,12 +9,14 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { EngramError, EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asMemoryId } from '../types.ts'
+import { EngramError, EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asEntityId, asFactId, asMemoryId, normalizeEntityName } from '../types.ts'
 import { assignSlot } from '../palace/slots.ts'
 import { nextSchedule } from '../review/sm2.ts'
 import { scorePlacard } from '../imagery/score.ts'
 import type {
-  DecayOptions, EngramEdgeType, EngramScope, ExportData, ForgettingTombstone,
+  DecayOptions, EngramEdgeType, EngramScope, EntityDetail, EntityId, EntityListFilter,
+  EntityListResult, EntityMention, EntityRecord, ExportData, FactListFilter, FactListResult,
+  FactRecord, FactWriteInput, ForgettingTombstone,
   ForgottenAuditRow, ImageryLabel,
   ListFilter, ListResult, MemoryEdge, MemoryId, MemoryOutcome,
   MemoryRecord, ProfileBlock, ProfileBlockVersion, ReviewGrade, ReviewView, SearchHit, SearchResult, Slot, StoreStats,
@@ -24,7 +26,7 @@ import type {
 import type { EngramStore, RoomState } from './interface.ts'
 
 /** 当前 schema 版本；结构性变更必须 +1。可空列与伴随表走增量迁移（见 openEngramStore 的迁移段）。 */
-const SCHEMA_VERSION = 9
+const SCHEMA_VERSION = 11
 /** 增量迁移表：key 为起始版本，value 为升到下一版本的 SQL（可多语句）。
  *  v2 → v3：nodes 补可空列 outcome（使用效果回报）。
  *  v3 → v4：新增 nodes_revisions 修订表（update 归档旧条目时的内容快照）。
@@ -37,7 +39,14 @@ const SCHEMA_VERSION = 9
  *  v7 → v8：episode 情景时间线两个专用索引（kind+created_at 日期范围扫描、
  *   source_session_id+created_at 会话过滤）。列自 v1 就存在，纯索引迁移，零数据搬运。
  *  v8 → v9：会话摘要表 session_summaries（摄取期 LLM 生成的一句话会话摘要，
- *   组头展示用；与 nodes 无外键，会话 id 仅作逻辑关联）。 */
+ *   组头展示用；与 nodes 无外键，会话 id 仅作逻辑关联）。
+ *  v9 → v10：实体层两表——entities 实体词典（name/kind/aliases）与 node_entities
+ *   记忆↔实体关联。实体随来源记忆所在 scope 分库；两表均无外键，删除记忆不级联
+ *   （关联残留由查询侧 join status 过滤，见 listEntities 的 orphan 统计）。
+ *  v10 → v11：facts 事实表——摄取/工具期抽取的一句话事实，挂在实体上（entity_id
+ *   引用同库 entities.id，无外键）。valid_at/invalid_at 时间窗 + replaced_by 软失效
+ *   链：新事实可声明取代旧事实（旧事实置 invalid_at 并回指 replaced_by），历史链
+ *   保留可审计；asOf 查询按时间窗过滤（见 factsOfEntity）。 */
 const MIGRATIONS: Readonly<Record<string, string>> = {
   '2': 'ALTER TABLE nodes ADD COLUMN outcome TEXT',
   '3': `CREATE TABLE IF NOT EXISTS nodes_revisions (
@@ -65,6 +74,20 @@ const MIGRATIONS: Readonly<Record<string, string>> = {
     CREATE INDEX IF NOT EXISTS nodes_session_created ON nodes (source_session_id, created_at);`,
   '8': `CREATE TABLE IF NOT EXISTS session_summaries (
     session_id TEXT PRIMARY KEY, summary TEXT NOT NULL, updated_at INTEGER NOT NULL);`,
+  '9': `CREATE TABLE IF NOT EXISTS entities (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS node_entities (
+      node_id TEXT NOT NULL, entity_id TEXT NOT NULL,
+      PRIMARY KEY (node_id, entity_id));
+    CREATE INDEX IF NOT EXISTS entities_name ON entities (name);
+    CREATE INDEX IF NOT EXISTS node_entities_entity ON node_entities (entity_id);`,
+  '10': `CREATE TABLE IF NOT EXISTS facts (
+    id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, content TEXT NOT NULL,
+    valid_at INTEGER NOT NULL, invalid_at INTEGER, replaced_by TEXT,
+    source_node_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS facts_entity ON facts (entity_id);`,
 }
 /** RRF 融合常数：score = Σ 1/(K + rank)。 */
 const RRF_K = 60
@@ -171,6 +194,61 @@ function rowToRecord(row: NodeRow): MemoryRecord {
 
 function blobToVec(blob: Uint8Array): Float32Array {
   return new Float32Array(blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength))
+}
+
+/** 实体表的行结构（snake_case 对应列名）。 */
+interface EntityRow {
+  id: string
+  name: string
+  kind: string
+  aliases_json: string
+  created_at: number
+  updated_at: number
+}
+
+function entityRowToRecord(row: EntityRow): EntityRecord {
+  let aliases: string[] = []
+  try {
+    const parsed: unknown = JSON.parse(row.aliases_json)
+    if (Array.isArray(parsed)) aliases = parsed.filter((a): a is string => typeof a === 'string')
+  } catch {
+    // aliases_json 由本模块写入（JSON.stringify 产物），损坏时按空别名处理即可继续检索。
+  }
+  return {
+    id: asEntityId(row.id),
+    name: row.name,
+    kind: row.kind as EntityRecord['kind'],
+    aliases,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+/** 事实表的行结构（snake_case 对应列名）。 */
+interface FactRow {
+  id: string
+  entity_id: string
+  content: string
+  valid_at: number
+  invalid_at: number | null
+  replaced_by: string | null
+  source_node_id: string | null
+  created_at: number
+  updated_at: number
+}
+
+function factRowToRecord(row: FactRow): FactRecord {
+  return {
+    id: asFactId(row.id),
+    entityId: asEntityId(row.entity_id),
+    content: row.content,
+    validAt: row.valid_at,
+    invalidAt: row.invalid_at,
+    replacedBy: row.replaced_by === null ? null : asFactId(row.replaced_by),
+    sourceNodeId: row.source_node_id === null ? null : asMemoryId(row.source_node_id),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
 }
 
 function vecToBlob(vector: Float32Array): Uint8Array {
@@ -297,10 +375,24 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       source TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (scope, version));
     CREATE TABLE IF NOT EXISTS session_summaries (
       session_id TEXT PRIMARY KEY, summary TEXT NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS entities (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
+      aliases_json TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS node_entities (
+      node_id TEXT NOT NULL, entity_id TEXT NOT NULL,
+      PRIMARY KEY (node_id, entity_id));
+    CREATE TABLE IF NOT EXISTS facts (
+      id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, content TEXT NOT NULL,
+      valid_at INTEGER NOT NULL, invalid_at INTEGER, replaced_by TEXT,
+      source_node_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(node_id UNINDEXED, content, tokenize='unicode61');
     CREATE INDEX IF NOT EXISTS nodes_scope_status ON nodes (scope, status);
     CREATE INDEX IF NOT EXISTS nodes_kind_created ON nodes (kind, created_at);
     CREATE INDEX IF NOT EXISTS nodes_session_created ON nodes (source_session_id, created_at);
+    CREATE INDEX IF NOT EXISTS entities_name ON entities (name);
+    CREATE INDEX IF NOT EXISTS node_entities_entity ON node_entities (entity_id);
+    CREATE INDEX IF NOT EXISTS facts_entity ON facts (entity_id);
   `)
   // v6 索引不在此处建：旧库此刻还没有 slot_room / next_review_at 列（迁移在后面才跑），
   // 对已存在的表建这两个索引会抛 no such column。新建库走下方补建，旧库由 MIGRATIONS['5'] 建。
@@ -429,9 +521,28 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlProfileVersionGet = db.prepare('SELECT scope, version, content, source, at FROM profile_block_versions WHERE scope = ? AND version = ?')
   // 会话摘要：upsert（每会话一条，重跑覆盖）+ 单查 + 按会话 id 批量查（episodeTimeline 组头）。
   const sqlSessionSummaryUpsert = db.prepare(`INSERT INTO session_summaries (session_id, summary, updated_at) VALUES (?, ?, ?)
-    ON CONFLICT(session_id) DO UPDATE SET summary = excluded.summary, updated_at = excluded.updated_at`)
+    ON CONFLICT (session_id) DO UPDATE SET summary = excluded.summary, updated_at = excluded.updated_at`)
   const sqlSessionSummaryGet = db.prepare('SELECT session_id, summary FROM session_summaries WHERE session_id = ?')
   const sqlSessionSummaryMany = db.prepare('SELECT session_id, summary FROM session_summaries WHERE session_id IN (SELECT value FROM json_each(?))')
+  const sqlEntityAll = db.prepare('SELECT * FROM entities')
+  const sqlEntityGet = db.prepare('SELECT * FROM entities WHERE id = ?')
+  const sqlEntityInsert = db.prepare('INSERT INTO entities (id, name, kind, aliases_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+  const sqlEntityTouch = db.prepare('UPDATE entities SET updated_at = ? WHERE id = ?')
+  const sqlNodeEntityInsert = db.prepare('INSERT OR IGNORE INTO node_entities (node_id, entity_id) VALUES (?, ?)')
+  const sqlEntityByNode = db.prepare(`SELECT e.* FROM node_entities ne JOIN entities e ON e.id = ne.entity_id
+    WHERE ne.node_id = ? ORDER BY e.name`)
+  const sqlEntityMemoryCounts = db.prepare(`SELECT ne.entity_id AS id, COUNT(*) AS n FROM node_entities ne
+    JOIN nodes n ON n.id = ne.node_id WHERE n.status = 'active' GROUP BY ne.entity_id`)
+  const sqlEntityMemories = db.prepare(`SELECT n.* FROM node_entities ne JOIN nodes n ON n.id = ne.node_id
+    WHERE ne.entity_id = ? AND n.status = 'active' ORDER BY n.created_at DESC LIMIT ?`)
+  const sqlPurgeEntities = db.prepare('DELETE FROM entities')
+  const sqlPurgeNodeEntities = db.prepare('DELETE FROM node_entities')
+  const sqlFactInsert = db.prepare(`INSERT INTO facts
+    (id, entity_id, content, valid_at, invalid_at, replaced_by, source_node_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)`)
+  const sqlFactInvalidate = db.prepare('UPDATE facts SET invalid_at = ?, replaced_by = ?, updated_at = ? WHERE id = ?')
+  const sqlFactGet = db.prepare('SELECT * FROM facts WHERE id = ?')
+  const sqlPurgeFacts = db.prepare('DELETE FROM facts')
 
   /** FTS 道：按 scope 集合检索（占位符动态生成，scope 集合由调用方去重）；rooms 非空时只查指定房间。 */
   const ftsSearch = (match: string, scopes: readonly EngramScope[], rooms: readonly string[] | undefined): NodeRow[] => {
@@ -669,12 +780,17 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
           ? (sqlSlotNeighbors.all(row.slot_room, row.slot_index - 1, row.slot_index + 1, id) as unknown as { id: string }[])
               .map(neighbor => asMemoryId(neighbor.id))
           : []
+        // 实体标签（schema v10）：命中的记忆附上关联实体（id + 规范名），提取路径可沿实体展开。
+        const entityRows = sqlEntityByNode.all(id) as unknown as EntityRow[]
         hits.push({
           record: rowToRecord(row),
           score: info.score,
           via: info.via,
           ...(viaEdge === undefined ? {} : { viaEdge }),
           ...(cueNeighbors.length === 0 ? {} : { cues: { neighbors: cueNeighbors } }),
+          ...(entityRows.length === 0
+            ? {}
+            : { entities: entityRows.map(r => ({ id: asEntityId(r.id), name: r.name })) }),
         })
         sqlTouch.run(Date.now(), id)
       }
@@ -1089,10 +1205,12 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     async exportAll(): Promise<ExportData> {
       const records = (sqlAllNodes.all() as unknown as NodeRow[]).map(rowToRecord)
       const edgeRows = sqlAllEdges.all() as unknown as { from_id: string; to_id: string; type: string; created_at: number }[]
+      const entities = (sqlEntityAll.all() as unknown as EntityRow[]).map(entityRowToRecord)
       return {
         exportedAt: Date.now(),
         records,
         edges: edgeRows.map(edge => ({ from: asMemoryId(edge.from_id), to: asMemoryId(edge.to_id), type: edge.type as MemoryEdge['type'], createdAt: edge.created_at })),
+        entities,
       }
     },
 
@@ -1154,6 +1272,149 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
     },
 
+    async resolveEntities(mentions: readonly EntityMention[]): Promise<readonly EntityRecord[]> {
+      if (mentions.length === 0) return []
+      const at = Date.now()
+      const result: EntityRecord[] = []
+      withTransaction(() => {
+        // 全量加载建归一化索引：实体词典量级为个人记忆库规模（百级），全表扫比逐名查询简单且够快。
+        const byKey = new Map<string, EntityRecord>()
+        for (const row of sqlEntityAll.all() as unknown as EntityRow[]) {
+          const entity = entityRowToRecord(row)
+          byKey.set(normalizeEntityName(entity.name), entity)
+          for (const alias of entity.aliases) {
+            const aliasKey = normalizeEntityName(alias)
+            if (aliasKey !== '' && !byKey.has(aliasKey)) byKey.set(aliasKey, entity)
+          }
+        }
+        for (const mention of mentions) {
+          const name = mention.name.trim()
+          if (name === '') throw new EngramError('EMPTY_ENTITY_NAME', '实体名不能为空（清洗后的提及仍含空名）')
+          const key = normalizeEntityName(name)
+          const hit = byKey.get(key)
+          if (hit !== undefined) {
+            // 复用既有实体并刷新 updated_at：词典列表按「最近提及」倒序展示。
+            sqlEntityTouch.run(at, hit.id)
+            result.push(hit)
+            continue
+          }
+          // 新建：别名去空去重；别名键若已被其他实体占用则不登记（first wins，不做合并）。
+          const aliases = [...new Set((mention.aliases ?? []).map(a => a.trim()).filter(a => a !== ''))]
+          const entity: EntityRecord = {
+            id: asEntityId(randomUUID()),
+            name,
+            kind: mention.kind,
+            aliases,
+            createdAt: at,
+            updatedAt: at,
+          }
+          sqlEntityInsert.run(entity.id, entity.name, entity.kind, JSON.stringify(aliases), at, at)
+          byKey.set(key, entity)
+          for (const alias of aliases) {
+            const aliasKey = normalizeEntityName(alias)
+            if (aliasKey !== '' && !byKey.has(aliasKey)) byKey.set(aliasKey, entity)
+          }
+          result.push(entity)
+        }
+      })
+      return result
+    },
+
+    async linkNodeEntities(nodeId: MemoryId, entityIds: readonly EntityId[]) {
+      withTransaction(() => {
+        for (const entityId of entityIds) sqlNodeEntityInsert.run(String(nodeId), String(entityId))
+      })
+    },
+
+    async entitiesOfNodes(nodeIds: readonly MemoryId[]): Promise<ReadonlyMap<MemoryId, readonly EntityRecord[]>> {
+      const map = new Map<MemoryId, EntityRecord[]>()
+      for (const nodeId of nodeIds) {
+        const rows = sqlEntityByNode.all(String(nodeId)) as unknown as EntityRow[]
+        if (rows.length > 0) map.set(nodeId, rows.map(entityRowToRecord))
+      }
+      return map
+    },
+
+    async listEntities(filter: EntityListFilter): Promise<EntityListResult> {
+      const conditions: string[] = []
+      const params: (string | number)[] = []
+      if (filter.kind !== undefined) {
+        conditions.push('kind = ?')
+        params.push(filter.kind)
+      }
+      if (filter.q !== undefined && filter.q !== '') {
+        // q 对 name 与 aliases_json（JSON 数组文本）做 LIKE 子串匹配；转义 LIKE 通配符。
+        conditions.push("name LIKE ? ESCAPE '\\' OR aliases_json LIKE ? ESCAPE '\\'")
+        const pattern = `%${filter.q.replace(/[\\%_]/g, c => `\\${c}`)}%`
+        params.push(pattern, pattern)
+      }
+      const where = conditions.length === 0 ? '' : ` WHERE ${conditions.join(' AND ')}`
+      const total = (db.prepare(`SELECT COUNT(*) AS n FROM entities${where}`).get(...params) as unknown as { n: number }).n
+      const rows = db.prepare(`SELECT * FROM entities${where} ORDER BY updated_at DESC LIMIT ? OFFSET ?`)
+        .all(...params, filter.limit, filter.offset) as unknown as EntityRow[]
+      const counts = new Map<string, number>(
+        (sqlEntityMemoryCounts.all() as unknown as { id: string; n: number }[]).map(r => [r.id, r.n]),
+      )
+      return {
+        items: rows.map(row => ({ entity: entityRowToRecord(row), memoryCount: counts.get(row.id) ?? 0 })),
+        total,
+      }
+    },
+
+    async entityDetail(id: EntityId, memoryLimit: number): Promise<EntityDetail | undefined> {
+      const row = sqlEntityGet.get(String(id)) as unknown as EntityRow | undefined
+      if (row === undefined) return undefined
+      const memories = (sqlEntityMemories.all(String(id), memoryLimit) as unknown as NodeRow[]).map(rowToRecord)
+      return { entity: entityRowToRecord(row), memories }
+    },
+
+    async writeFacts(inputs: readonly FactWriteInput[]): Promise<readonly FactRecord[]> {
+      const now = Date.now()
+      return inputs.map(input => {
+        const id = asFactId(randomUUID())
+        const validAt = input.validAt ?? now
+        withTransaction(() => {
+          // 软失效链：replaces 指向存在的事实时才失效它（引用可能过期，过期按无取代写入）。
+          if (input.replaces !== undefined
+            && (sqlFactGet.get(String(input.replaces)) as unknown as FactRow | undefined) !== undefined) {
+            sqlFactInvalidate.run(now, id, now, String(input.replaces))
+          }
+          sqlFactInsert.run(id, String(input.entityId), input.content, validAt,
+            input.sourceNodeId === undefined ? null : String(input.sourceNodeId), now, now)
+        })
+        return {
+          id,
+          entityId: input.entityId,
+          content: input.content,
+          validAt,
+          invalidAt: null,
+          replacedBy: null,
+          sourceNodeId: input.sourceNodeId ?? null,
+          createdAt: now,
+          updatedAt: now,
+        }
+      })
+    },
+
+    async factsOfEntity(filter: FactListFilter): Promise<FactListResult> {
+      const conditions = ['entity_id = ?']
+      const params: (string | number)[] = [String(filter.entityId)]
+      // includeInvalid 优先于 asOf：全链视图本意就是展示完整历史（含失效链）。
+      if (!filter.includeInvalid) {
+        if (filter.asOf !== undefined) {
+          conditions.push('valid_at <= ? AND (invalid_at IS NULL OR invalid_at > ?)')
+          params.push(filter.asOf, filter.asOf)
+        } else {
+          conditions.push('invalid_at IS NULL')
+        }
+      }
+      const where = ` WHERE ${conditions.join(' AND ')}`
+      const total = (db.prepare(`SELECT COUNT(*) AS n FROM facts${where}`).get(...params) as unknown as { n: number }).n
+      const rows = db.prepare(`SELECT * FROM facts${where} ORDER BY valid_at DESC LIMIT ? OFFSET ?`)
+        .all(...params, filter.limit, filter.offset) as unknown as FactRow[]
+      return { items: rows.map(factRowToRecord), total }
+    },
+
     async audit(op: string, targetId: string, detail: string | null) {
       sqlLog.run(Date.now(), op, targetId, detail)
     },
@@ -1180,6 +1441,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         sqlPurgeProfileBlocks.run()
         sqlPurgeProfileVersions.run()
         sqlPurgeSessionSummaries.run()
+        sqlPurgeNodeEntities.run()
+        sqlPurgeEntities.run()
+        sqlPurgeFacts.run()
       })
     },
 

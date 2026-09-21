@@ -1,5 +1,5 @@
 /**
- * 19 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
+ * 20 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
  * scope 决定读写哪个分库；嵌入缺失时检索结果显式标记降级。
  * @module @kenz1117/dsh-engram/tools/create
  */
@@ -15,9 +15,10 @@ import type { EngramEmbedder } from '../embedder/interface.ts'
 import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
 import type { LlmRoute } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
-import type { EngramKind, EngramScope, ImageryLabel } from '../types.ts'
+import { parseEntityMentions } from '../ingest/hook.ts'
+import type { EngramKind, EngramScope, EntityId, EntityMention, FactRecord, FactWriteInput, ImageryLabel, MemoryId } from '../types.ts'
 import type { MemoryRecord, SearchHit } from '../types.ts'
-import { EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asMemoryId } from '../types.ts'
+import { EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asEntityId, asFactId, asMemoryId, normalizeEntityName } from '../types.ts'
 import { renderMemoryPacket, sanitizeProtocolText } from '../security/sanitize.ts'
 import { redactSecrets } from '../security/redact.ts'
 import {
@@ -92,6 +93,15 @@ function parseCountParam(raw: number | undefined, toolName: string, field: strin
   const value = Math.floor(raw)
   if (value < min || value > max) throw new Error(`${toolName}: ${field} 需在 ${String(min)}-${String(max)} 之间，收到 ${String(value)}`)
   return value
+}
+
+/** 事实链行渲染：序号 + 陈述 + id/生效日期；失效事实附失效日期与后继 id（全链视图用）。 */
+function renderFactLine(index: number, fact: FactRecord): string {
+  const valid = new Date(fact.validAt).toISOString().slice(0, 10)
+  const state = fact.invalidAt === null
+    ? ''
+    : `（已失效 ${new Date(fact.invalidAt).toISOString().slice(0, 10)}，被 ${fact.replacedBy ?? '未知事实'} 取代）`
+  return `${index + 1}. ${fact.content}（id=${fact.id}, 生效 ${valid}）${state}`
 }
 
 /** 历史回填估算的模型可读文本（零成本，先看数再决定跑不跑）。 */
@@ -212,7 +222,7 @@ async function rewriteQueries(deps: ToolDeps, exec: ToolRunContext, query: strin
 }
 
 /**
- * 构造 19 个工具定义（engram_save/search/assess/timeline/episode_timeline/update/forget/report/review/review_queue/
+ * 构造 20 个工具定义（engram_save/search/facts/assess/timeline/episode_timeline/update/forget/report/review/review_queue/
  * stats/export/distill/examine/neighbors/audit_forgotten/tour/ingest_history/profile_edit）。
  * @param baseDeps - 分库打开器、嵌入器、辅助 LLM、导出目录。
  * @returns 可直接 register 的工具定义数组（execute 已绑定会话 cwd 的项目宫殿路由）。
@@ -334,6 +344,20 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     return { disposition: 'accept', record, candidates: [] }
   }
 
+  /**
+   * 实体关联辅助：消解实体提及并挂到条目。merge 处置挂被并入的既有条目，
+   * accept/defer 挂新条目；失败静默（实体词典是增强数据，不阻塞记忆写入）。
+   */
+  async function linkEntities(store: EngramStore, nodeId: MemoryId, mentions: readonly EntityMention[]): Promise<void> {
+    if (mentions.length === 0) return
+    try {
+      const entities = await store.resolveEntities(mentions)
+      await store.linkNodeEntities(nodeId, entities.map(entity => entity.id))
+    } catch {
+      // 实体词典写入失败（如 EMPTY_ENTITY_NAME）不影响记忆条目本身的落库。
+    }
+  }
+
   /** 门牌参数收敛：非空字符串转 ImageryLabel（感官/情绪维度留空——AI 不需要人脑补丁），非法返回 undefined。 */
   function placardOf(raw: unknown): ImageryLabel | undefined {
     if (typeof raw !== 'string') return undefined
@@ -356,12 +380,12 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     const store = await deps.openStore(scope)
     const embedder = await deps.embedder
     // 第一步：清洗 + 校验 + 批量内去重（失败按原始下标收集，不阻塞其余）。
-    const prepared: { index: number; content: string; kind: EngramKind; importance: number | undefined }[] = []
+    const prepared: { index: number; content: string; kind: EngramKind; importance: number | undefined; entities: readonly EntityMention[] }[] = []
     const failed: { index: number; reason: string }[] = []
     const seen = new Set<string>()
     for (const [index, raw] of items.entries()) {
       if (raw === null || typeof raw !== 'object') { failed.push({ index, reason: '条目必须是对象' }); continue }
-      const candidate = raw as { content?: unknown; kind?: unknown; importance?: unknown }
+      const candidate = raw as { content?: unknown; kind?: unknown; importance?: unknown; entities?: unknown }
       if (typeof candidate.content !== 'string' || candidate.content.trim() === '') {
         failed.push({ index, reason: 'content 缺失或为空' }); continue
       }
@@ -380,6 +404,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         content,
         kind: candidate.kind as EngramKind,
         importance: typeof candidate.importance === 'number' ? candidate.importance : undefined,
+        entities: parseEntityMentions(candidate.entities),
       })
     }
     // 第二步：一次批量嵌入（对齐清洗后条目顺序）。
@@ -399,6 +424,11 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
           sourceSessionId,
           ...(embedding === undefined ? {} : { embedding }),
         })
+        // merge 处置无新条目，实体挂被并入的既有条目；其余挂新条目。
+        const nodeId = outcome.disposition === 'merge' && outcome.relatedId !== undefined
+          ? asMemoryId(outcome.relatedId)
+          : outcome.record.id
+        await linkEntities(store, nodeId, item.entities)
         saved.push({
           id: outcome.record.id,
           kind: outcome.record.kind,
@@ -421,13 +451,31 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     parameters: {
       content: { type: 'string', description: '记忆正文（单条模式必填），一句话完整表达' },
       kind: { type: 'string', enum: [...KINDS], description: '记忆种类（单条模式必填）' },
+      entities: {
+        type: 'array',
+        description: '本条记忆提到的实体（可选，仅单条模式）：人名/项目名/工具名/概念名，用于按实体检索',
+        items: { type: 'object', additionalProperties: false, properties: {
+          name: { type: 'string', required: true, description: '实体名（专名本身，不超过 20 字）' },
+          kind: { type: 'string', enum: ['person', 'project', 'tool', 'concept', 'other'], description: '实体种类，默认 other' },
+          aliases: { type: 'array', items: { type: 'string' }, description: '该实体的其他叫法' },
+        } },
+      },
       items: {
         type: 'array',
-        description: '批量保存条目数组，每项 {content, kind, importance?}；与 content/kind 二选一',
+        description: '批量保存条目数组，每项 {content, kind, importance?, entities?}；与 content/kind 二选一',
         items: { type: 'object', additionalProperties: false, properties: {
           content: { type: 'string', required: true, description: '记忆正文' },
           kind: { type: 'string', enum: [...KINDS], required: true, description: '记忆种类' },
           importance: { type: 'number', description: '重要性 0-1' },
+          entities: {
+            type: 'array',
+            description: '该条提到的实体',
+            items: { type: 'object', additionalProperties: false, properties: {
+              name: { type: 'string', required: true, description: '实体名（专名本身，不超过 20 字）' },
+              kind: { type: 'string', enum: ['person', 'project', 'tool', 'concept', 'other'], description: '实体种类，默认 other' },
+              aliases: { type: 'array', items: { type: 'string' }, description: '该实体的其他叫法' },
+            } },
+          },
         } },
       },
       scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '作用域，默认 project' },
@@ -463,7 +511,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       render: (_args, value) => [{ type: 'text', text: renderSaveResultText(value as SaveResultView) }],
     },
     async execute(args, exec) {
-      const input = args as { content?: unknown; kind?: unknown; items?: unknown; scope?: unknown; importance?: unknown; placard?: unknown }
+      const input = args as { content?: unknown; kind?: unknown; entities?: unknown; items?: unknown; scope?: unknown; importance?: unknown; placard?: unknown }
       const sourceSessionId = exec.agent?.id ?? null
       // 批量模式：items 与 content/kind 互斥，同传 loud 失败。
       if (input.items !== undefined) {
@@ -486,6 +534,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const embedder = await deps.embedder
       const embeddings = embedder === undefined ? undefined : await embedder.embed([content.trim()])
       const imagery = placardOf(input.placard)
+      const mentions = parseEntityMentions(input.entities)
       const outcome = await writeWithDisposition(store, {
         scope,
         kind: input.kind as EngramKind,
@@ -495,6 +544,13 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         ...(embeddings?.[0] === undefined ? {} : { embedding: embeddings[0] }),
         ...(imagery === undefined ? {} : { imagery }),
       })
+      // 实体关联：merge 挂被并入的既有条目，accept/defer 挂新条目；失败静默。
+      if (mentions.length > 0) {
+        const nodeId = outcome.disposition === 'merge' && outcome.relatedId !== undefined
+          ? asMemoryId(outcome.relatedId)
+          : outcome.record.id
+        await linkEntities(store, nodeId, mentions)
+      }
       const { record, candidates } = outcome
       // MERGE：复述并入既有条目——不新建、不挂门牌，只强化并明确告知（防模型误以为新建成功）。
       if (outcome.disposition === 'merge') {
@@ -538,6 +594,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
       room: { type: 'string', description: '房间路由：只在指定房间内检索（如「决策堂」）。房间目录见 engram_stats 输出' },
       limit: { type: 'number', description: '返回条数上限，默认 8' },
+      asOf: { type: 'string', description: '时点回看（可选，ISO 日期如 2026-03-01）：结果行附各记忆关联实体在该时点仍有效的事实快照，回答「当时」类问题时防止过时事实误导' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: {
@@ -547,10 +604,11 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       render: (_args, value) => [{ type: 'text', text: value.text }],
     },
     async execute(args, exec) {
-      const input = args as { query: string; scope?: unknown; room?: unknown; limit?: number }
+      const input = args as { query: string; scope?: unknown; room?: unknown; limit?: number; asOf?: unknown }
       const scopes = scopesOf(input.scope)
       const rooms = typeof input.room === 'string' && input.room.trim() !== '' ? [input.room.trim()] : undefined
       const limit = input.limit ?? 8
+      const asOfMs = parseTimeParam(typeof input.asOf === 'string' ? input.asOf : undefined, 'engram_search', 'asOf')
       // 多查询改写：辅助 LLM 可用时生成 ≤3 个互补查询分别检索后 RRF 融合；
       // 失败/不可用降级原查询单查。多查询会对同一 id 重复命中强化（accessCount、
       // confidence 增长更快），语义上确为多次命中，属已知代价。
@@ -575,15 +633,48 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       )
       // 字符预算：单条 1200、总量 4800（超预算行丢弃并提示，防止长记忆淹没上下文）。
       // 行格式带宫殿坐标（房间 #桩位 + 刻入日期）、证据 ref 与编码线索（相邻桩位 id）——提取时重建编码情境。
+      // asOf 时点事实标签：命中记忆关联实体在该时点仍有效的事实（每记忆至多 4 条），随行参与预算裁剪。
+      const factNotes = new Map<string, string[]>()
+      if (asOfMs !== undefined) {
+        const scopeGroups = new Map<EngramScope, MemoryId[]>()
+        for (const hit of merged) {
+          const ids = scopeGroups.get(hit.record.scope)
+          if (ids === undefined) scopeGroups.set(hit.record.scope, [hit.record.id])
+          else ids.push(hit.record.id)
+        }
+        for (const [scope, ids] of scopeGroups) {
+          const store = await deps.openStore(scope)
+          const entityMap = await store.entitiesOfNodes(ids)
+          const factLists = new Map<EntityId, readonly FactRecord[]>()
+          for (const entities of entityMap.values()) {
+            for (const entity of entities) {
+              if (factLists.has(entity.id)) continue
+              factLists.set(entity.id, (await store.factsOfEntity({ entityId: entity.id, asOf: asOfMs, limit: 3, offset: 0 })).items)
+            }
+          }
+          for (const [nodeId, entities] of entityMap) {
+            const contents: string[] = []
+            for (const entity of entities) {
+              for (const fact of factLists.get(entity.id) ?? []) {
+                if (contents.length >= 4) break
+                contents.push(fact.content)
+              }
+            }
+            if (contents.length > 0) factNotes.set(String(nodeId), contents)
+          }
+        }
+      }
       const candidates = merged.map((hit, index) => {
         const ref = evidenceRefOf(hit.record.scope, hit.record.id, hit.record.slot)
         const edge = hit.viaEdge === undefined ? '' : `（经 ${hit.viaEdge.type} 关联自 ${hit.viaEdge.from}）`
         const slot = hit.record.slot === undefined ? '' : ` ${hit.record.slot.room}#${hit.record.slot.index}`
         const date = ` 刻于 ${new Date(hit.record.createdAt).toISOString().slice(0, 10)}`
         const cues = hit.cues === undefined ? '' : ` 相邻桩位: ${hit.cues.neighbors.join(', ')}`
+        const notes = factNotes.get(String(hit.record.id))
+        const facts = notes === undefined ? '' : ` 时点事实: ${notes.join('；')}`
         return {
           ref,
-          line: `${index + 1}. [${hit.record.scope}/${hit.record.kind}]${slot}${date} ${truncateItem(hit.record.content)}（id=${hit.record.id}, ref=${ref}）${edge}${cues}`,
+          line: `${index + 1}. [${hit.record.scope}/${hit.record.kind}]${slot}${date} ${truncateItem(hit.record.content)}（id=${hit.record.id}, ref=${ref}）${edge}${cues}${facts}`,
         }
       })
       const { kept, dropped } = fitWithinBudget(candidates, entry => entry.line.length, RECALL_TOTAL_CHARS)
@@ -596,11 +687,191 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         : evidenceBatches.register(sessionId, kept.map(entry => entry.ref))
       const prefix = degraded && lines.length > 0 ? '（语义嵌入不可用，仅关键词检索）\n' : ''
       const roomNote = rooms === undefined ? '' : `（房间路由：${rooms.join('、')}）\n`
+      const asOfNote = asOfMs === undefined ? '' : `（时点回看：行尾「时点事实」为关联实体在 ${new Date(asOfMs).toISOString().slice(0, 10)} 仍有效的事实快照）\n`
       const batchNote = batch === undefined
         ? ''
         : `\n批次 ${batch.batchId}（${String(batch.refs.size)} 条可引用证据）：作答前用 engram_assess 判定证据是否充分，evidenceRefs 只能引用上面的 ref。`
       // 输出包协议标签：记忆正文是不可信历史上下文，当前请求为检索词本身。
-      return { degraded, text: renderMemoryPacket(`${prefix}${roomNote}${lines.join('\n') || '无命中'}${batchNote}`, 'tool_search', input.query) }
+      return { degraded, text: renderMemoryPacket(`${prefix}${roomNote}${asOfNote}${lines.join('\n') || '无命中'}${batchNote}`, 'tool_search', input.query) }
+    },
+  })
+
+  const factsTool = defineTool({
+    name: 'engram_facts',
+    description: '实体事实链：查询某实体的时序事实（asOf 时点回看 / includeInvalid 全链展开），或写入与修正事实（facts 数组）。事实是关于具体实体的一条客观陈述（状态/归属/关系/数据）。修正过时事实时传 replaces=旧事实 id：旧事实软失效、新事实接棒，历史链保留——不要反复保存互相矛盾的事实，用取代链表达演变。',
+    parameters: {
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '作用域，默认 project' },
+      entityId: { type: 'string', description: '查询模式：实体 id（engram_search/engram_entities 输出中获取；与 entity 二选一，优先）' },
+      entity: { type: 'string', description: '查询模式：实体名（按名称与别名精确匹配；未命中不新建，返回近似候选）' },
+      asOf: { type: 'string', description: '时点回看（ISO 日期或毫秒时间戳）：只看该时点仍有效的事实' },
+      includeInvalid: { type: 'boolean', description: 'true 展开全链（含已失效事实，查看事实演变历史）' },
+      limit: { type: 'number', description: '返回条数上限，默认 20' },
+      offset: { type: 'number', description: '分页偏移，默认 0' },
+      facts: {
+        type: 'array',
+        description: '写入模式：事实数组（与查询参数二选一），每项 {entity 或 entityId, content, replaces?}',
+        items: { type: 'object', additionalProperties: false, properties: {
+          entity: { type: 'string', description: '实体名（与 entityId 二选一；实体不存在时新建）' },
+          entityId: { type: 'string', description: '实体 id（优先于 entity）' },
+          content: { type: 'string', required: true, description: '事实陈述（一句话，不超过 500 字符）' },
+          replaces: { type: 'string', description: '被取代的旧事实 id（旧事实软失效；id 不存在时按无取代写入）' },
+        } },
+      },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        total: { type: 'number' },
+        count: { type: 'number' },
+        items: { type: 'array', items: { type: 'object', additionalProperties: false, properties: {
+          id: { type: 'string', required: true },
+          entityId: { type: 'string', required: true },
+          replaced: { type: 'string' },
+        } } },
+        failed: { type: 'array', items: { type: 'object', additionalProperties: false, properties: {
+          index: { type: 'number', required: true },
+          reason: { type: 'string', required: true },
+        } } },
+        text: { type: 'string', required: true },
+      } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args) {
+      const input = args as {
+        scope?: unknown; entityId?: unknown; entity?: unknown; asOf?: unknown
+        includeInvalid?: unknown; limit?: unknown; offset?: unknown; facts?: unknown
+      }
+      const scope = scopeOf(input.scope, 'project')
+      const store = await deps.openStore(scope)
+      const asOfMs = parseTimeParam(typeof input.asOf === 'string' ? input.asOf : undefined, 'engram_facts', 'asOf')
+      // —— 写入模式：facts 与查询参数互斥（照 engram_save 的 items 模式）。
+      if (input.facts !== undefined) {
+        if (input.entityId !== undefined || input.entity !== undefined || input.asOf !== undefined || input.includeInvalid !== undefined) {
+          throw new Error('engram_facts: facts（写入）与 entityId/entity/asOf/includeInvalid（查询）参数不能同时使用')
+        }
+        if (!Array.isArray(input.facts) || input.facts.length === 0) {
+          throw new Error('engram_facts: facts 必须是非空数组')
+        }
+        if (input.facts.length > MAX_SAVE_BATCH) throw new Error(`engram_facts: 单次最多写入 ${MAX_SAVE_BATCH} 条事实`)
+        const failed: { index: number; reason: string }[] = []
+        const prepared: { index: number; input: FactWriteInput }[] = []
+        for (const [index, raw] of input.facts.entries()) {
+          if (raw === null || typeof raw !== 'object') { failed.push({ index, reason: '条目必须是对象' }); continue }
+          const candidate = raw as { entity?: unknown; entityId?: unknown; content?: unknown; replaces?: unknown }
+          if (typeof candidate.content !== 'string' || candidate.content.trim() === '') {
+            failed.push({ index, reason: 'content 缺失或为空' }); continue
+          }
+          // 入库前协议剥离 + 密钥脱敏（与 engram_save 同一清洗纪律）。
+          const content = redactSecrets(sanitizeProtocolText(candidate.content))
+          if (content.trim() === '') { failed.push({ index, reason: '清洗后内容为空（只含协议标签或密钥）' }); continue }
+          try {
+            let entityId: EntityId
+            if (typeof candidate.entityId === 'string' && candidate.entityId.trim() !== '') {
+              entityId = asEntityId(candidate.entityId.trim())
+            } else if (typeof candidate.entity === 'string' && candidate.entity.trim() !== '') {
+              // 按名写入走消解（未命中新建）；kind 固定 other（事实挂靠不负责实体归类）。
+              const resolved = await store.resolveEntities([{ name: candidate.entity.trim(), kind: 'other' }])
+              const resolvedEntity = resolved[0]
+              if (resolvedEntity === undefined) { failed.push({ index, reason: '实体消解未返回结果' }); continue }
+              entityId = resolvedEntity.id
+            } else {
+              failed.push({ index, reason: '需要 entity 或 entityId' }); continue
+            }
+            prepared.push({
+              index,
+              input: {
+                entityId,
+                content,
+                ...(typeof candidate.replaces === 'string' && candidate.replaces.trim() !== ''
+                  ? { replaces: asFactId(candidate.replaces.trim()) }
+                  : {}),
+              },
+            })
+          } catch (error) {
+            failed.push({ index, reason: error instanceof Error ? error.message : String(error) })
+          }
+        }
+        // 批量写入（store 层处理 replaces 存在性校验与软失效）；单条解析失败已入 failed。
+        const records = prepared.length === 0 ? [] : await store.writeFacts(prepared.map(entry => entry.input))
+        const items: { id: string; entityId: string; replaced?: string }[] = []
+        for (const [position, record] of records.entries()) {
+          const entry = prepared[position]
+          if (entry === undefined) continue
+          items.push({
+            id: record.id,
+            entityId: record.entityId,
+            ...(entry.input.replaces === undefined ? {} : { replaced: entry.input.replaces }),
+          })
+        }
+        const parts = [`已写入 ${String(records.length)} 条事实`]
+        const replacedCount = prepared.filter(entry => entry.input.replaces !== undefined).length
+        if (replacedCount > 0) parts.push(`其中 ${String(replacedCount)} 条声明取代旧事实（旧事实已软失效，历史链保留；id 不存在时按无取代写入）`)
+        for (const item of items) {
+          parts.push(`${item.id} → 实体 ${item.entityId}${item.replaced === undefined ? '' : `（取代 ${item.replaced}）`}`)
+        }
+        if (failed.length > 0) {
+          parts.push(`${String(failed.length)} 条失败：${failed.map(entry => `#${String(entry.index + 1)} ${entry.reason}`).join('；')}`)
+        }
+        return {
+          count: records.length,
+          items,
+          ...(failed.length > 0 ? { failed } : {}),
+          text: parts.join('；'),
+        }
+      }
+      // —— 查询模式：entityId 优先；entity 名走「列表子串查 + 归一精确过滤」，
+      // 不经 resolveEntities（查询路径未命中会新建，污染实体词典）。
+      const hasEntityId = typeof input.entityId === 'string' && input.entityId.trim() !== ''
+      const hasEntityName = typeof input.entity === 'string' && input.entity.trim() !== ''
+      if (!hasEntityId && !hasEntityName) {
+        throw new Error('engram_facts: 需要 entityId/entity（查询）或 facts（写入）参数')
+      }
+      const limit = parseCountParam(typeof input.limit === 'number' ? input.limit : undefined, 'engram_facts', 'limit', 20, 1, 100)
+      const offset = parseCountParam(typeof input.offset === 'number' ? input.offset : undefined, 'engram_facts', 'offset', 0, 0, 100000)
+      const includeInvalid = input.includeInvalid === true
+      let entityId: EntityId
+      let entityName: string
+      if (hasEntityId) {
+        entityId = asEntityId((input.entityId as string).trim())
+        const detail = await store.entityDetail(entityId, 0)
+        if (detail === undefined) throw new Error(`engram_facts: 实体 ${input.entityId} 不存在`)
+        entityName = detail.entity.name
+      } else {
+        const name = (input.entity as string).trim()
+        const { items: candidates } = await store.listEntities({ q: name, limit: 10, offset: 0 })
+        const normalized = normalizeEntityName(name)
+        const matches = candidates.filter(item =>
+          normalizeEntityName(item.entity.name) === normalized
+          || item.entity.aliases.some(alias => normalizeEntityName(alias) === normalized))
+        if (matches.length === 0) {
+          const near = candidates.map(item => `${item.entity.name}（id=${item.entity.id}）`).join('；')
+          return {
+            total: 0,
+            text: `未找到实体「${name}」（按名称与别名精确匹配，不自动新建）。${near === '' ? '词典中没有近似名称。' : `近似候选：${near}。可用 entityId 精确查询。`}`,
+          }
+        }
+        if (matches.length > 1) {
+          const listed = matches.map(item => `${item.entity.name}（id=${item.entity.id}）`).join('；')
+          return { total: 0, text: `名称「${name}」匹配到 ${String(matches.length)} 个实体：${listed}。请用 entityId 指定。` }
+        }
+        const match = matches[0]
+        if (match === undefined) {
+          return { total: 0, text: `未找到实体「${name}」。` }
+        }
+        entityId = match.entity.id
+        entityName = match.entity.name
+      }
+      const { items: facts, total } = await store.factsOfEntity({
+        entityId,
+        ...(asOfMs === undefined ? {} : { asOf: asOfMs }),
+        ...(includeInvalid ? { includeInvalid: true } : {}),
+        limit,
+        offset,
+      })
+      const header = `实体「${entityName}」的事实（共 ${String(total)} 条${asOfMs === undefined ? '' : `，时点 ${new Date(asOfMs).toISOString().slice(0, 10)}`}${includeInvalid ? '，全链含已失效' : ''}）`
+      const lines = facts.map((fact, index) => renderFactLine(index, fact))
+      const body = lines.length === 0 ? '没有符合条件的事实。' : lines.join('\n')
+      // 输出包协议标签：事实摘自历史记忆，属不可信历史上下文；当前请求以实体名近似。
+      return { total, text: renderMemoryPacket(`${header}\n${body}`, 'tool_facts', hasEntityName ? (input.entity as string) : entityId) }
     },
   })
 
@@ -1437,7 +1708,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     },
   })
 
-  const tools = [save, search, assess, timeline, episodeTimeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten, ingestHistory, profileEdit]
+  const tools = [save, search, factsTool, assess, timeline, episodeTimeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten, ingestHistory, profileEdit]
   // 执行前把该会话的 cwd 放进 ALS 上下文：project scope 的分库解析据此归属（并发会话互不串味）。
   return tools.map(tool => ({
     ...tool,

@@ -1,6 +1,7 @@
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openEngramStore } from '../src/store/sqlite.ts'
 import { asMemoryId } from '../src/types.ts'
@@ -186,7 +187,7 @@ describe('EngramStore (sqlite)', () => {
     const db2 = new DatabaseSync(path)
     const version = (db2.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value
     db2.close()
-    expect(version).toBe('9')
+    expect(version).toBe('11')
   })
 
   it('v3 库打开时顺序迁移到 v5（数据保留，修订表可用）', async () => {
@@ -427,7 +428,7 @@ describe('episodeTimeline (episode 情景独立时间线)', () => {
     expect(indexes).toContain('nodes_session_created')
   })
 
-  it('session_summaries 表在新建库与 v8 迁移后就位，schema_version 升到 9', async () => {
+  it('session_summaries 表在新建库与 v8 迁移后就位，schema_version 升到 11', async () => {
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(join(dir, 'user.db'))
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as unknown as { name: string }[])
@@ -435,7 +436,7 @@ describe('episodeTimeline (episode 情景独立时间线)', () => {
     const version = (db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value
     db.close()
     expect(tables).toContain('session_summaries')
-    expect(version).toBe('9')
+    expect(version).toBe('11')
     // v8 旧库（手工降版）重开时经 MIGRATIONS['8'] 建出摘要表，数据零搬运。
     const legacyPath = join(dir, 'legacy-v8.db')
     const legacy = await openEngramStore(legacyPath)
@@ -479,5 +480,204 @@ describe('episodeTimeline (episode 情景独立时间线)', () => {
     await store.setSessionSummary('s1', '会被 purge 清掉的摘要')
     await store.purge()
     expect(await store.getSessionSummary('s1')).toBeUndefined()
+  })
+})
+
+describe('实体词典', () => {
+  it('resolveEntities 新建并按归一化名/别名复用（大小写与空白不敏感）', async () => {
+    const first = await store.resolveEntities([{ name: 'DeepSeek Harness', kind: 'project', aliases: ['DSH'] }])
+    expect(first).toHaveLength(1)
+    expect(first[0]!.name).toBe('DeepSeek Harness')
+    expect(first[0]!.aliases).toEqual(['DSH'])
+    // 归一化复用：不同大小写与多余空白命中同一条，不新建。
+    const second = await store.resolveEntities([{ name: '  deepseek   harness ', kind: 'project' }])
+    expect(second[0]!.id).toBe(first[0]!.id)
+    // 别名命中同一条。
+    const third = await store.resolveEntities([{ name: 'dsh', kind: 'project' }])
+    expect(third[0]!.id).toBe(first[0]!.id)
+    // 词典里确实只有一条（复用不产生新行）。
+    const list = await store.listEntities({ limit: 10, offset: 0 })
+    expect(list.total).toBe(1)
+  })
+
+  it('resolveEntities 清洗后空名 loud 失败；空提及列表直接返回', async () => {
+    await expect(store.resolveEntities([{ name: '   ', kind: 'other' }])).rejects.toThrow(/实体名不能为空/)
+    expect(await store.resolveEntities([])).toEqual([])
+  })
+
+  it('linkNodeEntities 幂等关联，entitiesOfNodes 批量反查', async () => {
+    const record = await store.write({ scope: 'user', kind: 'fact', content: 'ken 负责 dsh-engram 插件' })
+    const [ken, engram] = await store.resolveEntities([
+      { name: 'ken', kind: 'person' },
+      { name: 'dsh-engram', kind: 'project' },
+    ])
+    await store.linkNodeEntities(record.id, [ken!.id, engram!.id])
+    // 重复关联不报错、不产生重复行。
+    await store.linkNodeEntities(record.id, [ken!.id])
+    const map = await store.entitiesOfNodes([record.id])
+    const linked = map.get(record.id) ?? []
+    expect(linked).toHaveLength(2)
+    expect(linked.map(entity => entity.id).sort()).toEqual([ken!.id, engram!.id].sort())
+  })
+
+  it('listEntities kind/q 过滤，memoryCount 只数 active 记忆', async () => {
+    const kept = await store.write({ scope: 'user', kind: 'fact', content: '活跃记忆' })
+    const dropped = await store.write({ scope: 'user', kind: 'fact', content: '将被遗忘的记忆' })
+    const [ken] = await store.resolveEntities([
+      { name: 'ken', kind: 'person', aliases: ['阿肯'] },
+      { name: 'postgres', kind: 'tool' },
+    ])
+    await store.linkNodeEntities(kept.id, [ken!.id])
+    await store.linkNodeEntities(dropped.id, [ken!.id])
+    await store.forget(dropped.id)
+    // 全量：updated_at 倒序，关联计数只统计 active 记忆。
+    const all = await store.listEntities({ limit: 10, offset: 0 })
+    expect(all.total).toBe(2)
+    const kenRow = all.items.find(item => item.entity.name === 'ken')!
+    expect(kenRow.memoryCount).toBe(1)
+    // kind 过滤。
+    const people = await store.listEntities({ kind: 'person', limit: 10, offset: 0 })
+    expect(people.total).toBe(1)
+    expect(people.items[0]!.entity.name).toBe('ken')
+    // q 命中别名（大小写不敏感子串）。
+    const byAlias = await store.listEntities({ q: '阿肯', limit: 10, offset: 0 })
+    expect(byAlias.total).toBe(1)
+    expect(byAlias.items[0]!.entity.id).toBe(ken!.id)
+  })
+
+  it('entityDetail 返回实体与关联记忆（倒序、限量）；不存在返回 undefined', async () => {
+    // 假时钟控制写入时刻：同毫秒写入时 created_at 相同，倒序无从区分。
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.parse('2026-09-01T10:00:00Z'))
+    const first = await store.write({ scope: 'user', kind: 'fact', content: '第一条' })
+    vi.setSystemTime(Date.parse('2026-09-01T10:05:00Z'))
+    const second = await store.write({ scope: 'user', kind: 'fact', content: '第二条' })
+    vi.useRealTimers()
+    const [ken] = await store.resolveEntities([{ name: 'ken', kind: 'person' }])
+    await store.linkNodeEntities(first.id, [ken!.id])
+    await store.linkNodeEntities(second.id, [ken!.id])
+    const detail = await store.entityDetail(ken!.id, 20)
+    expect(detail?.entity.name).toBe('ken')
+    expect(detail?.memories.map(record => record.content)).toEqual(['第二条', '第一条'])
+    // memoryLimit 生效。
+    expect((await store.entityDetail(ken!.id, 1))?.memories).toHaveLength(1)
+    expect(await store.entityDetail('ent-missing' as never, 20)).toBeUndefined()
+  })
+
+  it('v9 旧库重开：迁移重建实体表且旧记忆完好', async () => {
+    const record = await store.write({ scope: 'user', kind: 'fact', content: '迁移前已有的记忆' })
+    const path = join(dir, 'user.db')
+    await store.close()
+    // 模拟 v9 旧库：降版本号并删掉 v10 才有的两张表。
+    const raw = new DatabaseSync(path)
+    raw.prepare("UPDATE meta SET value = '9' WHERE key = 'schema_version'").run()
+    raw.prepare('DROP TABLE node_entities').run()
+    raw.prepare('DROP TABLE entities').run()
+    raw.close()
+    // 重开实例交还外层 store，由 afterEach 统一关闭。
+    store = await openEngramStore(path)
+    expect((await store.get(record.id))?.content).toBe('迁移前已有的记忆')
+    const [ken] = await store.resolveEntities([{ name: 'ken', kind: 'person' }])
+    expect(ken?.name).toBe('ken')
+  })
+})
+
+describe('事实链（schema v11）', () => {
+  it('writeFacts 批量写入与字段回读；replaces 软失效链回填旧事实', async () => {
+    const [ken] = await store.resolveEntities([{ name: 'ken', kind: 'person' }])
+    // 假时钟控制 validAt/invalidAt：事实的时间窗完全由写入与取代时刻决定。
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.parse('2026-09-01T10:00:00Z'))
+    const [old, plain] = await store.writeFacts([
+      { entityId: ken!.id, content: 'ken 用 vim 编辑' },
+      { entityId: ken!.id, content: 'ken 在杭州工作' },
+    ])
+    vi.setSystemTime(Date.parse('2026-09-10T10:00:00Z'))
+    const [next] = await store.writeFacts([{ entityId: ken!.id, content: 'ken 改用 VSCode', replaces: old!.id }])
+    vi.useRealTimers()
+    // 新事实接棒：validAt 取写入时刻；取代关系不回指（回指记录在被取代方）。
+    expect(next!.validAt).toBe(Date.parse('2026-09-10T10:00:00Z'))
+    expect(next!.invalidAt).toBeNull()
+    expect(next!.replacedBy).toBeNull()
+    // 默认视图只看生效事实：被取代的旧事实退场，旁观事实不受影响。
+    const current = await store.factsOfEntity({ entityId: ken!.id, limit: 10, offset: 0 })
+    expect(current.total).toBe(2)
+    expect(current.items.map(fact => fact.content)).toEqual(['ken 改用 VSCode', 'ken 在杭州工作'])
+    // 全链视图：旧事实软失效回填 invalidAt/replacedBy，内容保留。
+    const full = await store.factsOfEntity({ entityId: ken!.id, includeInvalid: true, limit: 10, offset: 0 })
+    expect(full.total).toBe(3)
+    const superseded = full.items.find(fact => fact.id === old!.id)!
+    expect(superseded.content).toBe('ken 用 vim 编辑')
+    expect(superseded.invalidAt).toBe(Date.parse('2026-09-10T10:00:00Z'))
+    expect(superseded.replacedBy).toBe(next!.id)
+    expect(full.items.find(fact => fact.id === plain!.id)?.invalidAt).toBeNull()
+  })
+
+  it('replaces 指向不存在的事实时按无取代写入', async () => {
+    const [ken] = await store.resolveEntities([{ name: 'ken', kind: 'person' }])
+    const [fact] = await store.writeFacts([
+      { entityId: ken!.id, content: '悬空取代的新事实', replaces: 'fact-missing' as never },
+    ])
+    expect(fact?.invalidAt).toBeNull()
+    expect(fact?.replacedBy).toBeNull()
+    const full = await store.factsOfEntity({ entityId: ken!.id, includeInvalid: true, limit: 10, offset: 0 })
+    expect(full.total).toBe(1)
+  })
+
+  it('factsOfEntity asOf 时点过滤与 limit/offset 分页', async () => {
+    const [ken] = await store.resolveEntities([{ name: 'ken', kind: 'person' }])
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.parse('2026-03-01T10:00:00Z'))
+    const [a] = await store.writeFacts([{ entityId: ken!.id, content: '三月的事实' }])
+    vi.setSystemTime(Date.parse('2026-06-01T10:00:00Z'))
+    const [b] = await store.writeFacts([{ entityId: ken!.id, content: '六月的事实', replaces: a!.id }])
+    vi.setSystemTime(Date.parse('2026-09-01T10:00:00Z'))
+    const [c] = await store.writeFacts([{ entityId: ken!.id, content: '九月的事实', replaces: b!.id }])
+    vi.useRealTimers()
+    // 时点 3 月：只有 a 已生效（b 6 月才开始有效）。
+    const march = await store.factsOfEntity({
+      entityId: ken!.id, asOf: Date.parse('2026-03-15T00:00:00Z'), limit: 10, offset: 0,
+    })
+    expect(march.total).toBe(1)
+    expect(march.items[0]!.id).toBe(a!.id)
+    // 时点 7 月：a 已失效（失效时刻早于时点），b 生效。
+    const july = await store.factsOfEntity({
+      entityId: ken!.id, asOf: Date.parse('2026-07-01T00:00:00Z'), limit: 10, offset: 0,
+    })
+    expect(july.total).toBe(1)
+    expect(july.items[0]!.id).toBe(b!.id)
+    // 不传 asOf：只看当前生效事实（c）。
+    const now = await store.factsOfEntity({ entityId: ken!.id, limit: 10, offset: 0 })
+    expect(now.total).toBe(1)
+    expect(now.items[0]!.id).toBe(c!.id)
+    // 全链分页：valid_at 倒序 [c, b, a]，跳过最新 1 条取 2 条。
+    const page = await store.factsOfEntity({ entityId: ken!.id, includeInvalid: true, limit: 2, offset: 1 })
+    expect(page.total).toBe(3)
+    expect(page.items.map(fact => fact.id)).toEqual([b!.id, a!.id])
+  })
+
+  it('v10 旧库重开：迁移重建 facts 表且旧数据完好', async () => {
+    const record = await store.write({ scope: 'user', kind: 'fact', content: '迁移前已有的记忆' })
+    const path = join(dir, 'user.db')
+    await store.close()
+    // 模拟 v10 旧库：降版本号并删掉 v11 才有的 facts 表。
+    const raw = new DatabaseSync(path)
+    raw.prepare("UPDATE meta SET value = '10' WHERE key = 'schema_version'").run()
+    raw.prepare('DROP TABLE facts').run()
+    raw.close()
+    // 重开实例交还外层 store，由 afterEach 统一关闭。
+    store = await openEngramStore(path)
+    expect((await store.get(record.id))?.content).toBe('迁移前已有的记忆')
+    const [ken] = await store.resolveEntities([{ name: 'ken', kind: 'person' }])
+    const [fact] = await store.writeFacts([{ entityId: ken!.id, content: '迁移后写入的事实' }])
+    expect(fact?.content).toBe('迁移后写入的事实')
+  })
+
+  it('purge 连同事实表一起清空', async () => {
+    const [ken] = await store.resolveEntities([{ name: 'ken', kind: 'person' }])
+    await store.writeFacts([{ entityId: ken!.id, content: '将被清空的事实' }])
+    await store.purge()
+    const full = await store.factsOfEntity({ entityId: ken!.id, includeInvalid: true, limit: 10, offset: 0 })
+    expect(full.total).toBe(0)
   })
 })

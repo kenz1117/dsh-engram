@@ -12,6 +12,24 @@ export function asMemoryId(raw: string): MemoryId {
   return raw as MemoryId
 }
 
+/** 品牌化实体 id：实体词典主键，跨工具与存储边界拒绝裸 string。 */
+declare const entityIdBrand: unique symbol
+export type EntityId = string & { readonly [entityIdBrand]: true }
+
+/** 从任意字符串铸造品牌化实体 id（存储层入库前调用）。 */
+export function asEntityId(raw: string): EntityId {
+  return raw as EntityId
+}
+
+/** 品牌化事实 id：事实链主键，跨工具与存储边界拒绝裸 string。 */
+declare const factIdBrand: unique symbol
+export type FactId = string & { readonly [factIdBrand]: true }
+
+/** 从任意字符串铸造品牌化事实 id（存储层入库前调用）。 */
+export function asFactId(raw: string): FactId {
+  return raw as FactId
+}
+
 /** 记忆作用域：user 私人宫殿；project 项目宫殿；shared 跨 agent 共享宫殿（公开可读）。 */
 export type EngramScope = 'user' | 'project' | 'shared'
 
@@ -113,6 +131,112 @@ export interface MemoryEdge {
   readonly createdAt: number
 }
 
+/** 实体类别：LLM 从记忆内容中抽取的提及对象归类。 */
+export type EngramEntityKind = 'person' | 'project' | 'tool' | 'concept' | 'other'
+
+/** 归一化比较键：trim + 合并连续空白 + 小写（消解第一版只做精确归一匹配，不做相似合并）。 */
+export function normalizeEntityName(raw: string): string {
+  return raw.trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+/** 一条实体：从记忆中抽取的命名对象（人/项目/工具/概念），随来源记忆所在 scope 分库。 */
+export interface EntityRecord {
+  readonly id: EntityId
+  /** 规范名（首次创建时的写法）。 */
+  readonly name: string
+  readonly kind: EngramEntityKind
+  /** 别名列表（含规范名变体；消解时与 name 同权参与归一匹配）。 */
+  readonly aliases: readonly string[]
+  readonly createdAt: number
+  readonly updatedAt: number
+}
+
+/** 实体提及：LLM 抽取输出中的单个候选（写入路径消解为既有实体或新建）。 */
+export interface EntityMention {
+  readonly name: string
+  readonly kind: EngramEntityKind
+  /** 提及的别名（缺省无别名）。 */
+  readonly aliases?: readonly string[]
+}
+
+/** 事实提及：LLM 抽取输出中的单条事实候选（entity 须为同批实体提及出现过的实体名）。 */
+export interface FactMention {
+  readonly entity: string
+  readonly content: string
+}
+
+/** 管理列表过滤条件（实体词典面板用）。 */
+export interface EntityListFilter {
+  readonly kind?: EngramEntityKind
+  /** name 与 aliases_json 的子串匹配（大小写不敏感）。 */
+  readonly q?: string
+  readonly limit: number
+  readonly offset: number
+}
+
+/** 实体列表行：实体 + 关联 active 记忆数（排序与规模展示用）。 */
+export interface EntityListItem {
+  readonly entity: EntityRecord
+  readonly memoryCount: number
+}
+
+/** 实体列表结果（updated_at 倒序，附总数）。 */
+export interface EntityListResult {
+  readonly items: readonly EntityListItem[]
+  readonly total: number
+}
+
+/** 实体详情：实体自身 + 关联的 active 记忆（创建时间倒序）。 */
+export interface EntityDetail {
+  readonly entity: EntityRecord
+  readonly memories: readonly MemoryRecord[]
+}
+
+/** 一条事实：挂在实体上的一句话陈述，带有效时间窗与软失效链（schema v11）。 */
+export interface FactRecord {
+  readonly id: FactId
+  readonly entityId: EntityId
+  /** 事实陈述（一句话）。 */
+  readonly content: string
+  /** 事实开始有效的时刻（ms）。 */
+  readonly validAt: number
+  /** 被取代时刻（ms）；null = 仍有效。 */
+  readonly invalidAt: number | null
+  /** 取代本事实的后继事实 id；未被取代时 null。 */
+  readonly replacedBy: FactId | null
+  /** 抽出该事实的来源记忆 id；工具直写时缺省 null。 */
+  readonly sourceNodeId: MemoryId | null
+  readonly createdAt: number
+  readonly updatedAt: number
+}
+
+/** 事实写入请求：entityId 须为同库实体；replaces 声明取代的既有事实（目标不存在则按无取代写入）。 */
+export interface FactWriteInput {
+  readonly entityId: EntityId
+  readonly content: string
+  readonly replaces?: FactId
+  readonly sourceNodeId?: MemoryId
+  /** 事实开始有效时刻（ms）；缺省取当前时间。 */
+  readonly validAt?: number
+}
+
+/** 事实链查询：按实体过滤；asOf 限定时间点视角，includeInvalid 展开全链。 */
+export interface FactListFilter {
+  readonly entityId: EntityId
+  /** 时点查询：返回该时刻仍有效的事实（valid_at <= asOf 且 invalid_at 为 null 或 > asOf）。 */
+  readonly asOf?: number
+  /** true 时不过滤失效，返回全部历史链（含失效事实及其 replacedBy 回指）。 */
+  readonly includeInvalid?: boolean
+  readonly limit: number
+  readonly offset: number
+}
+
+/** 事实链结果（valid_at 倒序，附总数）。 */
+export interface FactListResult {
+  readonly items: readonly FactRecord[]
+  readonly total: number
+}
+
 /** 写入请求。可选数值字段缺省时由存储层取默认（不显式传 undefined）。 */
 export interface WriteInput {
   readonly scope: EngramScope
@@ -159,6 +283,8 @@ export interface SearchHit {
   readonly viaEdge?: { readonly from: MemoryId; readonly type: EngramEdgeType }
   /** 编码特异性线索（schema v6 起）：同房间相邻桩位的条目 id——提取时重建编码情境。 */
   readonly cues?: { readonly neighbors: readonly MemoryId[] }
+  /** 命中条目关联的实体（schema v10 起；无关联时缺省）。 */
+  readonly entities?: readonly { readonly id: EntityId; readonly name: string }[]
 }
 
 /** 检索结果：degraded=true 表示嵌入缺失/失败，仅关键词道参与排序。 */
@@ -309,6 +435,8 @@ export interface ExportData {
   readonly exportedAt: number
   readonly records: readonly MemoryRecord[]
   readonly edges: readonly MemoryEdge[]
+  /** 实体词典（schema v10 起；旧版本导出缺省）。 */
+  readonly entities?: readonly EntityRecord[]
 }
 
 /** 衰减参数：低于 importanceBelow 且 lastAccessedAt 超过 olderThanDays 的 active 条目归档。 */

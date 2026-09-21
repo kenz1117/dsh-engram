@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type { EngramKind, EngramScope, EngramStatus, ListFilter, ReviewGrade } from './types.ts'
+import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, ListFilter, ReviewGrade } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
@@ -309,6 +309,52 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 createdAt: hit.record.createdAt,
               })),
             })
+            return
+          }
+          if (req.method === 'GET' && route === 'entities') {
+            // 实体词典：面板实体页列表（含每实体关联记忆数）；实体跟随来源记忆所在 scope 分库。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const kind = url.searchParams.get('kind')
+            const q = url.searchParams.get('q')
+            const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? 50) || 50))
+            const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0)
+            const result = await (await storeFor(scope)).listEntities({
+              ...(kind !== null && kind !== '' && kind !== 'all' ? { kind: kind as EngramEntityKind } : {}),
+              ...(q !== null && q !== '' ? { q } : {}),
+              limit,
+              offset,
+            })
+            json(res, 200, { scope, ...result })
+            return
+          }
+          if (req.method === 'GET' && route === 'entity') {
+            // 实体详情：实体记录 + 最近关联记忆（面板实体页点开单个实体时）。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const id = url.searchParams.get('id')
+            if (id === null || id === '') { json(res, 400, { error: 'id required' }); return }
+            const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
+            const detail = await (await storeFor(scope)).entityDetail(id as never, limit)
+            if (detail === undefined) { json(res, 404, { error: `未找到实体 ${id}` }); return }
+            json(res, 200, detail)
+            return
+          }
+          if (req.method === 'GET' && route === 'facts') {
+            // 实体事实链：按实体查时序事实（asOf 时点回看 / includeInvalid 展开全链），面板实体页详情卡用。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const id = url.searchParams.get('entityId')
+            if (id === null || id === '') { json(res, 400, { error: 'entityId required' }); return }
+            const asOf = toNumber(url.searchParams.get('asOf'))
+            const includeInvalid = toBoolean(url.searchParams.get('includeInvalid')) ?? false
+            const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? 50) || 50))
+            const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0)
+            const result = await (await storeFor(scope)).factsOfEntity({
+              entityId: id as never,
+              ...(asOf === undefined ? {} : { asOf }),
+              ...(includeInvalid ? { includeInvalid: true } : {}),
+              limit,
+              offset,
+            })
+            json(res, 200, { scope, ...result })
             return
           }
           if (req.method === 'GET' && route === 'episode-timeline') {

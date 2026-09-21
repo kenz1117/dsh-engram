@@ -12,7 +12,8 @@ import type { LlmRoute, SessionEventLike } from '../llm/client.ts'
 import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
 import type { EngramEmbedder } from '../embedder/interface.ts'
 import type { EngramStore } from '../store/interface.ts'
-import type { EngramKind, EngramScope } from '../types.ts'
+import type { EngramEntityKind, EngramKind, EngramScope, EntityMention, FactMention, FactWriteInput, MemoryId } from '../types.ts'
+import { normalizeEntityName } from '../types.ts'
 import { sanitizeProtocolText } from '../security/sanitize.ts'
 import { redactSecrets } from '../security/redact.ts'
 import { hasRecallToolCalls, omitRecallToolResults } from '../security/recall.ts'
@@ -53,11 +54,67 @@ export function decodeTurnKey(detail: string): { sessionId: string; turn: number
 
 const INGEST_SYSTEM = [
   '从对话记录中提取值得跨会话长期记住的用户信息（事实/偏好/决策/经历/做事方法）。',
-  '只输出一个 JSON 数组，每项形如 {"content": "一句话完整表述", "kind": "fact|preference|decision|episode|skill", "scope": "project|user", "importance": 0到1的小数}。',
+  '只输出一个 JSON 数组，每项形如 {"content": "一句话完整表述", "kind": "fact|preference|decision|episode|skill", "scope": "project|user", "importance": 0到1的小数, "entities": [{"name": "实体名", "kind": "person|project|tool|concept|other", "aliases": ["别名"]}], "facts": [{"entity": "实体名", "content": "关于该实体的一句话事实"}]}。',
+  'entities 是这条记忆里提到的具体对象（人名/项目名/工具名/概念名），没有就省略该字段；实体名要短（专名本身，不超过 20 字），aliases 列出该实体的其他叫法，没有就省略。',
+  'facts 列出这条记忆中关于具体实体的客观事实（状态/归属/关系/数据），entity 必须取该条 entities 里出现过的实体名，一条一个知识点，没有就省略该字段。',
   'scope 决定这条记忆进哪座宫殿：只跟当前项目/仓库有关的（技术选型、项目约定、架构决策、该项目自身的事实）用 project；与具体项目无关、跨项目通用的（个人偏好、习惯、用户本人的经历、通用事实）用 user。拿不准用 project。',
   '只提取明确、可复用的信息；寒暄、临时上下文、你自己的回答不要提取。没有值得记的就输出 []。',
   '不要输出 JSON 以外的任何内容。',
 ].join('\n')
+
+/** 实体提及 kind 的合法值集合（模型输出边界校验用）。 */
+const ENTITY_KINDS: readonly EngramEntityKind[] = ['person', 'project', 'tool', 'concept', 'other']
+/** 单个实体名的长度上限（专名本身，防止把整句话当实体）。 */
+const ENTITY_NAME_MAX = 80
+/** 单条事实陈述的长度上限（一句话）。 */
+const FACT_CONTENT_MAX = 500
+
+/**
+ * 解析模型输出的 entities 字段为合法提及列表。模型输出是不可信边界：
+ * 非数组、元素缺 name、name 清洗后为空或超长的条目一律丢弃，kind 非法回退 other。
+ */
+export function parseEntityMentions(raw: unknown): EntityMention[] {
+  if (!Array.isArray(raw)) return []
+  const mentions: EntityMention[] = []
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue
+    const record = item as { name?: unknown; kind?: unknown; aliases?: unknown }
+    if (typeof record.name !== 'string') continue
+    const name = record.name.trim()
+    if (name === '' || name.length > ENTITY_NAME_MAX) continue
+    const kind = ENTITY_KINDS.includes(record.kind as EngramEntityKind) ? record.kind as EngramEntityKind : 'other'
+    const aliases = Array.isArray(record.aliases)
+      ? record.aliases.filter((a): a is string => typeof a === 'string' && a.trim() !== '' && a.trim().length <= ENTITY_NAME_MAX)
+      : []
+    mentions.push({
+      name,
+      kind,
+      ...(aliases.length === 0 ? {} : { aliases }),
+    })
+  }
+  return mentions
+}
+
+/**
+ * 解析模型输出的 facts 字段为合法事实提及列表。模型输出是不可信边界：
+ * 非数组、元素缺 entity/content、清洗后为空或超长的条目一律丢弃。
+ * entity 与同批实体名的对应关系由写入路径按归一化名匹配（匹配不上整条丢弃）。
+ */
+export function parseFactMentions(raw: unknown): FactMention[] {
+  if (!Array.isArray(raw)) return []
+  const mentions: FactMention[] = []
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue
+    const record = item as { entity?: unknown; content?: unknown }
+    if (typeof record.entity !== 'string' || typeof record.content !== 'string') continue
+    const entity = record.entity.trim()
+    const content = record.content.trim()
+    if (entity === '' || entity.length > ENTITY_NAME_MAX) continue
+    if (content === '' || content.length > FACT_CONTENT_MAX) continue
+    mentions.push({ entity, content })
+  }
+  return mentions
+}
 
 /** 摄取辅助调用的日志事件负载（append 到会话日志，供审计与归因）。 */
 export interface IngestRequestEventData {
@@ -400,7 +457,7 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   let deferred = 0
   let dropped = 0
   for (const item of parsed.slice(0, limits.maxCandidates)) {
-    const candidate = item as { content?: unknown; kind?: unknown; scope?: unknown; importance?: unknown }
+    const candidate = item as { content?: unknown; kind?: unknown; scope?: unknown; importance?: unknown; entities?: unknown; facts?: unknown }
     if (typeof candidate.content !== 'string' || candidate.content.trim() === '') { dropped += 1; continue }
     // 模型输出候选入库前同样剥离协议块并脱敏（可能复述会话中的密钥或伪造协议标签）。
     const content = redactSecrets(sanitizeProtocolText(candidate.content.trim()))
@@ -417,6 +474,27 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     const importance = typeof candidate.importance === 'number' && Number.isFinite(candidate.importance)
       ? Math.min(1, Math.max(0, candidate.importance))
       : 0.5
+    // 实体关联（schema v10）：候选自带的 entities 消解为词典实体后挂到最终条目上。
+    // 事实链（schema v11）：候选自带的 facts 按归一化实体名对上消解结果后写进事实表。
+    // 增强数据：消解/关联/事实写入失败只跳过，不改变该候选的写入处置结果。
+    const linkEntities = async (nodeId: MemoryId): Promise<void> => {
+      const mentions = parseEntityMentions(candidate.entities)
+      if (mentions.length === 0) return
+      try {
+        const entities = await target.resolveEntities(mentions)
+        await target.linkNodeEntities(nodeId, entities.map(entity => entity.id))
+        const factInputs: FactWriteInput[] = []
+        const byName = new Map(entities.map(entity => [normalizeEntityName(entity.name), entity]))
+        for (const mention of parseFactMentions(candidate.facts)) {
+          const entity = byName.get(normalizeEntityName(mention.entity))
+          if (entity === undefined) continue
+          factInputs.push({ entityId: entity.id, content: mention.content, sourceNodeId: nodeId })
+        }
+        if (factInputs.length > 0) await target.writeFacts(factInputs)
+      } catch {
+        // 实体词典/事实表写入失败（如 EMPTY_ENTITY_NAME）不影响记忆条目本身的落库。
+      }
+    }
     // 同批重复内容直接 DROP。
     if (writtenContents.includes(content)) { dropped += 1; continue }
     // 四态处置（嵌入可用时）：复述并入强化既有条目（MERGE，不新建）；
@@ -425,6 +503,7 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     const decision = await decideWrite(target, kind, vector)
     if (decision.disposition === 'merge') {
       await applyMerge(target, decision, content)
+      await linkEntities(decision.into.id)
       writtenContents.push(content)
       merged += 1
       continue
@@ -445,6 +524,7 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
       await target.linkEdge(record.id, decision.neighbor.id, 'contradicts')
       deferred += 1
     }
+    await linkEntities(record.id)
     writtenContents.push(content)
     written += 1
   }

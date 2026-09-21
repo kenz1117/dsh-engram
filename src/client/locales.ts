@@ -273,6 +273,25 @@ export type EngramKey =
   | 'episodeAroundTitle'
   | 'episodeAroundEmpty'
   | 'episodeClose'
+  | 'tabEntities'
+  | 'entityHint'
+  | 'entityKindAll'
+  | 'entityKindPerson'
+  | 'entityKindProject'
+  | 'entityKindTool'
+  | 'entityKindConcept'
+  | 'entityKindOther'
+  | 'entitySearchPlaceholder'
+  | 'entityCount'
+  | 'entityMemories'
+  | 'entityOpen'
+  | 'entityAliases'
+  | 'entityNoMemories'
+  | 'entityEmpty'
+  | 'factSection'
+  | 'factEmpty'
+  | 'factValid'
+  | 'factInvalid'
 
 /** kind 数据值 → 词典键（面板与走廊图共用一份，避免两处各自硬编码房间名）。 */
 export const KIND_KEY: Readonly<Record<string, EngramKey>> = {
@@ -550,6 +569,25 @@ export const zh: Record<EngramKey, string> = {
   episodeAroundTitle: '时间邻近扩展',
   episodeAroundEmpty: '邻近窗口内没有其他情景',
   episodeClose: '收起',
+  tabEntities: '实体',
+  entityHint: '从记忆中抽取的人物、项目、工具与概念；点「查看」看一条实体牵出的所有记忆',
+  entityKindAll: '全部类别',
+  entityKindPerson: '人物',
+  entityKindProject: '项目',
+  entityKindTool: '工具',
+  entityKindConcept: '概念',
+  entityKindOther: '其他',
+  entitySearchPlaceholder: '搜索实体名或别名',
+  entityCount: '{n} 个实体',
+  entityMemories: '{n} 条关联记忆',
+  entityOpen: '查看',
+  entityAliases: '别名',
+  entityNoMemories: '暂无关联记忆',
+  entityEmpty: '该宫殿还没有实体；保存带实体提及的记忆后会自动出现',
+  factSection: '事实链（{n} 条）',
+  factEmpty: '暂无事实；摄取时从记忆抽取的实体事实会出现在这里',
+  factValid: '生效',
+  factInvalid: '已失效',
 }
 
 /** 英文词典。整页采用「Memory Palace」语言：palace / room (kind group) / memory / placard / tour / curator / corridor。
@@ -819,4 +857,23 @@ export const en: Record<EngramKey, string> = {
   episodeAroundTitle: 'Time proximity expansion',
   episodeAroundEmpty: 'No other episodes within the proximity window',
   episodeClose: 'Collapse',
+  tabEntities: 'Entities',
+  entityHint: 'People, projects, tools and concepts extracted from memories; open one to see every memory that mentions it',
+  entityKindAll: 'All kinds',
+  entityKindPerson: 'People',
+  entityKindProject: 'Projects',
+  entityKindTool: 'Tools',
+  entityKindConcept: 'Concepts',
+  entityKindOther: 'Other',
+  entitySearchPlaceholder: 'Search names or aliases',
+  entityCount: '{n} entities',
+  entityMemories: '{n} linked memories',
+  entityOpen: 'View',
+  entityAliases: 'Aliases',
+  entityNoMemories: 'No linked memories',
+  entityEmpty: 'No entities in this palace yet; they appear after you save memories that mention them',
+  factSection: 'Facts ({n})',
+  factEmpty: 'No facts yet; facts extracted from memories during ingestion will appear here',
+  factValid: 'active',
+  factInvalid: 'superseded',
 }
