@@ -27,7 +27,7 @@ import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
 import { registerEngramRoutes } from './routes.ts'
 import type { ProjectPalaceView, RouteDeps } from './routes.ts'
-import { migrateProjectDb, resolveProjectIdentity } from './project/identity.ts'
+import { migrateProjectDb, migrationWarning, resolveProjectIdentity } from './project/identity.ts'
 import { findProjectPalace, listProjectPalaces } from './project/registry.ts'
 import type { ProjectPalace, WorkspaceRef } from './project/registry.ts'
 import { openEngramStore } from './store/sqlite.ts'
@@ -386,14 +386,11 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   const resolved = resolveConfig(config)
   mkdirSync(resolved.dbDir, { recursive: true, mode: 0o700 })
 
-  // 项目标识：git origin 归一化哈希 → cwd 编码兜底；旧库存在时同目录 rename 迁移。
+  // 项目标识：git origin 归一化哈希 → 完整 cwd 哈希；按配置检查旧库迁移。
   const identity = resolveProjectIdentity(process.cwd())
-  const migration = migrateProjectDb(resolved.dbDir, identity)
-  if (migration === 'renamed') {
-    console.warn(`[dsh-engram] 项目记忆库已从 cwd 命名迁移到 git origin 标识：${identity.dbName}`)
-  } else if (migration === 'kept-both') {
-    console.warn(`[dsh-engram] 检测到新旧两个项目记忆库并存，未合并（保留新库 ${identity.dbName}；旧库 ${identity.legacyDbName} 请人工处理后删除）`)
-  }
+  const migration = migrateProjectDb(resolved.dbDir, identity, resolved.legacyMigration)
+  const warning = migrationWarning(resolved.dbDir, identity, migration)
+  if (warning !== undefined) console.warn(warning)
 
   // 检索排序 boost 参数：显式 resolve 自配置，注入两个分库。
   const rankBoost = {
@@ -455,14 +452,10 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     const cached = cwdDbNames.get(cwd)
     if (cached !== undefined) return cached
     const projectIdentity = resolveProjectIdentity(cwd)
-    // 旧命名库（cwd 编码截断 / origin 升级前的 cwd 库）：同样走一次 rename 迁移，避免看不到旧数据。
-    const migration = migrateProjectDb(resolved.dbDir, projectIdentity)
-    if (migration === 'renamed') {
-      console.warn(`[dsh-engram] 项目记忆库已迁移到新标识命名（${cwd} → ${projectIdentity.dbName}）`)
-    } else if (migration === 'kept-both') {
-      // 旧 cwd 命名只覆盖前 12 字符，可能被同前缀的多个目录共用；并存时不动文件、由人工决定归属。
-      console.warn(`[dsh-engram] 检测到新旧项目库并存，未合并（保留新库 ${projectIdentity.dbName}；旧库 ${projectIdentity.legacyDbName} 请人工处理后删除）`)
-    }
+    // 会话 cwd 同样应用旧库迁移策略；结果与告警按 cwd 缓存。
+    const migration = migrateProjectDb(resolved.dbDir, projectIdentity, resolved.legacyMigration)
+    const warning = migrationWarning(resolved.dbDir, projectIdentity, migration)
+    if (warning !== undefined) console.warn(warning)
     cwdDbNames.set(cwd, projectIdentity.dbName)
     return projectIdentity.dbName
   }

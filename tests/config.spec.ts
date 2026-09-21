@@ -11,6 +11,7 @@ describe('resolveConfig', () => {
     expect(resolved.profileTopN).toBe(8)
     expect(resolved.modelCacheDir).toBe(join(homedir(), '.dsh', 'engram', 'models'))
     expect(resolved.ingest).toBe('off')
+    expect(resolved.legacyMigration).toBe('eager')
     expect(resolved.routeOverride).toBeUndefined()
     expect(resolved.decayAfterDays).toBe(30)
     expect(resolved.decayImportanceBelow).toBe(0.3)
@@ -77,5 +78,15 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig({ rankRecencyWeight: -0.1 })).toThrow(/rankRecencyWeight/)
     expect(() => resolveConfig({ rankRecencyWeight: 2.1 })).toThrow(/rankRecencyWeight/)
     expect(() => resolveConfig({ rankProofWeight: 3 })).toThrow(/rankProofWeight/)
+  })
+})
+
+describe('legacyMigration config', () => {
+  it('accepts both policies', () => {
+    expect(resolveConfig({ legacyMigration: 'eager' }).legacyMigration).toBe('eager')
+    expect(resolveConfig({ legacyMigration: 'conservative' }).legacyMigration).toBe('conservative')
+  })
+  it.each(['typo', '', null, false, 1])('rejects invalid policy %s', (value) => {
+    expect(() => resolveConfig({ legacyMigration: value as never })).toThrow(/legacyMigration/)
   })
 })

@@ -208,3 +208,33 @@ Thanks to the community contributors who made this project better:
 ## License
 
 [MIT](LICENSE) © 2026 KenZ (kenz1117)
+
+### Legacy project database migration
+
+`legacyMigration: eager` (default) keeps the automatic rename when only the old
+filename exists. A private JSON sidecar, `<old filename>.migrated-to`, records
+`migratedTo`, `claimedByCwd`, and `claimedAt` (ISO timestamp). A later workspace
+with the same truncated old filename receives a warning naming the prior claim.
+The record describes a file migration, **not proof of per-memory ownership**.
+Same-origin worktrees continue to share the same new database.
+
+Set `legacyMigration: conservative` in the plugin's `cordis.yml` config **before
+upgrading/opening old data** to leave the old database untouched. Engram warns
+with the old and proposed filenames and opens a new, initially empty project
+store, so the session can continue. If old and new files coexist, neither is
+moved or merged, regardless of policy. This mode cannot undo an earlier migration.
+
+Before manually resolving ownership, stop all hosts using the directory and back
+up databases and their SQLite sidecars. Review/export the relevant memories with
+`engram_review` / `engram_export`. The new store may already contain fresh data:
+**do not blindly move the old file over it**. Audit both stores and reassign data
+manually; no automatic classification, split, merge, or deletion is performed.
+
+The pointer includes a local workspace path; treat it as private metadata.
+Malformed/unreadable pointers stop migration rather than silently losing the
+claim history. Restoring an old file beside a pointer requires manual review.
+Rename and pointer creation are separate filesystem operations, not a transaction
+or cross-process lock. A pointer-write failure is reported with both filenames;
+the database has already moved and is not automatically rolled back. After a
+crash between the operations, inspect both paths before retrying. Existing
+migrations performed before this feature have no retroactive pointer.

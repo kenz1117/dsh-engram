@@ -7,6 +7,9 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
+/** 旧库迁移策略：默认自动迁移，可选择保留待人工确认。 */
+export type LegacyMigrationPolicy = 'eager' | 'conservative'
+
 /** 自动摄取档位：off 关闭；light 只读用户消息（每轮≤2 条）；eager 用户+助手消息（每轮≤5 条）。 */
 export type IngestModeConfig = 'off' | 'light' | 'eager'
 
@@ -14,6 +17,8 @@ export type IngestModeConfig = 'off' | 'light' | 'eager'
 export interface EngramConfig {
   /** 两个 SQLite 分库与嵌入模型缓存的根目录；默认 `~/.dsh/engram`。 */
   dbDir?: string
+  /** 旧库迁移策略：默认 eager 自动迁移；conservative 保留旧库待人工确认。 */
+  legacyMigration?: LegacyMigrationPolicy
   /** 会话开始是否注入用户级画像摘要；默认 true。 */
   injectProfile?: boolean
   /** 画像注入的最大条数；默认 8。 */
@@ -77,6 +82,7 @@ export interface ResolvedHistoryRules {
 /** 解析后的完整配置（显式默认值集中在此一步，实现不再 `?? 默认`）。 */
 export interface ResolvedEngramConfig {
   readonly dbDir: string
+  readonly legacyMigration: LegacyMigrationPolicy
   readonly injectProfile: boolean
   readonly profileTopN: number
   readonly modelCacheDir: string
@@ -98,7 +104,7 @@ export interface ResolvedEngramConfig {
 
 /** 合法配置键集合（未知键 loud 失败）。 */
 const CONFIG_KEYS: ReadonlySet<string> = new Set([
-  'dbDir', 'injectProfile', 'profileTopN', 'modelCacheDir', 'hfEndpoint',
+  'legacyMigration', 'dbDir', 'injectProfile', 'profileTopN', 'modelCacheDir', 'hfEndpoint',
   'ingest', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
   'injectTokenBudget', 'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
   'autoSlot', 'reviewScheduling',
@@ -111,6 +117,7 @@ const INGEST_MODES: ReadonlySet<string> = new Set(['off', 'light', 'eager'])
 /** Schemastery 校验面（cordis.yml 读取时校验）。 */
 export const Config: z<EngramConfig> = z.object({
   dbDir: z.string(),
+  legacyMigration: z.string() as unknown as z<LegacyMigrationPolicy>,
   injectProfile: z.boolean(),
   profileTopN: z.number().step(1).min(1).max(64),
   modelCacheDir: z.string(),
@@ -143,6 +150,9 @@ export const Config: z<EngramConfig> = z.object({
 export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   for (const key of Object.keys(config)) {
     if (!CONFIG_KEYS.has(key)) throw new Error(`dsh-engram: unknown config key "${key}"`)
+  }
+  if (config.legacyMigration !== undefined && config.legacyMigration !== 'eager' && config.legacyMigration !== 'conservative') {
+    throw new Error('dsh-engram: legacyMigration must be one of eager|conservative')
   }
   if (config.ingest !== undefined && !INGEST_MODES.has(config.ingest)) {
     throw new Error(`dsh-engram: ingest must be one of off|light|eager, got "${String(config.ingest)}"`)
@@ -184,6 +194,7 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   const dbDir = config.dbDir ?? join(homedir(), '.dsh', 'engram')
   return {
     dbDir,
+    legacyMigration: config.legacyMigration ?? 'eager',
     injectProfile: config.injectProfile ?? true,
     profileTopN: config.profileTopN ?? 8,
     modelCacheDir: config.modelCacheDir ?? join(dbDir, 'models'),

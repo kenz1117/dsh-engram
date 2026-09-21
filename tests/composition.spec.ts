@@ -7,7 +7,8 @@
  * 与 llm 辅助调用端点。
  */
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -20,7 +21,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { openEngramStore } from '../src/store/sqlite.ts'
 import { markPendingIngest } from '../src/ingest/hook.ts'
-import { resolveProjectIdentity } from '../src/project/identity.ts'
+import { readMigrationPointer, resolveProjectIdentity } from '../src/project/identity.ts'
 import * as Engram from '../src/index.ts'
 
 let root: string | undefined
@@ -42,6 +43,7 @@ afterEach(async () => {
   if (root !== undefined) await rm(root, { recursive: true, force: true })
   root = undefined
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 /** 记录 llm 替身收到的调用参数（断言辅助调用的路由归属）。 */
@@ -119,10 +121,11 @@ async function seedMemories(dbPath: string, pending?: PendingSeed): Promise<{ ke
 /** 六行 cordis.yml（webserver + system-prompt + tools + llm 替身 + engram）经真实 Loader 启动。
  *  extraConfig 追加到 engram 行 config 下（如 `    ingest: 'light'`）；
  *  pending 预置一个待补做摄取键（跨会话 pending 重放用例）。 */
-async function loadComposition(extraConfig: readonly string[] = [], pending?: PendingSeed): Promise<Context> {
+async function loadComposition(extraConfig: readonly string[] = [], pending?: PendingSeed, prepare?: (dbDir: string) => Promise<void>): Promise<Context> {
   root = await mkdtemp(join(tmpdir(), 'dsh-engram-'))
   const dbPath = join(root, 'engram', 'user.db')
   await seedMemories(dbPath, pending)
+  await prepare?.(join(root, 'engram'))
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
     "- name: '@deepseek-ai/dsh-host-webserver'",
@@ -510,4 +513,66 @@ describe('dsh-engram real Loader composition', () => {
       config: { path: pathToFileURL(configPath).href },
     })).rejects.toThrow(/unknown config key/)
   })
+})
+
+
+describe('migration policy through the real Loader and session tools', () => {
+  for (const phase of ['boot', 'session'] as const) {
+    for (const policy of ['eager', 'conservative'] as const) {
+      it(`${phase}: ${policy} is applied before project-store access`, async () => {
+        const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        let cwd = process.cwd()
+        let before: Buffer | undefined
+        const seed = async (dbDir: string) => {
+          const identity = resolveProjectIdentity(cwd)
+          const path = join(dbDir, identity.legacyDbName)
+          const store = await openEngramStore(path)
+          await store.write({ scope: 'project', kind: 'fact', content: 'synthetic legacy memory', importance: 0.5 })
+          await store.close()
+          before = await readFile(path)
+        }
+        const loaded = await loadComposition(
+          [`    legacyMigration: '${policy}'`, '    injectProfile: false', '    queryRewrite: false'],
+          undefined,
+          phase === 'boot' ? seed : undefined,
+        )
+        if (phase === 'session') {
+          cwd = join(root!, 'workspace-a')
+          await mkdir(cwd)
+          loaded.provide('workspaceRegistry' as never, {
+            list: () => [{ id: 'migration-ws', path: cwd, title: 'Migration fixture' }],
+          } as never)
+          await seed(join(root!, 'engram'))
+        }
+        if (phase === 'session') {
+          const result = await loaded.tools.execute({
+            name: 'engram_stats', arguments: { scope: 'project' },
+            agent: { id: 'migration-agent', session: { id: 'migration-session', header: { cwd } } } as never,
+            callId: 'migration-stats' as never, signal: new AbortController().signal,
+          })
+          expect(result.isError).not.toBe(true)
+        }
+        const identity = resolveProjectIdentity(cwd)
+        const dbDir = join(root!, 'engram')
+        const query = phase === 'boot' ? '' : `&project=${identity.dbName}`
+        const response = await call(loaded.webServer.port, 'GET', `/api/engram/list?scope=project${query}`)
+        expect(response.status).toBe(200)
+        const contents = (response.json as { records: { content: string }[] }).records.map(record => record.content)
+        const logged = warnings.mock.calls.flat().join('\n')
+        expect(logged).toContain(identity.legacyDbName)
+        expect(logged).toContain(identity.dbName)
+        if (policy === 'eager') {
+          expect(contents).toContain('synthetic legacy memory')
+          expect(readMigrationPointer(dbDir, identity)?.claimedByCwd).toBe(cwd)
+          expect(existsSync(join(dbDir, identity.legacyDbName))).toBe(false)
+        } else {
+          expect(contents).toEqual([])
+          expect(existsSync(join(dbDir, identity.dbName))).toBe(true)
+          expect(await readFile(join(dbDir, identity.legacyDbName))).toEqual(before)
+          expect(readMigrationPointer(dbDir, identity)).toBeUndefined()
+          expect(logged).toContain('请勿直接覆盖')
+        }
+      })
+    }
+  }
 })
