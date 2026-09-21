@@ -108,6 +108,7 @@ export type EngramKey =
   | 'relContradicts'
   | 'relRelated'
   | 'opWrite'
+  | 'opWriteMerge'
   | 'opUpdate'
   | 'opForget'
   | 'opRestore'
@@ -354,6 +355,7 @@ export const zh: Record<EngramKey, string> = {
   kpiForgotten: '闭馆',
   kpiSignal: '清晰度',
   opWrite: '落成',
+  opWriteMerge: '落成·并入',
   opUpdate: '修缮',
   opForget: '封门',
   opRestore: '重开',
@@ -592,6 +594,7 @@ export const en: Record<EngramKey, string> = {
   kpiForgotten: 'Closed',
   kpiSignal: 'Clarity',
   opWrite: 'opened',
+  opWriteMerge: 'merged in',
   opUpdate: 'renovated',
   opForget: 'closed',
   opRestore: 'reopened',

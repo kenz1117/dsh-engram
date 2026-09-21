@@ -109,6 +109,14 @@ export interface EngramStore {
   findContradictions(embedding: Float32Array, limit?: number): Promise<MemoryRecord[]>
   /** 建立一条关系边（幂等）。 */
   linkEdge(from: MemoryId, to: MemoryId, type: EngramEdgeType): Promise<void>
+  /** 最近邻：同库 active（user/project 行）中与给定向量余弦最高的条目及相似度；空库或无向量条目返回 undefined。 */
+  nearestNeighbor(embedding: Float32Array): Promise<{ record: MemoryRecord; similarity: number } | undefined>
+  /**
+   * 并入强化：新内容被判为既有条目的复述（写入四态的 MERGE）时调用——accessCount+1、
+   * confidence+0.05（与检索命中强化同幅），并记一条 write-merge 审计行（detail 为调用方给的 JSON 说明）。
+   * @returns 强化后的条目；id 不存在返回 undefined。
+   */
+  reinforce(id: MemoryId, note: string): Promise<MemoryRecord | undefined>
   /** 蒸馏写入原语：单事务内写新条目、归档全部旧条目并逐条建立 supersedes 边。 */
   supersedeMany(input: WriteInput, oldIds: readonly MemoryId[]): Promise<MemoryRecord>
   /** 写入一条结构化审计记录（辅助 LLM 请求等，不进会话日志——下游插件禁止写未知事件类型）。 */

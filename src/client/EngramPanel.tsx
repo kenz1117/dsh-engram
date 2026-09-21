@@ -93,6 +93,7 @@ const ROOM_CLASS: Record<string, string> = {
 }
 const OP_KEY: Record<string, EngramKey> = {
   write: 'opWrite',
+  'write-merge': 'opWriteMerge',
   update: 'opUpdate',
   forget: 'opForget',
   restore: 'opRestore',

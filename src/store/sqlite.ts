@@ -953,6 +953,24 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       sqlEdgeUpsert.run(from, to, type, Date.now())
     },
 
+    async nearestNeighbor(embedding: Float32Array) {
+      // 与 findContradictions 同一池口径（active 且有向量的 user/project 行），不夹阈值、保留相似度。
+      const pool = db.prepare("SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND scope IN ('user','project')").all() as unknown as NodeRow[]
+      let best: { row: NodeRow; sim: number } | undefined
+      for (const row of pool) {
+        const sim = cosine(embedding, blobToVec(row.embedding!))
+        if (best === undefined || sim > best.sim) best = { row, sim }
+      }
+      return best === undefined ? undefined : { record: rowToRecord(best.row), similarity: best.sim }
+    },
+
+    async reinforce(id: MemoryId, note: string) {
+      if (sqlGet.get(id) === undefined) return undefined
+      sqlTouch.run(Date.now(), id)
+      sqlLog.run(Date.now(), 'write-merge', id, note)
+      return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
+    },
+
     async supersedeMany(input: WriteInput, oldIds: readonly MemoryId[]) {
       // oldIds 为空时与 write 等价（insertRecord + 0 次归档循环），不走 this 引用。
       const content = input.content.trim()

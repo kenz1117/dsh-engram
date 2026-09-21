@@ -423,3 +423,129 @@ describe('project scope 按会话 cwd 归属', () => {
     }
   })
 })
+
+describe('engram_save 写入四态回报', () => {
+  /**
+   * 正交一热伪嵌入器：不同文本余弦 0、同文本 1；pin 可显式钉向量构造 defer 带。
+   * defer 带构造：与 [1,0] 的余弦 = 0.9（∈ [0.88, 0.92)）。
+   */
+  const DEFER_VECTOR = [0.9, Math.sqrt(0.19)] as const
+  const oneHotEmbedder = () => {
+    const dims = new Map<string, number>()
+    const pinned = new Map<string, Float32Array>()
+    let next = 2
+    const vecOf = (text: string): Float32Array => {
+      const fixed = pinned.get(text)
+      if (fixed !== undefined) return fixed
+      let dim = dims.get(text)
+      if (dim === undefined) { dim = next; next += 1; dims.set(text, dim) }
+      const vector = new Float32Array(512)
+      vector[dim] = 1
+      return vector
+    }
+    return {
+      pin: (text: string, coords: readonly number[]) => {
+        const vector = new Float32Array(512)
+        coords.forEach((value, index) => { vector[index] = value })
+        pinned.set(text, vector)
+      },
+      embedder: {
+        model: 'pseudo',
+        embed: async (texts: readonly string[]) => texts.map(vecOf),
+        close: async () => undefined,
+      },
+    }
+  }
+  const dispositionTools = (embedder: { model: string; embed: (texts: readonly string[]) => Promise<Float32Array[]>; close: () => Promise<void> }) =>
+    new Map<string, ExecutableTool>(
+      createEngramTools({
+        openStore: async () => store,
+        resolveProjectStore: async () => store,
+        embedder: Promise.resolve(embedder),
+        call: undefined,
+        routeOverride: undefined,
+        queryRewrite: false,
+        exportDir: join(dir, 'exports'),
+      }).map(tool => [tool.name, tool]),
+    )
+
+  it('复述并入既有条目（MERGE）：不新建、强化置信度、输出标明并入', async () => {
+    const { pin, embedder } = oneHotEmbedder()
+    pin('用户现居杭州', [1, 0])
+    pin('复述：用户现居杭州', [1, 0])
+    const toolsWithEmb = dispositionTools(embedder)
+    const first = await toolsWithEmb.get('engram_save')!.execute(
+      { content: '用户现居杭州', kind: 'fact', scope: 'user' }, fakeExec) as { id: string; disposition: string }
+    expect(first.disposition).toBe('accept')
+    const second = await toolsWithEmb.get('engram_save')!.execute(
+      { content: '复述：用户现居杭州', kind: 'fact', scope: 'user' }, fakeExec) as { disposition: string; mergedInto: string; similarity: number; text: string }
+    expect(second.disposition).toBe('merge')
+    expect(second.mergedInto).toBe(first.id)
+    expect(second.text).toContain('未新建条目')
+    // 不新建节点；既有条目被强化（confidence +0.05、accessCount +1），并记 write-merge 审计。
+    expect((await store.stats()).total).toBe(1)
+    const rows = await store.topActive('user', 10)
+    expect(rows[0]?.confidence).toBeCloseTo(0.55, 5)
+    expect(rows[0]?.accessCount).toBe(1)
+    const ops = await store.recentOps(10)
+    expect(ops.some(op => op.op === 'write-merge' && op.targetId === first.id)).toBe(true)
+  })
+
+  it('疑似矛盾（defer 带）落库并建 contradicts 边；跨 kind 高相似同样待裁决', async () => {
+    const { pin, embedder } = oneHotEmbedder()
+    pin('项目数据库选型是 SQLite', [1, 0])
+    pin('项目数据库选型是 SQLite 的传闻', DEFER_VECTOR)
+    pin('用户偏好 SQLite 风格的本地存储', [1, 0])
+    const toolsWithEmb = dispositionTools(embedder)
+    const base = await toolsWithEmb.get('engram_save')!.execute(
+      { content: '项目数据库选型是 SQLite', kind: 'fact', scope: 'user' }, fakeExec) as { id: string }
+    const deferBand = await toolsWithEmb.get('engram_save')!.execute(
+      { content: '项目数据库选型是 SQLite 的传闻', kind: 'fact', scope: 'user' }, fakeExec) as { id: string; disposition: string; text: string }
+    expect(deferBand.disposition).toBe('defer')
+    expect(deferBand.text).toContain('高度相似')
+    // defer 落库成新节点 + 建边待裁决。
+    expect((await store.stats()).total).toBe(2)
+    const edges = (await store.exportAll()).edges
+    expect(edges.some(edge => edge.type === 'contradicts' && edge.from === deferBand.id && edge.to === base.id)).toBe(true)
+    // 跨 kind 即便余弦 1.0 也不并入（防把偏好错并进事实）。
+    const crossKind = await toolsWithEmb.get('engram_save')!.execute(
+      { content: '用户偏好 SQLite 风格的本地存储', kind: 'preference', scope: 'user' }, fakeExec) as { disposition: string }
+    expect(crossKind.disposition).toBe('defer')
+    expect((await store.stats()).total).toBe(3)
+  })
+
+  it('无近邻达到阈值时正常新建（ACCEPT）且不建边', async () => {
+    const { embedder } = oneHotEmbedder()
+    const toolsWithEmb = dispositionTools(embedder)
+    const result = await toolsWithEmb.get('engram_save')!.execute(
+      { content: '完全独立的一条记忆', kind: 'skill', scope: 'user' }, fakeExec) as { disposition: string }
+    expect(result.disposition).toBe('accept')
+    expect((await store.exportAll()).edges).toHaveLength(0)
+  })
+
+  it('批量保存逐条回报处置：accept/merge 混合，失败不阻塞', async () => {
+    const { pin, embedder } = oneHotEmbedder()
+    pin('杭州事实甲', [1, 0])
+    pin('杭州事实甲的复述', [1, 0])
+    const toolsWithEmb = dispositionTools(embedder)
+    const result = await toolsWithEmb.get('engram_save')!.execute({
+      items: [
+        { content: '杭州事实甲', kind: 'fact' },
+        { content: '杭州事实甲的复述', kind: 'fact' },
+        // 空内容越过 schema 但在清洗阶段判失败（schema 先拦截的非法 kind 走不到处置层）。
+        { content: '', kind: 'fact' },
+      ],
+      scope: 'user',
+    }, fakeExec) as { count: number; items: { id: string; disposition: string; mergedInto?: string }[]; failed: { index: number; reason: string }[] }
+    expect(result.count).toBe(2)
+    expect(result.items.map(item => item.disposition)).toEqual(['accept', 'merge'])
+    expect(result.items[1]?.mergedInto).toBe(result.items[0]?.id)
+    expect(result.failed).toHaveLength(1)
+    // 库内只有一条节点（merge 未新建）。
+    expect((await store.stats()).total).toBe(1)
+    // 呈现文本汇总并入条数。
+    const definition = toolsWithEmb.get('engram_save') as unknown as { output: { render: (args: unknown, value: unknown) => readonly { text: string }[] } }
+    const rendered = definition.output.render({}, result)
+    expect(rendered[0]?.text).toContain('并入强化 1 条')
+  })
+})

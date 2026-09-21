@@ -14,6 +14,7 @@ import type { EngramKind, EngramScope } from '../types.ts'
 import { sanitizeProtocolText } from '../security/sanitize.ts'
 import { redactSecrets } from '../security/redact.ts'
 import { hasRecallToolCalls, omitRecallToolResults } from '../security/recall.ts'
+import { applyMerge, decideWrite } from '../write-disposition.ts'
 
 /** 摄取档位：off 关闭；light 只读用户消息、每轮上限 2 条；eager 用户+助手消息、上限 5 条。 */
 export type IngestMode = 'off' | 'light' | 'eager'
@@ -76,8 +77,14 @@ export interface IngestOutcome {
   readonly scannedEvents: number
   /** LLM 提取的候选数。 */
   readonly candidates: number
-  /** 实际写入数（去重后）。 */
+  /** 实际新建条目数（accept + defer；defer 是落库但建 contradicts 边待裁决）。 */
   readonly written: number
+  /** MERGE 处置数：复述并入既有条目（强化置信度与访问计数，不新建）。 */
+  readonly merged: number
+  /** written 中的待裁决条数（疑似矛盾/修正，已建边）。 */
+  readonly deferred: number
+  /** DROP 处置数：空内容 / 同批重复等低熵候选。 */
+  readonly dropped: number
   /** 跳过原因；null = 正常完成。 */
   readonly skipped: string | null
 }
@@ -336,7 +343,7 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     round = sliceMode
   }
   if (slice.length === 0) {
-    return { scannedEvents: 0, candidates: 0, written: 0, skipped: typeof sliceMode === 'number' ? 'no-such-turn' : 'no-previous-turn' }
+    return { scannedEvents: 0, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: typeof sliceMode === 'number' ? 'no-such-turn' : 'no-previous-turn' }
   }
 
   const store = await deps.openStore()
@@ -344,14 +351,14 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   const auditStore = deps.openAuditStore === undefined ? store : await deps.openAuditStore()
   const doneKey = encodeTurnKey(deps.sessionId, round)
   if (await auditStore.hasAudit(INGEST_DONE_OP, doneKey)) {
-    return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: 'already-ingested' }
+    return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'already-ingested' }
   }
 
   // 节流（默认只限 previous 自动摄取）：低活动/寒暄/显式禁记的轮次不值得起一次辅助 LLM。
   if (sliceMode === 'previous' || deps.throttle === true) {
     const throttled = throttleDecision(slice)
     if (throttled !== null) {
-      return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: throttled }
+      return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: throttled }
     }
   }
 
@@ -361,11 +368,11 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   // 入库前协议剥离 + 密钥脱敏；交给提取模型的 userText 同样脱敏。
   const cleaned = texts.map(text => redactSecrets(sanitizeProtocolText(text)))
   if (cleaned.every(text => text === '')) {
-    return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: 'no-user-content' }
+    return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'no-user-content' }
   }
 
   const route = deps.routeOverride ?? routeFromEvents(deps.events)
-  if (route === undefined) return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: 'no-route-in-log' }
+  if (route === undefined) return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'no-route-in-log' }
 
   // 防回声室附注：上一轮调用过召回工具时，提示提取模型既有记忆的复述不是新信息。
   const recallNote = hasRecallToolCalls(scoped)
@@ -382,17 +389,20 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     signal: deps.signal,
   })
   const parsed = parseJsonArray(raw)
-  if (parsed === undefined) return { scannedEvents: slice.length, candidates: 0, written: 0, skipped: 'unparseable-output' }
+  if (parsed === undefined) return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'unparseable-output' }
 
   const embedder = await deps.embedder
   const writtenContents: string[] = []
   let written = 0
+  let merged = 0
+  let deferred = 0
+  let dropped = 0
   for (const item of parsed.slice(0, limits.maxCandidates)) {
     const candidate = item as { content?: unknown; kind?: unknown; scope?: unknown; importance?: unknown }
-    if (typeof candidate.content !== 'string' || candidate.content.trim() === '') continue
+    if (typeof candidate.content !== 'string' || candidate.content.trim() === '') { dropped += 1; continue }
     // 模型输出候选入库前同样剥离协议块并脱敏（可能复述会话中的密钥或伪造协议标签）。
     const content = redactSecrets(sanitizeProtocolText(candidate.content.trim()))
-    if (content === '') continue
+    if (content === '') { dropped += 1; continue }
     const kind = (typeof candidate.kind === 'string' && ['fact', 'preference', 'decision', 'episode', 'skill'].includes(candidate.kind))
       ? candidate.kind as EngramKind
       : 'fact'
@@ -405,13 +415,19 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     const importance = typeof candidate.importance === 'number' && Number.isFinite(candidate.importance)
       ? Math.min(1, Math.max(0, candidate.importance))
       : 0.5
-    // 去重：嵌入可用时与目标宫殿内现有 active 条目高度相似即跳过；同批重复内容也跳过。
-    if (embedder !== undefined) {
-      const vector = (await embedder.embed([content]))[0]
-      if (vector !== undefined && (await target.findContradictions(vector, 1)).length > 0) continue
+    // 同批重复内容直接 DROP。
+    if (writtenContents.includes(content)) { dropped += 1; continue }
+    // 四态处置（嵌入可用时）：复述并入强化既有条目（MERGE，不新建）；
+    // 疑似矛盾/修正落库并建 contradicts 边待裁决（DEFER）；其余 ACCEPT。
+    const vector = embedder === undefined ? undefined : (await embedder.embed([content]))[0]
+    const decision = await decideWrite(target, kind, vector)
+    if (decision.disposition === 'merge') {
+      await applyMerge(target, decision, content)
+      writtenContents.push(content)
+      merged += 1
+      continue
     }
-    if (writtenContents.includes(content)) continue
-    await target.write({
+    const record = await target.write({
       scope,
       kind,
       content,
@@ -420,14 +436,18 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
       sourceSessionId: deps.sessionId,
       sourceRound: round,
       ...(minSeq === null ? {} : { sourceSeq: minSeq }),
-      ...(embedder === undefined ? {} : { embedding: (await embedder.embed([content]))[0] }),
+      ...(vector === undefined ? {} : { embedding: vector }),
       ...(deps.history === true ? { initialReviewAt: null } : {}),
     })
+    if (decision.disposition === 'defer') {
+      await target.linkEdge(record.id, decision.neighbor.id, 'contradicts')
+      deferred += 1
+    }
     writtenContents.push(content)
     written += 1
   }
   await auditStore.audit(INGEST_DONE_OP, deps.sessionId, doneKey)
-  return { scannedEvents: slice.length, candidates: parsed.length, written, skipped: null }
+  return { scannedEvents: slice.length, candidates: parsed.length, written, merged, deferred, dropped, skipped: null }
 }
 
 /**

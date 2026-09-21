@@ -305,4 +305,26 @@ describe('渐进式披露：getMany / neighbors', () => {
     expect(await store.neighbors(a.id, 3)).toEqual([])
     expect(await store.getMany([])).toEqual([])
   })
+
+  it('nearestNeighbor 返回余弦最高的 active 条目；空库 undefined；遗忘后不参与', async () => {
+    expect(await store.nearestNeighbor(new Float32Array(512).fill(0.1))).toBeUndefined()
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '杭州的条目', embedding: new Float32Array(512).fill(0.1) })
+    const b = await store.write({ scope: 'user', kind: 'fact', content: '完全无关的条目', embedding: new Float32Array(512).fill(-0.4) })
+    const nearest = await store.nearestNeighbor(new Float32Array(512).fill(0.1))
+    expect(nearest?.record.id).toBe(a.id)
+    expect(nearest?.similarity).toBeCloseTo(1, 5)
+    await store.forget(a.id)
+    const after = await store.nearestNeighbor(new Float32Array(512).fill(0.1))
+    expect(after?.record.id).toBe(b.id)
+  })
+
+  it('reinforce 强化置信度与访问计数并记 write-merge 审计；未知 id 返回 undefined', async () => {
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '被复述的条目' })
+    const reinforced = await store.reinforce(a.id, '{"content":"复述","similarity":0.95}')
+    expect(reinforced?.confidence).toBeCloseTo(0.55, 5)
+    expect(reinforced?.accessCount).toBe(1)
+    const ops = await store.recentOps(10)
+    expect(ops.some(op => op.op === 'write-merge' && op.targetId === a.id)).toBe(true)
+    expect(await store.reinforce(asMemoryId('missing'), '{}')).toBeUndefined()
+  })
 })

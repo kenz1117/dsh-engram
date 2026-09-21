@@ -31,6 +31,8 @@ import {
 import type { AssessVerdict, NextStrategy } from '../retrieve/evidence.ts'
 import { placardImprovementHint } from '../imagery/score.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunResult } from '../ingest/history.ts'
+import { applyMerge, decideWrite } from '../write-disposition.ts'
+import type { WriteDisposition } from '../write-disposition.ts'
 
 /** 工具依赖：分库打开器、嵌入器承诺、辅助 LLM 调用与导出目录。 */
 export interface ToolDeps {
@@ -217,12 +219,18 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     readonly id?: string
     readonly kind?: string
     readonly importance?: number
+    /** 写入四态处置：accept 新建 / merge 并入强化 / defer 待裁决（drop 不进结果——校验失败的条目走 failed）。 */
+    readonly disposition?: WriteDisposition
+    /** merge：被并入强化的既有条目 id。 */
+    readonly mergedInto?: string
+    /** merge/defer：与最近邻的余弦相似度。 */
+    readonly similarity?: number
     /** 单条矛盾警告文本（execute 生成，render 优先呈现）。 */
     readonly text?: string
     /** 批量模式：成功条数。 */
     readonly count?: number
-    /** 批量模式：成功条目（带宫殿坐标，让批量写入也有位置感）。 */
-    readonly items?: readonly { id: string; kind: string; importance: number; slot?: { room: string; index: number } }[]
+    /** 批量模式：成功条目（带宫殿坐标与处置，让批量写入也有位置感与四态可见性）。 */
+    readonly items?: readonly { id: string; kind: string; importance: number; slot?: { room: string; index: number }; disposition: Exclude<WriteDisposition, 'drop'>; mergedInto?: string }[]
     /** 批量模式：失败条目（index 为 items 数组下标）。 */
     readonly failed?: readonly { index: number; reason: string }[]
   }
@@ -230,10 +238,18 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
   /** engram_save 呈现文本：矛盾警告 text 优先；批量输出汇总成功与失败。 */
   function renderSaveResultText(value: SaveResultView): string {
     if (value.count !== undefined) {
+      const items = value.items ?? []
+      const merged = items.filter(item => item.disposition === 'merge').length
+      const deferred = items.filter(item => item.disposition === 'defer').length
       const parts = [`已批量保存 ${value.count} 条记忆`]
-      for (const item of value.items ?? []) {
+      const states: string[] = []
+      if (merged > 0) states.push(`并入强化 ${merged} 条既有记忆`)
+      if (deferred > 0) states.push(`${deferred} 条与现有记忆高度相似待裁决`)
+      if (states.length > 0) parts.push(states.join('，'))
+      for (const item of items) {
         const slot = item.slot === undefined ? '' : `, ${item.slot.room}#${item.slot.index}`
-        parts.push(`${item.id}（kind=${item.kind}, importance=${item.importance}${slot}）`)
+        const state = item.disposition === 'merge' ? `, 并入 ${item.mergedInto}` : item.disposition === 'defer' ? ', 待裁决' : ''
+        parts.push(`${item.id}（kind=${item.kind}, importance=${item.importance}${slot}${state}）`)
       }
       const failures = value.failed ?? []
       if (failures.length > 0) {
@@ -246,8 +262,24 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     return `已保存记忆 ${value.id}（kind=${value.kind}, importance=${value.importance}）。后续会话可用 engram_search 召回。`
   }
 
-  /** 写入单条已清洗内容并按嵌入建矛盾边；返回记录与矛盾候选（调用方决定呈现）。 */
-  async function writeWithContradictions(
+  /** 单条写入的处置结果（批量与单条共用）。 */
+  interface WriteOutcome {
+    readonly disposition: Exclude<WriteDisposition, 'drop'>
+    /** accept/defer：新条目；merge：被并入强化的既有条目。 */
+    readonly record: MemoryRecord
+    /** merge：被并入的既有条目 id；defer：最近邻 id。 */
+    readonly relatedId?: string
+    /** merge/defer：与最近邻的余弦相似度。 */
+    readonly similarity?: number
+    /** defer：全部矛盾候选（已建 contradicts 边，供呈现层报告）。 */
+    readonly candidates: readonly MemoryRecord[]
+  }
+
+  /**
+   * 写入单条已清洗内容（四态处置）：MERGE 不新建条目只强化既有；
+   * DEFER 写入并建 contradicts 边待裁决；ACCEPT 原样写入。
+   */
+  async function writeWithDisposition(
     store: EngramStore,
     item: {
       scope: EngramScope
@@ -258,8 +290,13 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       embedding?: Float32Array
       imagery?: ImageryLabel
     },
-  ): Promise<{ record: Awaited<ReturnType<EngramStore['write']>>; candidates: Awaited<ReturnType<EngramStore['findContradictions']>> }> {
+  ): Promise<WriteOutcome> {
     const { embedding } = item
+    const decision = await decideWrite(store, item.kind, embedding)
+    if (decision.disposition === 'merge') {
+      const record = await applyMerge(store, decision, item.content)
+      return { disposition: 'merge', record, relatedId: decision.into.id, similarity: decision.similarity, candidates: [] }
+    }
     const record = await store.write({
       scope: item.scope,
       kind: item.kind,
@@ -269,11 +306,15 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       ...(embedding === undefined ? {} : { embedding }),
       ...(item.imagery === undefined ? {} : { imagery: item.imagery }),
     })
-    const candidates = embedding === undefined ? [] : await store.findContradictions(embedding)
-    for (const candidate of candidates) {
-      await store.linkEdge(record.id, candidate.id, 'contradicts')
+    if (decision.disposition === 'defer') {
+      // defer 时 embedding 必然存在（decideWrite 在无嵌入时只判 accept）。
+      const candidates = await store.findContradictions(embedding as Float32Array)
+      for (const candidate of candidates) {
+        await store.linkEdge(record.id, candidate.id, 'contradicts')
+      }
+      return { disposition: 'defer', record, relatedId: decision.neighbor.id, similarity: decision.similarity, candidates }
     }
-    return { record, candidates }
+    return { disposition: 'accept', record, candidates: [] }
   }
 
   /** 门牌参数收敛：非空字符串转 ImageryLabel（感官/情绪维度留空——AI 不需要人脑补丁），非法返回 undefined。 */
@@ -287,7 +328,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
   /** 批量保存结果（输出 schema 的运行时形状）。 */
   interface SaveBatchResult {
     readonly count: number
-    readonly items: { id: string; kind: string; importance: number }[]
+    readonly items: { id: string; kind: string; importance: number; disposition: Exclude<WriteDisposition, 'drop'>; mergedInto?: string }[]
     readonly failed: { index: number; reason: string }[]
   }
 
@@ -328,12 +369,12 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     const vectors = embedder === undefined || prepared.length === 0
       ? undefined
       : await embedder.embed(prepared.map(item => item.content.trim()))
-    // 第三步：逐条写入；单条失败记入 failed 不阻塞其余（矛盾边照建，可经 engram_review 查看）。
-    const saved: { id: string; kind: string; importance: number; slot?: { room: string; index: number } }[] = []
+    // 第三步：逐条处置写入；单条失败记入 failed 不阻塞其余（defer 的矛盾边照建，可经 engram_review 查看）。
+    const saved: { id: string; kind: string; importance: number; slot?: { room: string; index: number }; disposition: Exclude<WriteDisposition, 'drop'>; mergedInto?: string }[] = []
     for (const [position, item] of prepared.entries()) {
       try {
         const embedding = vectors?.[position]
-        const { record } = await writeWithContradictions(store, {
+        const outcome = await writeWithDisposition(store, {
           scope,
           kind: item.kind,
           content: item.content,
@@ -342,10 +383,13 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
           ...(embedding === undefined ? {} : { embedding }),
         })
         saved.push({
-          id: record.id,
-          kind: record.kind,
-          importance: record.importance,
-          ...(record.slot === undefined ? {} : { slot: record.slot }),
+          id: outcome.record.id,
+          kind: outcome.record.kind,
+          importance: outcome.record.importance,
+          disposition: outcome.disposition,
+          // merge 处置不新建条目，record 即被强化的既有条目，不重复报桩位。
+          ...(outcome.disposition === 'merge' || outcome.record.slot === undefined ? {} : { slot: outcome.record.slot }),
+          ...(outcome.disposition === 'merge' && outcome.relatedId !== undefined ? { mergedInto: outcome.relatedId } : {}),
         })
       } catch (error) {
         failed.push({ index: item.index, reason: error instanceof Error ? error.message : String(error) })
@@ -378,12 +422,17 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         id: { type: 'string' },
         kind: { type: 'string' },
         importance: { type: 'number' },
+        disposition: { type: 'string', enum: ['accept', 'merge', 'defer'] },
+        mergedInto: { type: 'string' },
+        similarity: { type: 'number' },
         text: { type: 'string' },
         count: { type: 'number' },
         items: { type: 'array', items: { type: 'object', additionalProperties: false, properties: {
           id: { type: 'string', required: true },
           kind: { type: 'string', required: true },
           importance: { type: 'number', required: true },
+          disposition: { type: 'string', enum: ['accept', 'merge', 'defer'], required: true },
+          mergedInto: { type: 'string' },
           slot: { type: 'object', additionalProperties: false, properties: {
             room: { type: 'string', required: true },
             index: { type: 'number', required: true },
@@ -420,7 +469,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const embedder = await deps.embedder
       const embeddings = embedder === undefined ? undefined : await embedder.embed([content.trim()])
       const imagery = placardOf(input.placard)
-      const { record, candidates } = await writeWithContradictions(store, {
+      const outcome = await writeWithDisposition(store, {
         scope,
         kind: input.kind as EngramKind,
         content,
@@ -429,22 +478,38 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         ...(embeddings?.[0] === undefined ? {} : { embedding: embeddings[0] }),
         ...(imagery === undefined ? {} : { imagery }),
       })
+      const { record, candidates } = outcome
+      // MERGE：复述并入既有条目——不新建、不挂门牌，只强化并明确告知（防模型误以为新建成功）。
+      if (outcome.disposition === 'merge') {
+        const sim = (outcome.similarity ?? 0).toFixed(2)
+        return {
+          id: record.id,
+          kind: record.kind,
+          importance: record.importance,
+          disposition: 'merge' as const,
+          ...(outcome.relatedId === undefined ? {} : { mergedInto: outcome.relatedId }),
+          ...(outcome.similarity === undefined ? {} : { similarity: outcome.similarity }),
+          text: `与既有记忆高度重复（相似度 ${sim}），已并入 ${outcome.relatedId} 并强化其置信度与访问计数，未新建条目。若这是修正而非复述，请用 engram_update 归并。`,
+        }
+      }
       // 门牌质量提示：低分（不合「唯一·差异化·带日期」纪律）附增强建议。
       const placardHint = imagery === undefined || record.imageryScore === undefined
         ? ''
         : `\n${placardImprovementHint(record.imageryScore) ?? ''}`
-      // 写入时矛盾检测：高相似近邻建 contradicts 边并在结果中报告候选，由模型/用户裁决。
-      if (candidates.length > 0) {
+      // DEFER：疑似矛盾/修正——落库并建 contradicts 边，报告候选由模型/用户裁决。
+      if (outcome.disposition === 'defer') {
         const listed = candidates.map(candidate => `「${candidate.content}」（id=${candidate.id}）`).join('；')
         return {
           id: record.id,
           kind: record.kind,
           importance: record.importance,
+          disposition: 'defer' as const,
+          ...(outcome.similarity === undefined ? {} : { similarity: outcome.similarity }),
           text: `已保存 ${record.id}。注意：与现有记忆高度相似——${listed}。若这是修正而非新事实，请用 engram_update 归并，或 engram_forget 去重。${placardHint}`,
         }
       }
       const base = `已保存记忆 ${record.id}（kind=${record.kind}, importance=${record.importance}${record.slot === undefined ? '' : `, ${record.slot.room}#${record.slot.index}`}）。后续会话可用 engram_search 召回。`
-      return { id: record.id, kind: record.kind, importance: record.importance, text: `${base}${placardHint}` }
+      return { id: record.id, kind: record.kind, importance: record.importance, disposition: 'accept' as const, text: `${base}${placardHint}` }
     },
   })
 

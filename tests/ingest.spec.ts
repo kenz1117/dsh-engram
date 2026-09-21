@@ -574,3 +574,73 @@ describe('replayPendingIngests', () => {
     expect((await store.listAuditDetails(INGEST_PENDING_OP)).length).toBe(0)
   })
 })
+
+describe('摄取写入四态', () => {
+  /** 固定向量伪嵌入器：登记文本按表给向量，未登记文本给正交一热向量（维度 2 起，0/1 留给显式登记）。 */
+  const fixedEmbedder = (table: Record<string, readonly number[]>) => {
+    const dims = new Map<string, number>()
+    let next = 2
+    return {
+      model: 'pseudo',
+      embed: async (texts: readonly string[]) => texts.map(text => {
+        const vector = new Float32Array(512)
+        const pinned = table[text]
+        if (pinned !== undefined) {
+          pinned.forEach((value, index) => { vector[index] = value })
+          return vector
+        }
+        let dim = dims.get(text)
+        if (dim === undefined) { dim = next; next += 1; dims.set(text, dim) }
+        vector[dim] = 1
+        return vector
+      }),
+      close: async () => undefined,
+    }
+  }
+  /** 构造 [1,0,...] 向量的辅助。 */
+  const unitVec = (coords: readonly number[]): Float32Array => {
+    const vector = new Float32Array(512)
+    coords.forEach((value, index) => { vector[index] = value })
+    return vector
+  }
+
+  it('复述候选 MERGE：并入强化既有条目，不新建、不计 written', async () => {
+    const existing = await store.write({ scope: 'user', kind: 'preference', content: '既有偏好条目', embedding: unitVec([1, 0]) })
+    const outcome = await ingestPreviousTurn(baseDeps({
+      embedder: Promise.resolve(fixedEmbedder({ '用户最喜欢的编程语言是 TypeScript': [1, 0] })),
+      call: async () => JSON.stringify([{ content: '用户最喜欢的编程语言是 TypeScript', kind: 'preference', importance: 0.8 }]),
+    }))
+    expect(outcome.merged).toBe(1)
+    expect(outcome.written).toBe(0)
+    expect((await store.stats()).total).toBe(1)
+    const reinforced = await store.get(existing.id)
+    expect(reinforced?.confidence).toBeCloseTo(0.55, 5)
+    expect(reinforced?.accessCount).toBe(1)
+    const ops = await store.recentOps(10)
+    expect(ops.some(op => op.op === 'write-merge' && op.targetId === existing.id)).toBe(true)
+  })
+
+  it('defer 带候选落库并建 contradicts 边（计入 written 与 deferred）', async () => {
+    const existing = await store.write({ scope: 'user', kind: 'fact', content: '项目包管理器是 pnpm 9', embedding: unitVec([1, 0]) })
+    const outcome = await ingestPreviousTurn(baseDeps({
+      embedder: Promise.resolve(fixedEmbedder({ '项目包管理器升级到 pnpm 10': [0.9, Math.sqrt(0.19)] })),
+      call: async () => JSON.stringify([{ content: '项目包管理器升级到 pnpm 10', kind: 'fact' }]),
+    }))
+    expect(outcome.written).toBe(1)
+    expect(outcome.deferred).toBe(1)
+    const edges = (await store.exportAll()).edges
+    expect(edges.some(edge => edge.type === 'contradicts' && edge.to === existing.id)).toBe(true)
+  })
+
+  it('同批重复候选 DROP 计入 dropped；嵌入不可用时全部 ACCEPT', async () => {
+    const dup = await ingestPreviousTurn(baseDeps({
+      call: async () => JSON.stringify([
+        { content: '重复的事实条目', kind: 'fact' },
+        { content: '重复的事实条目', kind: 'fact' },
+      ]),
+    }))
+    expect(dup.written).toBe(1)
+    expect(dup.dropped).toBe(1)
+    expect(dup.merged).toBe(0)
+  })
+})
