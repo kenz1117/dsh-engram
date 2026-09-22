@@ -32,8 +32,8 @@ import {
 import type { AssessVerdict, NextStrategy } from '../retrieve/evidence.ts'
 import { placardImprovementHint } from '../imagery/score.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunResult } from '../ingest/history.ts'
-import { applyMerge, decideWrite } from '../write-disposition.ts'
-import type { WriteDisposition } from '../write-disposition.ts'
+import { applyMerge, confirmContradictions, decideWrite } from '../write-disposition.ts'
+import type { MemoryJudge, WriteDisposition } from '../write-disposition.ts'
 
 /** 工具依赖：分库打开器、嵌入器承诺、辅助 LLM 调用与导出目录。 */
 export interface ToolDeps {
@@ -50,6 +50,8 @@ export interface ToolDeps {
   readonly call: ((params: { route: LlmRoute; system: string; userText: string; maxTokens: number; purpose: string; signal: AbortSignal; sessionId: string | undefined }) => Promise<string>) | undefined
   /** 显式路由覆盖（Config provider+model）；缺省从会话日志解析。 */
   readonly routeOverride: LlmRoute | undefined
+  /** Jev 判断器（Config jev.enabled 时注入）；undefined = 纯规则四态，DEFER 落库即建边。 */
+  readonly judge?: MemoryJudge
   /** 是否启用检索查询改写（Config queryRewrite）；false 时 engram_search 直接单查询。 */
   readonly queryRewrite: boolean
   /** 导出文件目录（engram_export 写入）。 */
@@ -319,7 +321,8 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     },
   ): Promise<WriteOutcome> {
     const { embedding } = item
-    const decision = await decideWrite(store, item.kind, embedding)
+    // judge + content 成对提供时，DEFER 模糊带交 Jev 三路裁决；未注入 judge 时行为与纯规则四态一致。
+    const decision = await decideWrite(store, item.kind, embedding, deps.judge === undefined ? {} : { judge: deps.judge, content: item.content })
     if (decision.disposition === 'merge') {
       const record = await applyMerge(store, decision, item.content)
       return { disposition: 'merge', record, relatedId: decision.into.id, similarity: decision.similarity, candidates: [] }
@@ -336,10 +339,14 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     if (decision.disposition === 'defer') {
       // defer 时 embedding 必然存在（decideWrite 在无嵌入时只判 accept）。
       const candidates = await store.findContradictions(embedding as Float32Array)
-      for (const candidate of candidates) {
+      // judge 在场时矛盾边先经 Jev 确认（失败返回 undefined = 降级为全量建边，与旧行为一致）。
+      const confirmed = deps.judge === undefined
+        ? candidates
+        : (await confirmContradictions(deps.judge, item.content, candidates)) ?? candidates
+      for (const candidate of confirmed) {
         await store.linkEdge(record.id, candidate.id, 'contradicts')
       }
-      return { disposition: 'defer', record, relatedId: decision.neighbor.id, similarity: decision.similarity, candidates }
+      return { disposition: 'defer', record, relatedId: decision.neighbor.id, similarity: decision.similarity, candidates: confirmed }
     }
     return { disposition: 'accept', record, candidates: [] }
   }

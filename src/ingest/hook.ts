@@ -17,7 +17,8 @@ import { normalizeEntityName } from '../types.ts'
 import { sanitizeProtocolText } from '../security/sanitize.ts'
 import { redactSecrets } from '../security/redact.ts'
 import { hasRecallToolCalls, omitRecallToolResults } from '../security/recall.ts'
-import { applyMerge, decideWrite } from '../write-disposition.ts'
+import { applyMerge, confirmContradictions, decideWrite } from '../write-disposition.ts'
+import type { MemoryJudge } from '../write-disposition.ts'
 
 /** 摄取档位：off 关闭；light 只读用户消息、每轮上限 2 条；eager 用户+助手消息、上限 5 条。 */
 export type IngestMode = 'off' | 'light' | 'eager'
@@ -184,6 +185,8 @@ export interface IngestDeps {
   readonly openAuditStore?: () => Promise<EngramStore>
   /** 历史回填模式：写入不进入 SM-2 复习调度（避免一次性回填的条目同时涌入今日复习队列）。 */
   readonly history?: boolean
+  /** Jev 判断器（Config jev.enabled 时注入）；undefined = 纯规则四态，DEFER 落库即建边。 */
+  readonly judge?: MemoryJudge
 }
 
 /** 写入路由：默认作用域 + 是否逐条采纳模型 scope + 按作用域解析分库。 */
@@ -500,7 +503,8 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     // 四态处置（嵌入可用时）：复述并入强化既有条目（MERGE，不新建）；
     // 疑似矛盾/修正落库并建 contradicts 边待裁决（DEFER）；其余 ACCEPT。
     const vector = embedder === undefined ? undefined : (await embedder.embed([content]))[0]
-    const decision = await decideWrite(target, kind, vector)
+    // judge + content 成对提供时，DEFER 模糊带（0.88-0.92 之外按阈值）交 Jev 三路裁决；失败静默降级回 defer。
+    const decision = await decideWrite(target, kind, vector, deps.judge === undefined ? {} : { judge: deps.judge, content })
     if (decision.disposition === 'merge') {
       await applyMerge(target, decision, content)
       await linkEntities(decision.into.id)
@@ -521,7 +525,13 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
       ...(deps.history === true ? { initialReviewAt: null } : {}),
     })
     if (decision.disposition === 'defer') {
-      await target.linkEdge(record.id, decision.neighbor.id, 'contradicts')
+      // judge 在场时矛盾边先经 Jev 确认（失败返回 undefined = 降级为全量建边，与旧行为一致）。
+      const neighbors = deps.judge === undefined
+        ? [decision.neighbor]
+        : (await confirmContradictions(deps.judge, content, [decision.neighbor])) ?? [decision.neighbor]
+      for (const neighbor of neighbors) {
+        await target.linkEdge(record.id, neighbor.id, 'contradicts')
+      }
       deferred += 1
     }
     await linkEntities(record.id)
@@ -680,6 +690,8 @@ export interface ReplayIngestDeps {
   readonly call: IngestDeps['call']
   /** 辅助调用请求审计。 */
   readonly logRequest: IngestDeps['logRequest']
+  /** Jev 判断器（Config jev.enabled 时注入）；undefined = 纯规则四态。 */
+  readonly judge?: MemoryJudge
   /** 取消信号。 */
   readonly signal: AbortSignal
 }
@@ -726,6 +738,7 @@ export async function replayPendingIngests(deps: ReplayIngestDeps): Promise<Repl
       routeOverride: deps.routeOverride,
       call: deps.call,
       logRequest: deps.logRequest,
+      ...(deps.judge === undefined ? {} : { judge: deps.judge }),
       signal: deps.signal,
     })
     await store.clearAudit(INGEST_PENDING_OP, detail)

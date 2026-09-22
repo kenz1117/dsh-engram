@@ -1995,6 +1995,233 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
   )
 }
 
+/** Jev 面板视图（GET/POST /api/engram/jev-config 的响应体；密钥只有掩码，明文不出进程）。 */
+interface JevPanelView {
+  readonly enabled: boolean
+  readonly apiKeySet: boolean
+  readonly apiKeyMask: string | null
+  readonly baseUrl: string
+  readonly model: string
+  readonly timeoutMs: number
+  readonly deferMergeAbove: number
+  readonly deferAcceptBelow: number
+  readonly contradictMinProbability: number
+}
+
+/**
+ * Jev 裁决配置：面板覆盖 cordis.yml 的连接字段（开关 / 密钥 / 端点 / 模型 / 超时），
+ * 保存进 `<dbDir>/jev-config.json`（0600）后立即生效，无需重启。密钥输入框只进不出
+ * （placeholder 回显掩码）；留空 = 保留现有覆盖，清除走「清除已存密钥」。
+ */
+function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.ReactElement {
+  const [view, setView] = useState<JevPanelView | null>(null)
+  const [enabled, setEnabled] = useState(false)
+  const [apiKey, setApiKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [model, setModel] = useState('')
+  const [timeoutMs, setTimeoutMs] = useState('3000')
+  const [busy, setBusy] = useState(false)
+  const [testing, setTesting] = useState(false)
+
+  // 初载：视图只读展示 + 表单初始值；密钥不回填输入框（保持空 = 不改动）。
+  useEffect(() => {
+    let cancelled = false
+    api<JevPanelView>('jev-config')
+      .then((data) => {
+        if (cancelled) return
+        setView(data)
+        setEnabled(data.enabled)
+        setBaseUrl(data.baseUrl)
+        setModel(data.model)
+        setTimeoutMs(String(data.timeoutMs))
+      })
+      .catch((error: Error) => { if (!cancelled) toast.push('error', `${t('jevLoadFailed')}: ${error.message}`) })
+    return () => { cancelled = true }
+  }, [t, toast])
+
+  const save = (): void => {
+    setBusy(true)
+    api<{ ok: boolean; view: JevPanelView }>('jev-config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // 密钥留空 = 不发送该字段（保留现有覆盖）；清空语义走 clearKey。
+      body: JSON.stringify({
+        enabled,
+        baseUrl: baseUrl.trim(),
+        model: model.trim(),
+        timeoutMs: Number(timeoutMs),
+        ...(apiKey.trim() === '' ? {} : { apiKey: apiKey.trim() }),
+      }),
+    })
+      .then((data) => {
+        setView(data.view)
+        setApiKey('')
+        toast.push('success', t('jevSaved'))
+      })
+      .catch((error: Error) => { toast.push('error', error.message) })
+      .finally(() => { setBusy(false) })
+  }
+
+  const clearKey = (): void => {
+    setBusy(true)
+    api<{ ok: boolean; view: JevPanelView }>('jev-config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // 空串 = 清除面板密钥覆盖，回落 cordis.yml 的值。
+      body: JSON.stringify({ apiKey: '' }),
+    })
+      .then((data) => { setView(data.view); toast.push('success', t('jevKeyCleared')) })
+      .catch((error: Error) => { toast.push('error', error.message) })
+      .finally(() => { setBusy(false) })
+  }
+
+  // 连接测试：用当前输入值（不落覆盖文件）发最小 ping 问题；密钥留空 = 测已存值。
+  const testConnection = (): void => {
+    setTesting(true)
+    api<{ ok: boolean; elapsedMs: number; probability: number | undefined; error: string | undefined }>('jev-test', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl: baseUrl.trim(),
+        model: model.trim(),
+        ...(apiKey.trim() === '' ? {} : { apiKey: apiKey.trim() }),
+      }),
+    })
+      .then((result) => {
+        if (result.ok) toast.push('success', t('jevTestOk', { ms: result.elapsedMs, p: result.probability }))
+        else toast.push('error', t('jevTestFail', { error: result.error ?? '' }))
+      })
+      .catch((error: Error) => { toast.push('error', error.message) })
+      .finally(() => { setTesting(false) })
+  }
+
+  if (view === null) return <span className={styles.jevMuted}>{t('loading')}</span>
+
+  return (
+    <div className={styles.jev}>
+      <p className={styles.jevIntro}>{t('jevIntro')}</p>
+      <div className={styles.jevToggleRow}>
+        <label className={styles.jevToggle}>
+          <input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} />
+          {t('jevEnabled')}
+        </label>
+        <span className={styles.jevStatus}>{view.enabled ? t('jevStatusOn') : t('jevStatusOff')}</span>
+      </div>
+      <div className={styles.jevForm}>
+        <label className={styles.jevField}>
+          <span>{t('jevApiKey')}</span>
+          <input className={styles.input} type="password" value={apiKey} autoComplete="off"
+            placeholder={view.apiKeyMask ?? t('jevApiKeyUnset')}
+            onChange={event => setApiKey(event.target.value)} />
+          <span className={styles.jevMuted}>{t('jevApiKeyHint')}</span>
+        </label>
+        <label className={styles.jevField}>
+          <span>{t('jevBaseUrl')}</span>
+          <input className={styles.input} value={baseUrl} onChange={event => setBaseUrl(event.target.value)} />
+        </label>
+        <label className={styles.jevField}>
+          <span>{t('jevModel')}</span>
+          <input className={styles.input} value={model} onChange={event => setModel(event.target.value)} />
+        </label>
+        <label className={styles.jevField}>
+          <span>{t('jevTimeoutMs')}</span>
+          <input className={styles.input} type="number" min={1000} max={60000} value={timeoutMs}
+            onChange={event => setTimeoutMs(event.target.value)} />
+        </label>
+      </div>
+      <div className={styles.jevMuted}>{t('jevThresholdsTitle')}</div>
+      <div className={styles.jevMuted}>{t('jevThresholdLine', {
+        merge: view.deferMergeAbove,
+        accept: view.deferAcceptBelow,
+        contradict: view.contradictMinProbability,
+      })}</div>
+      <div className={styles.jevActions}>
+        <button type="button" className={`${styles.button} ${styles.primary}`} disabled={busy} onClick={save}>
+          {t('jevSave')}
+        </button>
+        <button type="button" className={styles.button} disabled={busy || testing} onClick={testConnection}>
+          {t('jevTest')}
+        </button>
+        {view.apiKeySet && (
+          <button type="button" className={styles.button} disabled={busy} onClick={clearKey}>
+            {t('jevClearKey')}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** 近期裁决观测行视图（GET /api/engram/jev-observations 的 items 元素）。 */
+interface JevObservationView {
+  readonly at: number
+  readonly site: 'band' | 'contradiction'
+  readonly question: string
+  readonly answered: boolean
+  readonly probability: number | undefined
+  readonly elapsedMs: number
+  readonly error: string | undefined
+  readonly verdict: 'merge' | 'accept' | 'defer' | 'confirm' | 'reject' | 'fallback'
+}
+
+/** verdict → 徽标文案键（动态模板字符串在 EngramKey union 下不可静态检查，改用映射表）。 */
+const VERDICT_KEY: Readonly<Record<JevObservationView['verdict'], EngramKey>> = {
+  merge: 'jevObsVerdictMerge',
+  accept: 'jevObsVerdictAccept',
+  defer: 'jevObsVerdictDefer',
+  confirm: 'jevObsVerdictConfirm',
+  reject: 'jevObsVerdictReject',
+  fallback: 'jevObsVerdictFallback',
+}
+
+/**
+ * 近期裁决观测：轮询 /api/engram/jev-observations（1.5s），展示判定结果 / Jev 是否给出答案 /
+ * 耗时 / 回落原因，帮助排查「这条为什么被搁置」。数据只存进程内存，重启清空。
+ */
+function JevObservationsCard({ t, toast }: { t: T; toast: ToastController }): React.ReactElement {
+  const [items, setItems] = useState<readonly JevObservationView[] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    // 初载失败弹 toast；轮询失败静默重试（观测卡不值得刷屏打扰）。
+    const reload = (reportFailure: boolean): void => {
+      api<{ items: readonly JevObservationView[] }>('jev-observations')
+        .then((data) => { if (!cancelled) setItems(data.items) })
+        .catch((error: Error) => {
+          if (cancelled) return
+          setItems(previous => previous ?? [])
+          if (reportFailure) toast.push('error', `${t('jevObsLoadFailed')}: ${error.message}`)
+        })
+    }
+    reload(true)
+    const timer = window.setInterval(() => reload(false), 1500)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [t, toast])
+
+  if (items === null) return <span className={styles.jevMuted}>{t('loading')}</span>
+  if (items.length === 0) return <span className={styles.jevMuted}>{t('jevObsEmpty')}</span>
+
+  return (
+    <div className={styles.jevObs}>
+      <div className={styles.jevObsHead}>{t('jevObsTitle')}</div>
+      {items.map((item, index) => (
+        <div key={`${item.at}-${item.site}-${index}`} className={styles.jevObsItem}>
+          <span className={styles.jevObsTime}>{new Date(item.at).toLocaleTimeString()}</span>
+          <span>{item.site === 'band' ? t('jevObsSiteBand') : t('jevObsSiteContradiction')}</span>
+          <span className={item.verdict === 'fallback'
+            ? styles.jevObsBadgeWarn
+            : item.verdict === 'confirm' || item.verdict === 'merge' ? styles.jevObsBadgeGood : styles.jevObsBadge}>
+            {t(VERDICT_KEY[item.verdict])}
+          </span>
+          <span>{item.answered ? `p=${item.probability?.toFixed(3)}` : t('jevObsNoAnswer')}</span>
+          <span>{item.elapsedMs}ms</span>
+          {item.error !== undefined && <span className={styles.jevObsError}>{t('jevObsErrorLine', { error: item.error })}</span>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /** 导出下拉：把三种格式（Markdown / JSON / 镜像目录）合并成一个按钮 + 弹出列表。
  *  链接是浏览器直连的 GET（不走 api()），故这里显式拼接项目宫殿选择器。 */
 function ExportMenu({ t, scope, project }: {
@@ -2077,8 +2304,8 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   /** 批量遗忘的两段式确认。 */
   const [confirmForget, setConfirmForget] = useState(false)
-  /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / episodes 往事时间线 / entities 实体词典 / log 管家日志 / backfill 历史回填。 */
-  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'episodes' | 'entities' | 'log' | 'backfill'>('today')
+  /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / episodes 往事时间线 / entities 实体词典 / log 管家日志 / backfill 历史回填 / jev Jev 裁决配置。 */
+  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'episodes' | 'entities' | 'log' | 'backfill' | 'jev'>('today')
   /** 项目宫殿来源（持久化）：'follow' = 跟随 GUI 当前工作区；其它值 = 固定的 host 分库 dbName。 */
   const [projectMode, setProjectMode] = usePersistedString('library.project', 'follow')
   /** GUI 当前工作区（与侧边栏同一判定）与 host 的项目宫殿清单。 */
@@ -2341,7 +2568,7 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
         )}
       </div>
 
-      {/* 顶部 Tab Bar：六个视图（今日 / 宫殿 / 走廊 / 往事 / 日志 / 回填；按「先管家后陈展」语义排序）。
+      {/* 顶部 Tab Bar：八个视图（今日 / 宫殿 / 走廊 / 往事 / 实体 / 日志 / 回填 / Jev；按「先管家后陈展与配置」语义排序）。
           原常驻管家日报条已收进「今日」视图的速览卡，其余计数移入「日志」。 */}
       <div className={styles.tabs} role="tablist">
         <button type="button" role="tab"
@@ -2386,6 +2613,12 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
           aria-selected={activeTab === 'backfill'}
           onClick={() => { setActiveTab('backfill') }}>
           {t('tabBackfill')}
+        </button>
+        <button type="button" role="tab"
+          className={activeTab === 'jev' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
+          aria-selected={activeTab === 'jev'}
+          onClick={() => { setActiveTab('jev') }}>
+          {t('tabJev')}
         </button>
       </div>
 
@@ -2654,6 +2887,24 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
             </div>
             <div className={styles.panelCard}>
               <HistoryBackfillCard t={t} toast={toast} />
+            </div>
+          </section>
+        </div>
+      )}
+
+      {activeTab === 'jev' && (
+        <div className={styles.tabPanel}>
+          <section className={styles.section}>
+            <div className={styles.sectionHead}>
+              <h4 className={styles.sectionTitle}>{t('tabJev')}</h4>
+            </div>
+            <div className={styles.panelCard}>
+              <JevConfigCard t={t} toast={toast} />
+            </div>
+          </section>
+          <section className={styles.section}>
+            <div className={styles.panelCard}>
+              <JevObservationsCard t={t} toast={toast} />
             </div>
           </section>
         </div>

@@ -110,6 +110,60 @@ describe('resolveConfig', () => {
   })
 })
 
+describe('jev config', () => {
+  it('缺省关闭，端点/模型/三阈值落默认值', () => {
+    const resolved = resolveConfig({}).jev
+    expect(resolved.enabled).toBe(false)
+    expect(resolved.apiKey).toBeUndefined()
+    expect(resolved.baseUrl).toBe('https://api.typesafe.ai')
+    expect(resolved.model).toBe('jev-latest')
+    expect(resolved.timeoutMs).toBe(3000)
+    expect(resolved.deferMergeAbove).toBe(0.85)
+    expect(resolved.deferAcceptBelow).toBe(0.15)
+    expect(resolved.contradictMinProbability).toBe(0.8)
+  })
+
+  it('显式子配置全量透传（enabled=false 时 apiKey 可缺）', () => {
+    const resolved = resolveConfig({
+      jev: { enabled: true, apiKey: 'k', baseUrl: 'https://j.example', model: 'jev-x', timeoutMs: 5000, deferMergeAbove: 0.9, deferAcceptBelow: 0.1, contradictMinProbability: 0.9 },
+    }).jev
+    expect(resolved.enabled).toBe(true)
+    expect(resolved.apiKey).toBe('k')
+    expect(resolved.baseUrl).toBe('https://j.example')
+    expect(resolved.model).toBe('jev-x')
+    expect(resolved.timeoutMs).toBe(5000)
+    expect(resolved.deferMergeAbove).toBe(0.9)
+    expect(resolved.deferAcceptBelow).toBe(0.1)
+    expect(resolved.contradictMinProbability).toBe(0.9)
+  })
+
+  it('enabled=true 缺 apiKey loud 失败', () => {
+    expect(() => resolveConfig({ jev: { enabled: true } })).toThrow(/jev\.apiKey/)
+    expect(() => resolveConfig({ jev: { enabled: true, apiKey: '' } })).toThrow(/jev\.apiKey/)
+  })
+
+  it('enabled 非布尔 loud 失败', () => {
+    expect(() => resolveConfig({ jev: { enabled: 'yes' as never } })).toThrow(/jev\.enabled/)
+  })
+
+  it('timeoutMs 越界或非整数 loud 失败', () => {
+    expect(() => resolveConfig({ jev: { timeoutMs: 999 } })).toThrow(/jev\.timeoutMs/)
+    expect(() => resolveConfig({ jev: { timeoutMs: 60001 } })).toThrow(/jev\.timeoutMs/)
+    expect(() => resolveConfig({ jev: { timeoutMs: 2500.5 } })).toThrow(/jev\.timeoutMs/)
+  })
+
+  it('三阈值越界 loud 失败', () => {
+    expect(() => resolveConfig({ jev: { deferMergeAbove: 0.4 } })).toThrow(/deferMergeAbove/)
+    expect(() => resolveConfig({ jev: { deferAcceptBelow: 0.6 } })).toThrow(/deferAcceptBelow/)
+    expect(() => resolveConfig({ jev: { contradictMinProbability: 0.2 } })).toThrow(/contradictMinProbability/)
+  })
+
+  it('deferAcceptBelow ≥ deferMergeAbove 交叉 loud 失败', () => {
+    // 各自合法（端点 0.5）但组合无效：accept 阈值不得高于 merge 阈值。
+    expect(() => resolveConfig({ jev: { deferAcceptBelow: 0.5, deferMergeAbove: 0.5 } })).toThrow(/less than/)
+  })
+})
+
 describe('legacyMigration config', () => {
   it('accepts both policies', () => {
     expect(resolveConfig({ legacyMigration: 'eager' }).legacyMigration).toBe('eager')

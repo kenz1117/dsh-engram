@@ -8,7 +8,7 @@
  */
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -370,6 +370,88 @@ describe('dsh-engram real Loader composition', () => {
     expect(missingId.status).toBe(400)
     const notFound = await call(port, 'GET', '/api/engram/entity?scope=user&id=no-such-entity')
     expect(notFound.status).toBe(404)
+  })
+
+  it('Jev 配置 HTTP 链路：GET 只回掩码，POST 落覆盖文件即时生效，非法字段整体 400', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+
+    // 初态：无 yml jev 块、无覆盖文件 → 关闭且无密钥；视图全量字段固定（密钥明文不出现）。
+    const initial = await call(port, 'GET', '/api/engram/jev-config')
+    expect(initial.status).toBe(200)
+    expect(initial.json).toEqual({
+      enabled: false,
+      baseUrl: 'https://api.typesafe.ai',
+      model: 'jev-latest',
+      timeoutMs: 3000,
+      apiKeySet: false,
+      apiKeyMask: null,
+      deferMergeAbove: 0.85,
+      deferAcceptBelow: 0.15,
+      contradictMinProbability: 0.8,
+    })
+
+    // 保存：面板开关 + 密钥 + 超时覆盖；响应视图掩码显尾 4 位（长度 > 8）。
+    const saved = await call(port, 'POST', '/api/engram/jev-config', {
+      enabled: true,
+      apiKey: 'panel-key-1234567890',
+      timeoutMs: 5000,
+    })
+    expect(saved.status).toBe(200)
+    expect(saved.json).toEqual({
+      ok: true,
+      view: {
+        enabled: true,
+        baseUrl: 'https://api.typesafe.ai',
+        model: 'jev-latest',
+        timeoutMs: 5000,
+        apiKeySet: true,
+        apiKeyMask: '****7890',
+        deferMergeAbove: 0.85,
+        deferAcceptBelow: 0.15,
+        contradictMinProbability: 0.8,
+      },
+    })
+
+    // 再 GET：掩码视图（非明文），覆盖文件落在 dbDir 且 0600。
+    const reread = await call(port, 'GET', '/api/engram/jev-config')
+    expect(reread.status).toBe(200)
+    expect((reread.json as { apiKeySet: boolean; apiKeyMask: string }).apiKeySet).toBe(true)
+    expect(reread.text).not.toContain('panel-key-1234567890')
+    expect(root).toBeDefined()
+    const overridePath = join(root!, 'engram', 'jev-config.json')
+    expect(existsSync(overridePath)).toBe(true)
+    expect(statSync(overridePath).mode & 0o777).toBe(0o600)
+
+    // 任一字段非法即整体 400：合法字段也不落盘。
+    const bad = await call(port, 'POST', '/api/engram/jev-config', { model: 'good', timeoutMs: 1 })
+    expect(bad.status).toBe(400)
+    expect((bad.json as { error: string }).error).toBe('invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒')
+    expect(await readFile(overridePath, 'utf8')).toContain('"timeoutMs": 5000')
+  })
+
+  it('Jev 连接测试与裁决观测 HTTP 链路：外网失败结构化返回，空缓冲观测为数组', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+
+    // 默认 baseUrl 指向外网 → fetch 替身确定性拒绝；testJevConnection 不抛错，失败原因进 error 字段。
+    const offline = await call(port, 'POST', '/api/engram/jev-test', {})
+    expect(offline.status).toBe(200)
+    const offlineBody = offline.json as { ok: boolean; elapsedMs: number; probability: number | undefined; error: string }
+    expect(offlineBody.ok).toBe(false)
+    expect(offlineBody.error).toContain('offline in test')
+    expect(offlineBody.probability).toBeUndefined()
+    expect(offlineBody.elapsedMs).toBeTypeOf('number')
+
+    // baseUrl 覆盖为回环地址 → 放行给真实 fetch，连接被拒同样结构化返回（不落覆盖文件）。
+    const refused = await call(port, 'POST', '/api/engram/jev-test', { baseUrl: 'http://127.0.0.1:1', model: 'jev-latest' })
+    expect(refused.status).toBe(200)
+    expect((refused.json as { ok: boolean }).ok).toBe(false)
+
+    // 本进程未发生任何裁决 → 观测端点返回空序列（新→旧排列）。
+    const observations = await call(port, 'GET', '/api/engram/jev-observations')
+    expect(observations.status).toBe(200)
+    expect(observations.json).toEqual({ items: [] })
   })
 
   it('会话 dispose 且事件源不可用时，摄取不产生未处理 rejection', { timeout: 60_000 }, async () => {

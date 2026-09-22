@@ -22,6 +22,7 @@ import type { LlmRoute, SessionEventLike } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
 import { INGEST_DONE_OP, encodeTurnKey, ensureSessionSummary, ingestPreviousTurn, ingestWriteRouting } from './hook.ts'
 import type { IngestDeps, IngestMode, IngestWriteRouting } from './hook.ts'
+import type { MemoryJudge } from '../write-disposition.ts'
 
 /** 历史会话 header 的窄视图（session-persistence 的 SessionHeader 子集，只依赖用到的字段）。 */
 export interface HistorySessionHeader {
@@ -138,6 +139,8 @@ export interface HistoryBackfillDeps {
   readonly routeOverride: LlmRoute | undefined
   readonly call: IngestDeps['call']
   readonly logRequest: IngestDeps['logRequest']
+  /** Jev 判断器（Config jev.enabled 时注入）；undefined = 纯规则四态。 */
+  readonly judge?: MemoryJudge
   /** 时间基准（测试可注入）。 */
   readonly now?: () => number
 }
@@ -397,6 +400,7 @@ export async function runHistoryBackfill(
           routeOverride,
           call: deps.call,
           logRequest: deps.logRequest,
+          ...(deps.judge === undefined ? {} : { judge: deps.judge }),
           signal,
           // 历史轮次同样节流（省调用），且写入不进入复习调度。
           throttle: true,

@@ -292,6 +292,40 @@ export type EngramKey =
   | 'factEmpty'
   | 'factValid'
   | 'factInvalid'
+  | 'tabJev'
+  | 'jevIntro'
+  | 'jevEnabled'
+  | 'jevStatusOn'
+  | 'jevStatusOff'
+  | 'jevApiKey'
+  | 'jevApiKeyHint'
+  | 'jevApiKeyUnset'
+  | 'jevClearKey'
+  | 'jevKeyCleared'
+  | 'jevBaseUrl'
+  | 'jevModel'
+  | 'jevTimeoutMs'
+  | 'jevThresholdsTitle'
+  | 'jevThresholdLine'
+  | 'jevSave'
+  | 'jevSaved'
+  | 'jevLoadFailed'
+  | 'jevTest'
+  | 'jevTestOk'
+  | 'jevTestFail'
+  | 'jevObsTitle'
+  | 'jevObsEmpty'
+  | 'jevObsLoadFailed'
+  | 'jevObsSiteBand'
+  | 'jevObsSiteContradiction'
+  | 'jevObsVerdictMerge'
+  | 'jevObsVerdictAccept'
+  | 'jevObsVerdictDefer'
+  | 'jevObsVerdictConfirm'
+  | 'jevObsVerdictReject'
+  | 'jevObsVerdictFallback'
+  | 'jevObsNoAnswer'
+  | 'jevObsErrorLine'
 
 /** kind 数据值 → 词典键（面板与走廊图共用一份，避免两处各自硬编码房间名）。 */
 export const KIND_KEY: Readonly<Record<string, EngramKey>> = {
@@ -382,10 +416,10 @@ export const zh: Record<EngramKey, string> = {
   relRelated: '相邻',
   headerTitle: '记忆宫殿',
   headerSubtitle: '跨会话长期记忆宫殿',
-  tabToday: '今日管家',
-  tabLibrary: '宫殿陈展',
-  tabCorridor: '走廊巡游',
-  tabLog: '管家日志',
+  tabToday: '今日',
+  tabLibrary: '陈展',
+  tabCorridor: '走廊',
+  tabLog: '日志',
   tabLibraryCount: '{n} 条',
   roomsTitle: '房间目录',
   roomsHint: '每间满 9 个桩位后开新间',
@@ -496,7 +530,7 @@ export const zh: Record<EngramKey, string> = {
   sortTime: '按时间',
   sortTour: '按巡游路线',
   dueBadgeLabel: '今日到期 {n} 条，点击在陈展中筛选',
-  tabBackfill: '历史回填',
+  tabBackfill: '回填',
   backfillIntro: '把 dsh 的历史会话逐轮提炼进宫殿：每条会话写进它自己 cwd 对应的项目库；已摄取过的轮次按幂等键自动跳过，中断后再次开始即可续做。回填的条目不会进入今日复习队列。',
   backfillRulesTitle: '导入规则',
   backfillDays: '时间窗',
@@ -554,7 +588,7 @@ export const zh: Record<EngramKey, string> = {
   profileDiffTarget: '对比版本',
   profileDiffNone: '两个版本内容相同',
   profileLoadFailed: '画像加载失败',
-  tabEpisodes: '往事时间线',
+  tabEpisodes: '往事',
   episodeSince: '开始日期',
   episodeUntil: '结束日期',
   episodeSessionId: '会话 id（可选）',
@@ -588,6 +622,40 @@ export const zh: Record<EngramKey, string> = {
   factEmpty: '暂无事实；摄取时从记忆抽取的实体事实会出现在这里',
   factValid: '生效',
   factInvalid: '已失效',
+  tabJev: '裁决',
+  jevIntro: 'Jev 系统一裁决：写入落库前对模糊记忆做三路判定（合并 / 接受 / 搁置）并确认矛盾边。密钥保存在本机数据目录（0600 文件），保存后立即生效，无需重启；Jev 不可用时自动回落纯规则四态。',
+  jevEnabled: '启用 Jev 裁决',
+  jevStatusOn: 'Jev 裁决已生效',
+  jevStatusOff: 'Jev 裁决未生效（纯规则四态）',
+  jevApiKey: 'API 密钥',
+  jevApiKeyHint: '留空表示保留现有密钥；要清除已存密钥（回落 cordis.yml 配置）点「清除已存密钥」。',
+  jevApiKeyUnset: '未配置',
+  jevClearKey: '清除已存密钥',
+  jevKeyCleared: '已清除面板密钥，回落部署配置',
+  jevBaseUrl: '端点',
+  jevModel: '判决模型',
+  jevTimeoutMs: '超时（毫秒，1000-60000）',
+  jevThresholdsTitle: '裁决阈值（cordis.yml 高级配置，此处只读）',
+  jevThresholdLine: '判同一条 ≥{merge} · 判不同条 ≤{accept} · 矛盾确认 ≥{contradict}',
+  jevSave: '保存',
+  jevSaved: '已保存，配置即时生效',
+  jevLoadFailed: '加载失败',
+  jevTest: '测试连接',
+  jevTestOk: '连接正常：{ms} 毫秒，ping 概率 {p}',
+  jevTestFail: '连接失败：{error}',
+  jevObsTitle: '近期裁决（本进程，最多 50 条，重启清空）',
+  jevObsEmpty: '暂无记录；启用 Jev 后发生写入裁决时出现',
+  jevObsLoadFailed: '裁决记录加载失败',
+  jevObsSiteBand: '模糊带',
+  jevObsSiteContradiction: '矛盾确认',
+  jevObsVerdictMerge: '并入',
+  jevObsVerdictAccept: '放行',
+  jevObsVerdictDefer: '搁置',
+  jevObsVerdictConfirm: '确认矛盾',
+  jevObsVerdictReject: '非矛盾',
+  jevObsVerdictFallback: '回落',
+  jevObsNoAnswer: '无答案',
+  jevObsErrorLine: '错误：{error}',
 }
 
 /** 英文词典。整页采用「Memory Palace」语言：palace / room (kind group) / memory / placard / tour / curator / corridor。
@@ -672,8 +740,8 @@ export const en: Record<EngramKey, string> = {
   headerSubtitle: 'Cross-session long-term memory palace',
   tabToday: 'Today',
   tabLibrary: 'Palace',
-  tabCorridor: 'Corridor tour',
-  tabLog: 'Curator log',
+  tabCorridor: 'Corridor',
+  tabLog: 'Log',
   tabLibraryCount: '{n} memories',
   roomsTitle: 'Room directory',
   roomsHint: 'A new room opens once 9 slots fill',
@@ -784,7 +852,7 @@ export const en: Record<EngramKey, string> = {
   sortTime: 'By time',
   sortTour: 'By tour route',
   dueBadgeLabel: '{n} due today — click to filter in the library',
-  tabBackfill: 'History backfill',
+  tabBackfill: 'Backfill',
   backfillIntro: 'Distils past dsh sessions into the palace, turn by turn: each session is written into the project store matching its own cwd. Turns already captured are skipped by idempotency key, so starting again resumes where it stopped. Backfilled memories never enter the due-today queue.',
   backfillRulesTitle: 'Import rules',
   backfillDays: 'Time window',
@@ -842,7 +910,7 @@ export const en: Record<EngramKey, string> = {
   profileDiffTarget: 'Compare version',
   profileDiffNone: 'The two versions are identical',
   profileLoadFailed: 'Failed to load profile',
-  tabEpisodes: 'Episode timeline',
+  tabEpisodes: 'Episodes',
   episodeSince: 'From date',
   episodeUntil: 'To date',
   episodeSessionId: 'Session id (optional)',
@@ -876,4 +944,38 @@ export const en: Record<EngramKey, string> = {
   factEmpty: 'No facts yet; facts extracted from memories during ingestion will appear here',
   factValid: 'active',
   factInvalid: 'superseded',
+  tabJev: 'Jev',
+  jevIntro: 'Jev System-One adjudication: three-way ruling (merge / accept / defer) for ambiguous memories before they are written, plus contradiction confirmation. The key is stored in the local data directory (0600 file) and takes effect immediately after saving, no restart; when Jev is unavailable the plugin falls back to the pure four-rule disposition.',
+  jevEnabled: 'Enable Jev adjudication',
+  jevStatusOn: 'Jev adjudication active',
+  jevStatusOff: 'Jev adjudication inactive (pure rule-based dispositions)',
+  jevApiKey: 'API key',
+  jevApiKeyHint: 'Leave empty to keep the stored key; click "Clear stored key" to remove it (falls back to cordis.yml).',
+  jevApiKeyUnset: 'not configured',
+  jevClearKey: 'Clear stored key',
+  jevKeyCleared: 'Panel key cleared; falling back to deployment config',
+  jevBaseUrl: 'Endpoint',
+  jevModel: 'Adjudication model',
+  jevTimeoutMs: 'Timeout (ms, 1000-60000)',
+  jevThresholdsTitle: 'Adjudication thresholds (advanced cordis.yml config, read-only here)',
+  jevThresholdLine: 'same memory ≥{merge} · new memory ≤{accept} · contradiction ≥{contradict}',
+  jevSave: 'Save',
+  jevSaved: 'Saved; config takes effect immediately',
+  jevLoadFailed: 'Failed to load',
+  jevTest: 'Test connection',
+  jevTestOk: 'Connection OK: {ms} ms, ping probability {p}',
+  jevTestFail: 'Connection failed: {error}',
+  jevObsTitle: 'Recent adjudications (this process, up to 50, cleared on restart)',
+  jevObsEmpty: 'No records yet; they appear when Jev adjudicates a write after being enabled',
+  jevObsLoadFailed: 'Failed to load adjudication records',
+  jevObsSiteBand: 'band',
+  jevObsSiteContradiction: 'contradiction',
+  jevObsVerdictMerge: 'merge',
+  jevObsVerdictAccept: 'accept',
+  jevObsVerdictDefer: 'defer',
+  jevObsVerdictConfirm: 'confirm',
+  jevObsVerdictReject: 'reject',
+  jevObsVerdictFallback: 'fallback',
+  jevObsNoAnswer: 'no answer',
+  jevObsErrorLine: 'error: {error}',
 }

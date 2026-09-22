@@ -16,7 +16,10 @@ import type { EngramStore } from './store/interface.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
 import type { ProjectPalaceKind } from './project/registry.ts'
-import type { ResolvedHistoryRules } from './config.ts'
+import type { ResolvedHistoryRules, ResolvedJevConfig } from './config.ts'
+import { effectiveJevConfig, jevConfigView, loadJevOverride, parseJevPatch, saveJevOverride } from './jev/runtime.ts'
+import { testJevConnection } from './jev/client.ts'
+import { listJevObservations } from './jev/observe.ts'
 import { writeMirror } from './mirror/markdown.ts'
 import { createBackup, restoreBackup, BACKUP_SCHEMA_VERSION } from './backup/tar.ts'
 import { runConsolidation } from './consolidation/run.ts'
@@ -205,6 +208,13 @@ export interface RouteDeps {
     }>
     /** 部署配置里的默认规则（面板表单初始值）。 */
     readonly defaults: ResolvedHistoryRules
+  }
+  /** Jev 裁决配置（GET/POST jev-config）：yml 基线 + 面板覆盖文件目录。 */
+  readonly jev: {
+    /** cordis.yml 解析出的基线（含明文 apiKey；GET 响应只回掩码视图，明文不出进程）。 */
+    readonly base: ResolvedJevConfig
+    /** 覆盖文件目录：`<dbDir>/jev-config.json`（0600）。 */
+    readonly dbDir: string
   }
 }
 
@@ -710,6 +720,41 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             if (!guardWrite(req, res)) return
             deps.history.cancel()
             json(res, 200, { ok: true, status: deps.history.status() })
+            return
+          }
+          if (req.method === 'GET' && route === 'jev-config') {
+            // Jev 裁决配置视图：密钥只回掩码，明文不出进程。
+            json(res, 200, jevConfigView(deps.jev.base, loadJevOverride(deps.jev.dbDir)))
+            return
+          }
+          if (req.method === 'POST' && route === 'jev-config') {
+            // 面板保存 Jev 覆盖：整体校验非法即 400；合法则全量重写覆盖文件并回新视图。
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            const parsed = parseJevPatch(loadJevOverride(deps.jev.dbDir), body ?? {})
+            if (typeof parsed === 'string') { json(res, 400, { error: parsed }); return }
+            saveJevOverride(deps.jev.dbDir, parsed)
+            json(res, 200, { ok: true, view: jevConfigView(deps.jev.base, parsed) })
+            return
+          }
+          if (req.method === 'POST' && route === 'jev-test') {
+            // 连接测试：用面板当前输入值发最小 ping 问题（不落覆盖文件）；
+            // apiKey 留空回落已存值——测试「正在用的配置」或「刚填还没保存的配置」都行。
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            const base = effectiveJevConfig(deps.jev.base, loadJevOverride(deps.jev.dbDir))
+            const tested: ResolvedJevConfig = {
+              ...base,
+              ...(typeof body?.baseUrl === 'string' && body.baseUrl.trim() !== '' ? { baseUrl: body.baseUrl.trim() } : {}),
+              ...(typeof body?.model === 'string' && body.model.trim() !== '' ? { model: body.model.trim() } : {}),
+              ...(typeof body?.apiKey === 'string' && body.apiKey !== '' ? { apiKey: body.apiKey } : {}),
+            }
+            json(res, 200, await testJevConnection(tested))
+            return
+          }
+          if (req.method === 'GET' && route === 'jev-observations') {
+            // 近期裁决观测（进程内环形缓冲，重启清空）：新→旧，最多 50 条。
+            json(res, 200, { items: [...listJevObservations()].reverse() })
             return
           }
           if (req.method === 'POST' && route === 'consolidate') {
