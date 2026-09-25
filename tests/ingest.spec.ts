@@ -31,9 +31,10 @@ const userMsg = (text: string, seq: number) => ({
   time: Date.now(),
   seq,
 })
-const pluginMsg = (text: string, seq: number) => ({
+const pluginMsg = (text: string, seq: number, kind: string = 'plugin:time-context') => ({
   type: 'user/message',
-  data: { source: { kind: 'plugin', plugin: 'time-context' }, content: [{ type: 'text', text }] },
+  // kind 默认 v4 形状（producer-owned 前缀），传 'plugin' 可构造 v3 历史形状。
+  data: { source: { kind, plugin: 'time-context' }, content: [{ type: 'text', text }] },
   time: Date.now(),
   seq,
 })
@@ -341,6 +342,9 @@ describe('摄取节流', () => {
     expect(signals.toolNames).toEqual(new Set(['fs_read', 'web_search']))
     const withPlugin = turnSignals([pluginMsg('注入快照'.repeat(50), 1), ...substantiveTurn1()])
     expect(withPlugin.userChars).toBe(signals.userChars)
+    // v3 历史形状 kind:'plugin' 同样被跳过（旧日志回放兼容）。
+    const withLegacyPlugin = turnSignals([pluginMsg('注入快照'.repeat(50), 1, 'plugin'), ...substantiveTurn1()])
+    expect(withLegacyPlugin.userChars).toBe(signals.userChars)
   })
 })
 

@@ -674,11 +674,17 @@ describe('dsh-engram real Loader composition', () => {
         return modules.get(specifier)
       },
     } as unknown as NonNullable<typeof bad.loader.internal>
-    // loud 失败：未知配置键在 loader.create 阶段同步抛出（fail loud，不静默跳过）。
-    await expect(bad.loader.create({
+    // 新 cordis 下插件 apply 抛错不再从 loader.create 传播，而是记入该插件
+    // fiber 并使其进入 FAILED（不静默激活）。等装载链结束后经 fiber.await()
+    // 重抛启动错误，loud 失败语义保持不变。
+    await bad.loader.create({
       name: 'cordis:include',
       config: { path: pathToFileURL(configPath).href },
-    })).rejects.toThrow(/unknown config key/)
+    })
+    await bad.loader.await()
+    const badEntry = [...bad.loader.entries()].find(entry => entry.options.name === '@kenz1117/dsh-engram')
+    expect(badEntry).toBeDefined()
+    await expect(badEntry!.fiber!.await()).rejects.toThrow(/unknown config key/)
   })
 })
 

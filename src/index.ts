@@ -9,8 +9,18 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
+
+// v4 消息源类型收编：本插件未声明裸名 kind，DSH v3→v4 迁移把本插件的历史源
+// 统一改写为 `plugin:<包名>` 前缀形状（并去掉 plugin 字段），写入端沿用同一形状。
+// 模式键声明合并让 MessageSource 联合收编该前缀，注入处无需类型断言。
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    [kind: `plugin:${string}`]: { kind: `plugin:${string}` } & ContextFormed
+  }
+}
 import { resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { createLocalEmbedder } from './embedder/local.ts'
@@ -305,7 +315,7 @@ async function preStep(
           ...decision.messages,
           createUserMessage({
             content: [{ type: 'text', text: reminder }],
-            source: { kind: 'plugin', plugin: name, form: 'snapshot', sections: [{ name, text: reminder }] },
+            source: { kind: `plugin:${name}`, form: 'snapshot', sections: [{ name, text: reminder }] },
           }),
         ],
       }
@@ -365,7 +375,7 @@ async function preStep(
       ...decision.messages,
       createUserMessage({
         content: [{ type: 'text', text: packet }],
-        source: { kind: 'plugin', plugin: name, form: 'snapshot', sections: [{ name, text: packet }] },
+        source: { kind: `plugin:${name}`, form: 'snapshot', sections: [{ name, text: packet }] },
       }),
     ],
   }

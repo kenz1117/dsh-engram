@@ -4,7 +4,7 @@
  * @module @kenz1117/dsh-engram/llm/client
  */
 
-import { BlockAssembler } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { FinishReason, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import { EngramError } from '../types.ts'
@@ -96,11 +96,11 @@ export async function streamText(
     signal: AbortSignal
   },
 ): Promise<string> {
-  const messages: Message[] = [{
-    role: 'user',
+  // 与注入端同工厂构造：v4 producer-owned 前缀 kind（不带退役的 plugin 字段）。
+  const messages: Message[] = [createUserMessage({
     content: [{ type: 'text', text: params.userText }],
-    source: { kind: 'plugin', plugin: 'dsh-engram' },
-  }] as unknown as Message[]
+    source: { kind: 'plugin:dsh-engram' },
+  })]
   const options: GenerateOptions = {
     provider: params.route.provider,
     model: params.route.model,

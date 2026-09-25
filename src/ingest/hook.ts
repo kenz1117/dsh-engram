@@ -228,7 +228,8 @@ function collectTexts(events: readonly SessionEventLike[], includeAssistant: boo
   for (const event of events) {
     if (event.type === 'user/message') {
       const data = event.data as { source?: { kind?: unknown }; content?: { type?: unknown; text?: unknown }[] } | null
-      if (data?.source?.kind === 'plugin') continue
+      // 插件注入两种形状（v3 历史 'plugin' / v4 'plugin:<包名>'）一律跳过，防摄取自己注入的快照。
+      if (typeof data?.source?.kind === 'string' && data.source.kind.startsWith('plugin')) continue
       const segments = (data?.content ?? [])
         .filter(block => block?.type === 'text' && typeof block.text === 'string')
         .map(block => block.text as string)
@@ -308,7 +309,7 @@ export function turnSignals(events: readonly SessionEventLike[]): TurnSignals {
   for (const event of events) {
     if (event.type === 'user/message') {
       const data = event.data as { source?: { kind?: unknown }; content?: { type?: unknown; text?: unknown }[] } | null
-      if (data?.source?.kind === 'plugin') continue
+      if (typeof data?.source?.kind === 'string' && data.source.kind.startsWith('plugin')) continue
       for (const block of data?.content ?? []) {
         if (block?.type === 'text' && typeof block.text === 'string') userChars += block.text.length
       }
@@ -596,7 +597,7 @@ function collectSessionText(events: readonly SessionEventLike[]): string {
   for (const event of events) {
     if (event.type === 'user/message') {
       const data = event.data as { source?: { kind?: unknown }; content?: { type?: unknown; text?: unknown }[] } | null
-      if (data?.source?.kind === 'plugin') continue
+      if (typeof data?.source?.kind === 'string' && data.source.kind.startsWith('plugin')) continue
       const segments = (data?.content ?? [])
         .filter(block => block?.type === 'text' && typeof block.text === 'string')
         .map(block => block.text as string)
