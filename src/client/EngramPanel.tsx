@@ -15,6 +15,44 @@ import { CorridorMap } from './CorridorMap.tsx'
 import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
 
+/**
+ * 线性图标库（Phosphor 风）：统一 24px viewBox、stroke 1.75、round cap/join、
+ * 全部 currentColor（跟随宿主主题）。name prop 查表，避免每个调用点重复写 SVG。
+ * @param name - 图标键（见 ICONS）
+ * @param className - 调用方附加的样式类（tabIcon / scopeIcon / brandIcon 等）
+ */
+const ICONS = {
+  // Tab 主导航（8 个视图）
+  today: <><circle cx="12" cy="12" r="3" /><path d="M2 12h3M19 12h3M12 2v3M12 19v3" /></>,
+  library: <><rect x="4" y="4" width="9" height="9" rx="1" /><rect x="11" y="11" width="9" height="9" rx="1" /></>,
+  corridor: <><circle cx="5" cy="6" r="1.8" /><circle cx="19" cy="6" r="1.8" /><circle cx="12" cy="18" r="1.8" /><path d="M6.5 7.5L11 16.5M17.5 7.5L13 16.5M7 6h10" /></>,
+  episodes: <><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></>,
+  entities: <><path d="M12 3 L21 12 L12 21 L3 12 Z" /><circle cx="12" cy="12" r="2.5" /></>,
+  log: <><line x1="5" y1="6" x2="19" y2="6" /><line x1="5" y1="12" x2="19" y2="12" /><line x1="5" y1="18" x2="13" y2="18" /></>,
+  backfill: <><path d="M12 4v11" /><path d="M7 10l5 5 5-5" /><line x1="4" y1="20" x2="20" y2="20" /></>,
+  jev: <><path d="M12 3 L4 8 V16 L12 21 L20 16 V8 Z" /><path d="M9 12l2 2 4-4" /></>,
+  // Scope 三宫格
+  user: <><circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 4-6 8-6s8 2 8 6" /></>,
+  project: <><path d="M3 7 L9 7 L11 5 L21 5 L21 17 L3 17 Z" /><line x1="3" y1="7" x2="3" y2="17" /></>,
+  shared: <><circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3a14 14 0 010 18" /><path d="M12 3a14 14 0 000 18" /></>,
+  // 功能图标
+  folder: <><path d="M3 7 L9 7 L11 5 L21 5 L21 17 L3 17 Z" /></>,
+  refresh: <><path d="M3 12a9 9 0 0115-6.7L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 01-15 6.7L3 16" /><path d="M3 21v-5h5" /></>,
+  clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
+  brand: <><path d="M12 2 L14.5 9 L22 9.5 L16 14.5 L18 22 L12 17.5 L6 22 L8 14.5 L2 9.5 L9.5 9 Z" /></>,
+} as const
+type IconName = keyof typeof ICONS
+
+/** SVG 图标组件：查表渲染，统一 stroke 风格。
+ *  className 显式允许 undefined（exactOptionalPropertyTypes 下与 React.SVGAttributes 对齐）。 */
+function Icon({ name, className }: { readonly name: IconName; readonly className?: string | undefined }): React.ReactElement {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      {ICONS[name]}
+    </svg>
+  )
+}
+
 /** 列表/详情用的记忆视图（宿主 /api/engram/list 的行结构）。 */
 interface MemoryRow {
   readonly id: string
@@ -2498,26 +2536,22 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
 
   return (
     <div className={styles.panel}>
-      {/* Header：宫殿 Logo + 标题 + 简介 + 右侧动作按钮组。 */}
+      {/* 角落暖色渐变水印：amber→rose conic 模糊圆，只露右上角（克制不喧宾夺主） */}
+      <div className={styles.brandWatermark} aria-hidden="true" />
+      {/* Header：去掉 Logo + 标题 + 副标题，改成「角落签名 + 功能栏」。
+          左：品牌色块 + 版本号芯片 + 当前 scope 微芯片（签名位）；
+          右：scope 三宫格 + 今日到期角标 + 重访 + 导出。 */}
       <div className={styles.header}>
-        <div className={styles.headerBrand}>
-          <span className={styles.headerLogo} aria-hidden="true">
-            <svg width="18" height="18" viewBox="0 0 48 48" fill="none">
-              <path d="M6 20 L24 7 L42 20 Z" fill="currentColor" fillOpacity="0.9"/>
-              <rect x="9" y="20" width="30" height="18" rx="1.5" fill="none" stroke="currentColor" strokeWidth="2"/>
-              <rect x="13" y="24" width="6" height="6" rx="1" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-              <line x1="16" y1="24" x2="16" y2="30" stroke="currentColor" strokeWidth="1.2"/>
-              <line x1="13" y1="27" x2="19" y2="27" stroke="currentColor" strokeWidth="1.2"/>
-              <path d="M21 38 L21 28 Q21 25 24 25 Q27 25 27 28 L27 38" fill="none" stroke="currentColor" strokeWidth="1.8"/>
-              <rect x="29" y="24" width="6" height="6" rx="1" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-              <line x1="32" y1="24" x2="32" y2="30" stroke="currentColor" strokeWidth="1.2"/>
-              <line x1="29" y1="27" x2="35" y2="27" stroke="currentColor" strokeWidth="1.2"/>
-            </svg>
+        <div className={styles.signature}>
+          {/* 22×22 渐变方块 brandMark（替代原宫殿 Logo），用品牌渐变填充 + 玫瑰色微光 */}
+          <span className={styles.brandMark} aria-hidden="true" />
+          {/* 版本号芯片：amber 染色的等宽字体（科技感签名） */}
+          <span className={styles.versionChip}>v0.7.14</span>
+          {/* 当前 scope 微芯片：图标 + 名称 */}
+          <span className={styles.scopeBadge}>
+            <Icon name={scope === 'user' ? 'user' : scope === 'project' ? 'project' : 'shared'} className={styles.scopeIcon} />
+            <strong>{t(SCOPE_KEY[scope])}</strong>
           </span>
-          <div className={styles.headerTitle}>
-            <h2>{t('headerTitle')}</h2>
-            <p>{t('headerSubtitle')}</p>
-          </div>
         </div>
         <div className={styles.headerActions}>
           <div className={`${styles.segGroup} ${styles.segScope}`}>
@@ -2527,20 +2561,24 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
               <button key={option} type="button" ref={node => { segRefs.current.set(option, node) }}
                 className={scope === option ? `${styles.segItem} ${styles.on}` : styles.segItem}
                 onClick={() => { setScope(option); setOffset(0); setExpanded(null); clearSelection() }}>
+                <Icon name={option === 'user' ? 'user' : option === 'project' ? 'project' : 'shared'} className={styles.scopeIcon} />
                 {t(SCOPE_KEY[option])}
               </button>
             ))}
           </div>
-          {/* 今日待回忆角标：有待回忆时在 Header 一眼可见，点击直达今日视图的待回忆卡。 */}
+          {/* 今日待回忆角标：钟形图标 + 数字 */}
           {dueCount > 0 && (
             <button type="button" className={styles.dueBadge}
               title={t('dueBadgeLabel', { n: dueCount })} aria-label={t('dueBadgeLabel', { n: dueCount })}
               onClick={goToDue}>
-              <span className={styles.dueDot} aria-hidden="true" />
+              <Icon name="clock" className={styles.dueIcon} />
               {dueCount}
             </button>
           )}
-          <button type="button" className={styles.button} onClick={() => { reload(); refreshDue() }}>{t('refresh')}</button>
+          <button type="button" className={styles.button} onClick={() => { reload(); refreshDue() }}>
+            <Icon name="refresh" className={styles.brandIcon} />
+            {t('refresh')}
+          </button>
           <ExportMenu t={t} scope={scope} project={projectSelector} />
         </div>
         {/* 项目宫殿来源：独占一行（flex-basis: 100%），紧贴作用域三宫格下方、Tab 栏之上——
@@ -2551,6 +2589,7 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
             <span
               className={`${styles.wsChip}${chip.tone === 'follow' ? ` ${styles.wsFollow}` : chip.tone === 'muted' ? ` ${styles.wsMuted}` : ''}`}
               title={chip.title}>
+              <Icon name="folder" className={styles.wsChipIcon} />
               {chip.label}
             </span>
             <select className={`${styles.input} ${styles.wsSelect}`} value={projectMode}
@@ -2568,19 +2607,21 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
         )}
       </div>
 
-      {/* 顶部 Tab Bar：八个视图（今日 / 宫殿 / 走廊 / 往事 / 实体 / 日志 / 回填 / Jev；按「先管家后陈展与配置」语义排序）。
-          原常驻管家日报条已收进「今日」视图的速览卡，其余计数移入「日志」。 */}
+      {/* 顶部 Tab Bar：八个视图，每个 Tab 项前置线性图标；当前项用 amber→rose 渐变彩条作下划线。
+          排序沿用旧版（先管家后陈展与配置）。 */}
       <div className={styles.tabs} role="tablist">
         <button type="button" role="tab"
           className={activeTab === 'today' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
           aria-selected={activeTab === 'today'}
           onClick={() => { setActiveTab('today') }}>
+          <Icon name="today" className={styles.tabIcon} />
           {t('tabToday')}
         </button>
         <button type="button" role="tab"
           className={activeTab === 'library' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
           aria-selected={activeTab === 'library'}
           onClick={() => { setActiveTab('library') }}>
+          <Icon name="library" className={styles.tabIcon} />
           {t('tabLibrary')}
           <small>{t('tabLibraryCount', { n: list?.total ?? 0 })}</small>
         </button>
@@ -2588,36 +2629,42 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
           className={activeTab === 'corridor' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
           aria-selected={activeTab === 'corridor'}
           onClick={() => { setActiveTab('corridor') }}>
+          <Icon name="corridor" className={styles.tabIcon} />
           {t('tabCorridor')}
         </button>
         <button type="button" role="tab"
           className={activeTab === 'episodes' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
           aria-selected={activeTab === 'episodes'}
           onClick={() => { setActiveTab('episodes') }}>
+          <Icon name="episodes" className={styles.tabIcon} />
           {t('tabEpisodes')}
         </button>
         <button type="button" role="tab"
           className={activeTab === 'entities' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
           aria-selected={activeTab === 'entities'}
           onClick={() => { setActiveTab('entities') }}>
+          <Icon name="entities" className={styles.tabIcon} />
           {t('tabEntities')}
         </button>
         <button type="button" role="tab"
           className={activeTab === 'log' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
           aria-selected={activeTab === 'log'}
           onClick={() => { setActiveTab('log') }}>
+          <Icon name="log" className={styles.tabIcon} />
           {t('tabLog')}
         </button>
         <button type="button" role="tab"
           className={activeTab === 'backfill' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
           aria-selected={activeTab === 'backfill'}
           onClick={() => { setActiveTab('backfill') }}>
+          <Icon name="backfill" className={styles.tabIcon} />
           {t('tabBackfill')}
         </button>
         <button type="button" role="tab"
           className={activeTab === 'jev' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
           aria-selected={activeTab === 'jev'}
           onClick={() => { setActiveTab('jev') }}>
+          <Icon name="jev" className={styles.tabIcon} />
           {t('tabJev')}
         </button>
       </div>
