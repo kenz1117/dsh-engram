@@ -30,6 +30,15 @@ export function asFactId(raw: string): FactId {
   return raw as FactId
 }
 
+/** 品牌化信念 id：自动巩固产物（observation）主键，跨工具与存储边界拒绝裸 string。 */
+declare const observationIdBrand: unique symbol
+export type ObservationId = string & { readonly [observationIdBrand]: true }
+
+/** 从任意字符串铸造品牌化信念 id（存储层入库前调用）。 */
+export function asObservationId(raw: string): ObservationId {
+  return raw as ObservationId
+}
+
 /** 记忆作用域：user 私人宫殿；project 项目宫殿；shared 跨 agent 共享宫殿（公开可读）。 */
 export type EngramScope = 'user' | 'project' | 'shared'
 
@@ -414,6 +423,47 @@ export interface ReviewView {
   readonly revisions: readonly MemoryRevision[]
   /** 最近 20 条涉及此条目的操作日志（时间倒序）。 */
   readonly operations: readonly OperationLogRow[]
+}
+
+/** 信念生命周期状态：active 可注入；stale 有未纳入的新证据待复核；refuted 被证据否定，只留审计。 */
+export type ObservationStatus = 'active' | 'stale' | 'refuted'
+
+/**
+ * 巩固信念（observation）：由辅助 LLM 从多条原始记忆巩固出的一句话结论。
+ * 与普通记忆的区别：持续细化（近邻归并到同一条而非重复新增）、带证据链
+ * （sourceIds + proofCount）、新鲜度可复核（stale/refuted）。schema v12 起。
+ */
+export interface ObservationRecord {
+  readonly id: ObservationId
+  readonly scope: EngramScope
+  /** 巩固后的一句话信念。 */
+  readonly belief: string
+  readonly status: ObservationStatus
+  /** 支撑该信念的原始记忆 id（去重并集，持续累积）。 */
+  readonly sourceIds: readonly MemoryId[]
+  /** 证据条数（= sourceIds 去重后长度，冗余落库便于排序）。 */
+  readonly proofCount: number
+  readonly createdAt: number
+  readonly updatedAt: number
+  /** 最近一次经证据复核为成立的时间（form/refine/still 都会刷新）。 */
+  readonly lastValidatedAt: number
+}
+
+/** 新建信念的写入输入（sourceIds 至少 1 条，且应为同库 active 记忆）。 */
+export interface ObservationWriteInput {
+  readonly scope: EngramScope
+  readonly belief: string
+  readonly sourceIds: readonly MemoryId[]
+  /** 信念向量（调用方经嵌入器算好）；缺省时该信念不参与近邻归并。 */
+  readonly embedding?: Float32Array
+}
+
+/** 信念列表过滤条件。 */
+export interface ObservationListFilter {
+  /** 缺省不过滤状态。 */
+  readonly status?: ObservationStatus
+  readonly limit: number
+  readonly offset?: number
 }
 
 /** 全库统计（信噪比 = active / max(1, total)）。 */

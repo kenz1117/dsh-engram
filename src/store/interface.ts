@@ -9,7 +9,8 @@ import type {
   EntityListResult, EntityMention, EntityRecord, EpisodeTimelineQuery, EpisodeTimelineResult, ExportData,
   FactListFilter, FactListResult, FactRecord, FactWriteInput,
   ForgettingTombstone, ForgottenAuditRow, ListFilter, ListResult,
-  MemoryId, MemoryOutcome, MemoryRecord, OperationLogRow, ProfileBlock, ProfileBlockVersion,
+  MemoryId, MemoryOutcome, MemoryRecord, ObservationId, ObservationListFilter, ObservationRecord,
+  ObservationWriteInput, OperationLogRow, ProfileBlock, ProfileBlockVersion,
   ReviewGrade, ReviewView, SearchQuery, SearchResult, Slot, StoreStats, TimelineQuery, UpdateInput, WriteInput,
 } from '../types.ts'
 
@@ -164,6 +165,31 @@ export interface EngramStore {
   writeFacts(inputs: readonly FactWriteInput[]): Promise<readonly FactRecord[]>
   /** 事实链查询：按实体取事实；asOf 时点过滤，includeInvalid 展开全链（valid_at 倒序，附总数）。 */
   factsOfEntity(filter: FactListFilter): Promise<FactListResult>
+  /**
+   * 新建巩固信念（observation，schema v12）：sourceIds 至少 1 条；初始 status=active，
+   * proofCount=源去重数，created/updated/lastValidated 均取当前时刻。不校验源记忆存在性
+   * （调用方只传取材集产出的 id）。
+   */
+  createObservation(input: ObservationWriteInput): Promise<ObservationRecord>
+  /**
+   * 细化既有信念：belief 替换为新表述，sourceIds 与旧证据并集去重、proofCount 重算，
+   * status 回 active、updated/lastValidated 刷新；embedding 给定时替换。
+   * id 不存在返回 undefined。
+   */
+  refineObservation(id: ObservationId, belief: string, addSourceIds: readonly MemoryId[], embedding?: Float32Array): Promise<ObservationRecord | undefined>
+  /** 标记待复核：status 置 stale（有未纳入的近邻新证据），时间戳不动；id 不存在返回 undefined。 */
+  markObservationStale(id: ObservationId): Promise<ObservationRecord | undefined>
+  /** 复核维持：status 回 active 并刷新 lastValidated（证据仍成立、表述不变）；id 不存在返回 undefined。 */
+  confirmObservation(id: ObservationId): Promise<ObservationRecord | undefined>
+  /** 复核否定：status 置 refuted（不再注入，保留证据链供审计）；id 不存在返回 undefined。 */
+  refuteObservation(id: ObservationId): Promise<ObservationRecord | undefined>
+  /** 信念列表：可按状态过滤；排序 proof_count 倒序、updated_at 倒序（强证据、新近巩固在前）。 */
+  listObservations(filter: ObservationListFilter): Promise<readonly ObservationRecord[]>
+  /**
+   * 信念近邻：同库 active/stale 信念中与给定向量余弦最高者及相似度；空库、无向量信念
+   * 或嵌入不可用返回 undefined。refuted 信念不参与归并。
+   */
+  nearestObservation(embedding: Float32Array): Promise<{ record: ObservationRecord; similarity: number } | undefined>
   /** 写入一条结构化审计记录（辅助 LLM 请求等，不进会话日志——下游插件禁止写未知事件类型）。 */
   audit(op: string, targetId: string, detail: string | null): Promise<void>
   /** 幂等键查重：op_log 中是否已存在指定 op+detail 的记录。 */

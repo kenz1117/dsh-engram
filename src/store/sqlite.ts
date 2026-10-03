@@ -9,7 +9,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { EngramError, EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asEntityId, asFactId, asMemoryId, normalizeEntityName } from '../types.ts'
+import { EngramError, EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asEntityId, asFactId, asMemoryId, asObservationId, normalizeEntityName } from '../types.ts'
 import { assignSlot } from '../palace/slots.ts'
 import { nextSchedule } from '../review/sm2.ts'
 import { scorePlacard } from '../imagery/score.ts'
@@ -19,14 +19,15 @@ import type {
   FactRecord, FactWriteInput, ForgettingTombstone,
   ForgottenAuditRow, ImageryLabel,
   ListFilter, ListResult, MemoryEdge, MemoryId, MemoryOutcome,
-  MemoryRecord, ProfileBlock, ProfileBlockVersion, ReviewGrade, ReviewView, SearchHit, SearchResult, Slot, StoreStats,
+  MemoryRecord, ObservationId, ObservationListFilter, ObservationRecord, ObservationWriteInput,
+  ProfileBlock, ProfileBlockVersion, ReviewGrade, ReviewView, SearchHit, SearchResult, Slot, StoreStats,
   TimelineQuery, UpdateInput, WriteInput,
   EpisodeTimelineQuery, EpisodeTimelineResult,
 } from '../types.ts'
 import type { EngramStore, RoomState } from './interface.ts'
 
 /** 当前 schema 版本；结构性变更必须 +1。可空列与伴随表走增量迁移（见 openEngramStore 的迁移段）。 */
-const SCHEMA_VERSION = 11
+const SCHEMA_VERSION = 12
 /** 增量迁移表：key 为起始版本，value 为升到下一版本的 SQL（可多语句）。
  *  v2 → v3：nodes 补可空列 outcome（使用效果回报）。
  *  v3 → v4：新增 nodes_revisions 修订表（update 归档旧条目时的内容快照）。
@@ -46,7 +47,11 @@ const SCHEMA_VERSION = 11
  *  v10 → v11：facts 事实表——摄取/工具期抽取的一句话事实，挂在实体上（entity_id
  *   引用同库 entities.id，无外键）。valid_at/invalid_at 时间窗 + replaced_by 软失效
  *   链：新事实可声明取代旧事实（旧事实置 invalid_at 并回指 replaced_by），历史链
- *   保留可审计；asOf 查询按时间窗过滤（见 factsOfEntity）。 */
+ *   保留可审计；asOf 查询按时间窗过滤（见 factsOfEntity）。
+ *  v11 → v12：observations 巩固信念表——辅助 LLM 从多条原始记忆巩固出的一句话信念，
+ *   sources_json 证据 id 列表 + proof_count 证据数（去重并集持续累积），status 三态
+ *   active/stale/refuted 支持新鲜度复核；embedding 支持近邻归并（同主题并入同一条而非
+ *   重复新增）。与 nodes 无外键（源记忆可被归档/遗忘，证据链只保留 id 引用）。 */
 const MIGRATIONS: Readonly<Record<string, string>> = {
   '2': 'ALTER TABLE nodes ADD COLUMN outcome TEXT',
   '3': `CREATE TABLE IF NOT EXISTS nodes_revisions (
@@ -88,6 +93,11 @@ const MIGRATIONS: Readonly<Record<string, string>> = {
     valid_at INTEGER NOT NULL, invalid_at INTEGER, replaced_by TEXT,
     source_node_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS facts_entity ON facts (entity_id);`,
+  '11': `CREATE TABLE IF NOT EXISTS observations (
+    id TEXT PRIMARY KEY, scope TEXT NOT NULL, belief TEXT NOT NULL, status TEXT NOT NULL,
+    sources_json TEXT NOT NULL, proof_count INTEGER NOT NULL, embedding BLOB,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_validated_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS observations_status ON observations (status, proof_count, updated_at);`,
 }
 /** RRF 融合常数：score = Σ 1/(K + rank)。 */
 const RRF_K = 60
@@ -255,6 +265,42 @@ function vecToBlob(vector: Float32Array): Uint8Array {
   return new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength)
 }
 
+/** observations 表行结构（snake_case 对应列名）。 */
+interface ObservationRow {
+  id: string
+  scope: string
+  belief: string
+  status: string
+  sources_json: string
+  proof_count: number
+  embedding: Uint8Array | null
+  created_at: number
+  updated_at: number
+  last_validated_at: number
+}
+
+/** 行 → ObservationRecord；sources_json 由本插件自写，解析失败按空证据兜底（不炸读侧）。 */
+function observationRowToRecord(row: ObservationRow): ObservationRecord {
+  let sourceIds: MemoryId[] = []
+  try {
+    const parsed: unknown = JSON.parse(row.sources_json)
+    if (Array.isArray(parsed)) sourceIds = parsed.filter((item): item is string => typeof item === 'string').map(asMemoryId)
+  } catch {
+    sourceIds = []
+  }
+  return {
+    id: asObservationId(row.id),
+    scope: row.scope as ObservationRecord['scope'],
+    belief: row.belief,
+    status: row.status as ObservationRecord['status'],
+    sourceIds,
+    proofCount: row.proof_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastValidatedAt: row.last_validated_at,
+  }
+}
+
 /** 余弦相似度；任一向量零范数时返回 0。 */
 function cosine(a: Float32Array, b: Float32Array): number {
   let dot = 0
@@ -386,6 +432,10 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, content TEXT NOT NULL,
       valid_at INTEGER NOT NULL, invalid_at INTEGER, replaced_by TEXT,
       source_node_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS observations (
+      id TEXT PRIMARY KEY, scope TEXT NOT NULL, belief TEXT NOT NULL, status TEXT NOT NULL,
+      sources_json TEXT NOT NULL, proof_count INTEGER NOT NULL, embedding BLOB,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_validated_at INTEGER NOT NULL);
     CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(node_id UNINDEXED, content, tokenize='unicode61');
     CREATE INDEX IF NOT EXISTS nodes_scope_status ON nodes (scope, status);
     CREATE INDEX IF NOT EXISTS nodes_kind_created ON nodes (kind, created_at);
@@ -393,6 +443,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     CREATE INDEX IF NOT EXISTS entities_name ON entities (name);
     CREATE INDEX IF NOT EXISTS node_entities_entity ON node_entities (entity_id);
     CREATE INDEX IF NOT EXISTS facts_entity ON facts (entity_id);
+    CREATE INDEX IF NOT EXISTS observations_status ON observations (status, proof_count, updated_at);
   `)
   // v6 索引不在此处建：旧库此刻还没有 slot_room / next_review_at 列（迁移在后面才跑），
   // 对已存在的表建这两个索引会抛 no such column。新建库走下方补建，旧库由 MIGRATIONS['5'] 建。
@@ -543,6 +594,19 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlFactInvalidate = db.prepare('UPDATE facts SET invalid_at = ?, replaced_by = ?, updated_at = ? WHERE id = ?')
   const sqlFactGet = db.prepare('SELECT * FROM facts WHERE id = ?')
   const sqlPurgeFacts = db.prepare('DELETE FROM facts')
+  // 巩固信念（schema v12）：embedding 为可空 BLOB，更新时按需替换。
+  const sqlObservationInsert = db.prepare(`INSERT INTO observations
+    (id, scope, belief, status, sources_json, proof_count, embedding, created_at, updated_at, last_validated_at)
+    VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`)
+  const sqlObservationGet = db.prepare('SELECT * FROM observations WHERE id = ?')
+  const sqlObservationUpdate = db.prepare(`UPDATE observations
+    SET belief = ?, status = ?, sources_json = ?, proof_count = ?,
+      embedding = COALESCE(?, embedding), updated_at = ?, last_validated_at = ? WHERE id = ?`)
+  const sqlObservationSetStatus = db.prepare('UPDATE observations SET status = ?, updated_at = ?, last_validated_at = ? WHERE id = ?')
+  const sqlObservationMarkStale = db.prepare('UPDATE observations SET status = \'stale\' WHERE id = ?')
+  const sqlObservationRefute = db.prepare('UPDATE observations SET status = \'refuted\', updated_at = ? WHERE id = ?')
+  const sqlObservationActiveVectors = db.prepare('SELECT * FROM observations WHERE status != \'refuted\' AND embedding IS NOT NULL')
+  const sqlPurgeObservations = db.prepare('DELETE FROM observations')
 
   /** FTS 道：按 scope 集合检索（占位符动态生成，scope 集合由调用方去重）；rooms 非空时只查指定房间。 */
   const ftsSearch = (match: string, scopes: readonly EngramScope[], rooms: readonly string[] | undefined): NodeRow[] => {
@@ -1415,6 +1479,103 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       return { items: rows.map(factRowToRecord), total }
     },
 
+    async createObservation(input: ObservationWriteInput): Promise<ObservationRecord> {
+      const id = asObservationId(randomUUID())
+      const now = Date.now()
+      // 证据 id 去重（保留首次出现顺序）；空证据不允许建信念（调用方也应拦截，此处兜底 loud）。
+      const sourceIds = [...new Set(input.sourceIds.map(String))].map(asMemoryId)
+      if (sourceIds.length === 0) throw new EngramError('BAD_INPUT', 'createObservation 要求至少 1 条证据记忆')
+      const stored = input.embedding === undefined ? null : vecToBlob(input.embedding)
+      withTransaction(() => {
+        sqlObservationInsert.run(
+          id, input.scope, input.belief, JSON.stringify(sourceIds.map(String)), sourceIds.length,
+          stored, now, now, now,
+        )
+      })
+      return {
+        id,
+        scope: input.scope,
+        belief: input.belief,
+        status: 'active',
+        sourceIds,
+        proofCount: sourceIds.length,
+        createdAt: now,
+        updatedAt: now,
+        lastValidatedAt: now,
+      }
+    },
+
+    async refineObservation(id: ObservationId, belief: string, addSourceIds: readonly MemoryId[], embedding?: Float32Array) {
+      const existing = sqlObservationGet.get(String(id)) as unknown as ObservationRow | undefined
+      if (existing === undefined) return undefined
+      const merged = [...new Set([
+        ...observationRowToRecord(existing).sourceIds.map(String),
+        ...addSourceIds.map(String),
+      ])].map(asMemoryId)
+      const now = Date.now()
+      const stored = embedding === undefined ? null : vecToBlob(embedding)
+      withTransaction(() => {
+        sqlObservationUpdate.run(
+          belief, 'active', JSON.stringify(merged.map(String)), merged.length,
+          stored, now, now, String(id),
+        )
+      })
+      return observationRowToRecord(sqlObservationGet.get(String(id)) as unknown as ObservationRow)
+    },
+
+    async markObservationStale(id: ObservationId) {
+      const existing = sqlObservationGet.get(String(id)) as unknown as ObservationRow | undefined
+      if (existing === undefined) return undefined
+      sqlObservationMarkStale.run(String(id))
+      return observationRowToRecord(sqlObservationGet.get(String(id)) as unknown as ObservationRow)
+    },
+
+    async confirmObservation(id: ObservationId) {
+      const existing = sqlObservationGet.get(String(id)) as unknown as ObservationRow | undefined
+      if (existing === undefined) return undefined
+      const now = Date.now()
+      sqlObservationSetStatus.run('active', now, now, String(id))
+      return observationRowToRecord(sqlObservationGet.get(String(id)) as unknown as ObservationRow)
+    },
+
+    async refuteObservation(id: ObservationId) {
+      const existing = sqlObservationGet.get(String(id)) as unknown as ObservationRow | undefined
+      if (existing === undefined) return undefined
+      const now = Date.now()
+      // refuted 是终态审计标记：updated_at 刷新（列表排序可察），last_validated_at 保留为上次成立时间。
+      withTransaction(() => {
+        sqlObservationRefute.run(now, String(id))
+      })
+      return observationRowToRecord(sqlObservationGet.get(String(id)) as unknown as ObservationRow)
+    },
+
+    async listObservations(filter: ObservationListFilter): Promise<readonly ObservationRecord[]> {
+      const offset = Math.max(0, filter.offset ?? 0)
+      if (filter.status === undefined) {
+        const rows = db.prepare('SELECT * FROM observations ORDER BY proof_count DESC, updated_at DESC LIMIT ? OFFSET ?')
+          .all(filter.limit, offset) as unknown as ObservationRow[]
+        return rows.map(observationRowToRecord)
+      }
+      const rows = db.prepare('SELECT * FROM observations WHERE status = ? ORDER BY proof_count DESC, updated_at DESC LIMIT ? OFFSET ?')
+        .all(filter.status, filter.limit, offset) as unknown as ObservationRow[]
+      return rows.map(observationRowToRecord)
+    },
+
+    async nearestObservation(embedding: Float32Array) {
+      const rows = sqlObservationActiveVectors.all() as unknown as ObservationRow[]
+      let best: ObservationRow | undefined
+      let bestSim = 0
+      for (const row of rows) {
+        if (row.embedding === null) continue
+        const sim = cosine(embedding, blobToVec(row.embedding))
+        if (sim > bestSim) {
+          bestSim = sim
+          best = row
+        }
+      }
+      return best === undefined ? undefined : { record: observationRowToRecord(best), similarity: bestSim }
+    },
+
     async audit(op: string, targetId: string, detail: string | null) {
       sqlLog.run(Date.now(), op, targetId, detail)
     },
@@ -1444,6 +1605,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         sqlPurgeNodeEntities.run()
         sqlPurgeEntities.run()
         sqlPurgeFacts.run()
+        sqlPurgeObservations.run()
       })
     },
 

@@ -187,7 +187,7 @@ describe('EngramStore (sqlite)', () => {
     const db2 = new DatabaseSync(path)
     const version = (db2.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value
     db2.close()
-    expect(version).toBe('11')
+    expect(version).toBe('12')
   })
 
   it('v3 库打开时顺序迁移到 v5（数据保留，修订表可用）', async () => {
@@ -428,7 +428,7 @@ describe('episodeTimeline (episode 情景独立时间线)', () => {
     expect(indexes).toContain('nodes_session_created')
   })
 
-  it('session_summaries 表在新建库与 v8 迁移后就位，schema_version 升到 11', async () => {
+  it('session_summaries 表在新建库与 v8 迁移后就位，schema_version 升到 12', async () => {
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(join(dir, 'user.db'))
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as unknown as { name: string }[])
@@ -436,7 +436,8 @@ describe('episodeTimeline (episode 情景独立时间线)', () => {
     const version = (db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value
     db.close()
     expect(tables).toContain('session_summaries')
-    expect(version).toBe('11')
+    expect(tables).toContain('observations')
+    expect(version).toBe('12')
     // v8 旧库（手工降版）重开时经 MIGRATIONS['8'] 建出摘要表，数据零搬运。
     const legacyPath = join(dir, 'legacy-v8.db')
     const legacy = await openEngramStore(legacyPath)

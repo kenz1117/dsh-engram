@@ -66,6 +66,7 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 - **检索练习闭环**（间隔重复）：`engram_review_queue` 只给宫殿坐标与门牌线索、**不给正文**，迫使模型先主动回忆；`engram_review` 揭示核对，`engram_report grade`（0-5）自评推进 SM-2 调度（1 → 6 → round(prev × ease) 天，失败重置，ease 下限 1.3）。进入复习调度的条目**不再参与自动衰减**——命运由回忆结果决定。会话开始注入会提示今日待回忆条数。
 - **历史会话回填**（v0.7.3+）：把 dsh 已持久化的历史会话逐轮提炼进宫殿——默认按**每个会话自己的 cwd** 写进对应项目库（不串库），同样逐条判作用域（跨项目通用的个人偏好落私人库），复用实时摄取的节流/脱敏/防回声，靠 (会话, 轮次) 幂等键支持中断续跑（键固定在私人库，与实时路径共用）；回填条目不进今日复习队列（避免一次性回填淹没「今日待回忆」）。**导入规则由你选**（时间窗 / 单会话轮数 / 总轮数上限 / 辅助模型 / 是否含子代理·种子·无 cwd 会话），先估算（零成本、不调 LLM）再执行；设置页有独立的**「回填」tab**，可看进度（含**跳过原因分布**）与暂停续做。辅助调用默认**复用你当前在用的模型**（历史日志里记的是当年的 provider/model，在当前环境可能已不可用），也可在面板「辅助模型」下拉里从宿主已注册的 provider/model 中直接指定。
 - **知识飞轮**：摄取/保存 → 矛盾候选（写入时高相似近邻建 `contradicts` 边并报告，模型/用户裁决）→ 命中强化（confidence +0.05）→ 蒸馏（同主题簇合并为高层规律、supersedes 取代链、置信度继承）→ 衰减（低重要性且长期未访问归档，可恢复）。
+- **自动信念巩固**（v0.7.14+，默认关闭，yml `reflect: suggest|auto`）：会话结束后把「尚未成为任何信念证据」的原始记忆交辅助 LLM 巩固为一句话**信念（observation）**——与蒸馏的关键区别是原始记忆全部保留，信念是**叠加的抽象层**：每条信念带证据 id 列表与证据数（proof count），同主题经向量近邻（余弦 ≥0.9）自动归并、**持续细化同一条**而非反复新增。新证据与既有信念近邻（≥0.86）时信念先转 `stale`，下次巩固把原始证据一并喂给模型复核，结果四选一——`form` 新建、`refine` 细化、`still` 维持、`refute` 否定（保留证据链供审计）。`auto` 档会话结束后台巩固（5 秒超时、异常不影响对话）；`suggest` 档只登记待巩固任务，由 `engram_reflect` 工具一键执行（任何档位都可手动调）。active 信念按证据数取前 3 条随画像包注入会话，stale/refuted 不注入。schema 升级到 v12（observations 表，增量迁移、存量数据零搬运）。
 - **Jev 系统一裁决**（v0.7.12+，默认关闭，yml `jev` 子配置）：DEFER 模糊带的三路判定（并入 / 放行 / 搁置）与矛盾边确认可交外部 Jev 模型判决；Jev 不可用（网络失败 / 超时 / 未配密钥）时静默回落纯规则四态，**不阻断写入**。每次裁决旁路留观测（判定结果、Jev 是否参与、耗时、回落原因，进程内最多 50 条、重启清空），面板「裁决」视图一眼排查「为什么这条被搁置」。yml 的开关 / 密钥 / 端点 / 模型 / 超时五项可在面板覆盖（存 `<dbDir>/jev-config.json`，0600 文件 + 0700 目录），保存即时生效无需重启；「测试连接」按钮用当前输入即时验证端点与模型可达性（未保存也按当前值测、不落覆盖文件）；密钥 GET 只回掩码、明文不出进程、输入框不回填。三阈值保持 yml 高级配置，面板只读展示。
 - **实体词典**（v0.7.10+）：自动摄取与 `engram_save` 的辅助 LLM 输出同时抽取实体提及（人物/项目/工具/概念，可带别名），按归一化名与既有实体的 name/aliases 精确匹配消解——命中复用并刷新「最近提及」，未命中新建；记忆与实体多对多关联，随来源记忆所在 scope 分库。`engram_search` 命中行附关联实体标签；实体消解故障只静默跳过关联，不影响记忆落库。面板「实体」视图按类别筛选、按名称/别名搜索，点开单实体看它牵出的所有记忆。
 - **自动摄取**（`ingest` 配置开启时）：新一轮第一步从会话日志提取上一轮的候选事实，会话结束时补摄取最后一轮（失败留 pending 键，下次会话自动补做，幂等不重复），低 confidence 写入，嵌入可用时按四态处置近邻（复述并入强化 / 疑似矛盾建边待裁决 / 全新写入）——不说"记住"也能攒记忆。**逐条判宫殿**：提炼时同步判定作用域，只跟当前项目/仓库有关的（技术选型、项目约定、架构决策）进当前会话 cwd 对应的项目库，跨项目通用的（个人偏好、习惯、本人经历）进私人库——偏好跟人走、约定跟仓库走。
@@ -79,7 +80,7 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 - **数据可携带**：`engram_export` 一键导出 Markdown / JSON 文件，支持脱敏视图（内容二次清洗 + 预览截断，分享安全）。`engram_mirror` 导出可漫游的镜像目录（Obsidian / Logseq 友好：每条记忆一个 Markdown，正文 + YAML frontmatter + 双向链接 `[[id]]`），让「宫殿」也成为可人读的私人知识库。
 - **认知架构探索（dsh-market · AGI 架构探索）**：本仓库是 dsh-market「AGI 架构探索」类目下，对 agent 长期记忆的认知科学方法论重构——记忆宫殿（意象标签 + 房间铭牌）、走廊拓扑（力导向图）、闭环提问（摄入时让模型主动追问用户细节）、巩固合并（启发式去重 + 余弦相似度），与 MemGPT/Letta 同层「agent 记忆架构」叙事。
 
-## 工具（20 个，窄参数）
+## 工具（21 个，窄参数）
 
 | 工具 | 作用 |
 |---|---|
@@ -102,6 +103,7 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 | `engram_ingest_history` | 历史会话回填：把 dsh 历史会话逐轮提炼进宫殿（按会话 cwd 分库、已摄取轮次自动跳过）。每会话轮次摄取完成后用辅助 LLM 生成一句话会话摘要落库（失败静默不阻断），实时会话结束时同样收尾生成，供时间线组头回看。`dryRun` 缺省 true 只估算；`dryRun=false` 才执行。大批量建议用设置页「回填」tab |
 | `engram_export` | 导出 Markdown / JSON 文件（数据可携带）；`redactedView: true` 输出脱敏视图（二次清洗 + 40 字预览截断，可安全分享） |
 | `engram_distill` | 蒸馏：同主题簇合并为高层规律（LLM） |
+| `engram_reflect` | 信念巩固：把尚未巩固的原始记忆经辅助 LLM 抽象为带证据数的高层信念（form/refine/still/refute 四动作，向量近邻自动归并，原始记忆保留不归档）；同时是 reflect=suggest 待巩固登记的执行出口 |
 | `engram_profile_edit` | 画像 curated block 编辑：`view` 看当前内容与版本历史；`edit` 写入新版本（乐观锁 `expectedVersion`，冲突 loud 失败）；`rollback` 回滚到历史版本（作为新版本追加，历史永不改写）。curated 画像优先于派生画像注入；编辑记录入操作日志，面板今日页画像卡可查版本 diff |
 
 ## 配置
@@ -123,6 +125,7 @@ dsh plugin --profile web add @kenz1117/dsh-engram
     modelCacheDir: '~/.dsh/engram/models'  # 嵌入模型缓存目录
     hfEndpoint: 'https://huggingface.co'   # 模型下载端点，网络受限可配镜像
     ingest: 'off'                   # 自动摄取：off | light（仅用户消息，每轮≤2条）| eager（含助手消息，每轮≤5条）
+    reflect: 'off'                  # 自动信念巩固：off | suggest（会话结束只登记待巩固，engram_reflect 执行）| auto（会话结束后台巩固）；任何档位均可手动调 engram_reflect
     # provider 与 model 必须成对提供：摄取/蒸馏的辅助 LLM 路由覆盖（缺省从会话日志解析）
     # provider: 'deepseek'
     # model: 'deepseek-v4-flash'
@@ -166,6 +169,7 @@ dsh plugin --profile web add @kenz1117/dsh-engram
   ├─ engram_save / search / review … ──────▶ ├─ SQLite 双库（user.db / project-<origin hash>.db）
   │                                          ├─ FTS5 关键词道 + 本地向量道 RRF 融合 + 排序 boost
   ├─ engram_distill ───────────────────────▶ ├─ 辅助 LLM 蒸馏（簇合并 → supersedes 链）
+  ├─ 会话结束（reflect 开启）──────────────▶ ├─ 信念巩固（未巩固证据 → observations：近邻归并 / stale 复核）
   │                                          └─ 自动摄取：会话日志 → 候选事实（含会话结束的末轮，ingest 开启时）
   └─ 设置页「记忆库」tab ◀────────────────── ─── 回环 API /api/engram/*（写操作校验回环 Origin）
 ```
@@ -235,7 +239,7 @@ pnpm bundle
 宫殿 IA（位置当索引 / 固定路线 / 检索练习）是索引与审计骨架，按三阶段向 AI 原生的记忆分层与时序事实图谱演进；实际发版按 0.0.1 递增，阶段代号仅为规划标签：
 
 - **阶段一 · 飞轮闭环补强**（已完成，v0.7.8）：写入四态回报（ACCEPT 新增 / MERGE 并入强化 / DROP 低熵 / DEFER 矛盾待裁决，`engram_save` 与摄取逐条返回处置）；画像注入改分级递减预算（首条 160 字、逐条 ×0.9、下限 24，可配置）；脱敏扩充中文密码 / 身份证 / 手机号三类；证据门收尾提醒（轮次结束存在未判定 assess 批次时注入提醒）。
-- **阶段二 · 记忆分层**：画像可编辑（**已完成，v0.7.9**：`engram_profile_edit` 工具 + 版本链回滚 + 面板 diff 审计，Letta core-memory 路线）；episode 情景记忆独立时间线索引（**已完成，v0.7.9**：`engram_episode_timeline` 工具，日期范围、按会话分组、时间邻近扩展，episode 专用索引；面板「往事」视图 + 摄取期与实时会话摘要组头同批完成）；蒸馏自动化（簇规模 + 相似度阈值，suggest/auto 两档）；房间容量与门牌评分可配置化（默认与现状一致）。
+- **阶段二 · 记忆分层**：画像可编辑（**已完成，v0.7.9**：`engram_profile_edit` 工具 + 版本链回滚 + 面板 diff 审计，Letta core-memory 路线）；episode 情景记忆独立时间线索引（**已完成，v0.7.9**：`engram_episode_timeline` 工具，日期范围、按会话分组、时间邻近扩展，episode 专用索引；面板「往事」视图 + 摄取期与实时会话摘要组头同批完成）；信念自动巩固（**已完成，v0.7.14**：observations 表（schema v12）带证据链与证据数，会话结束按 `reflect: suggest|auto` 触发，近邻归并持续细化、stale 新鲜度复核四动作 form/refine/still/refute，active 信念随画像注入；手动 `engram_distill` 蒸馏保留）；房间容量与门牌评分可配置化（默认与现状一致）。
 - **阶段三 · 时序事实图谱**：实体表与写入期实体抽取消歧（**已完成，v0.7.10**：entities + node_entities 两表，摄取/保存的辅助 LLM 输出带 entities 提及并消解落库，`engram_search` 命中附实体标签，面板「实体」视图 + 实体回环路由）；事实级三元组携带 `valid_at` / `invalid_at` 时间窗，冲突事实软失效不删除（**已完成，v0.7.11**：facts 表（实体 + 时间窗 + `replaced_by` + 来源记忆），摄取辅助 LLM 输出带 facts 并按实体归一化匹配落表，`replaces` 声明软失效链，`engram_search` 加 `asOf` 时点回看，`engram_facts` 工具读写事实链，面板实体页事实链详情）；supports / refines / related 自动建边；LoCoMo-zh 评测集进 CI 作检索质量回归门（确定性 Recall@k / MRR 指标）。
 
 ## 致谢

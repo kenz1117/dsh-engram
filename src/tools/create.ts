@@ -1,5 +1,5 @@
 /**
- * 20 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
+ * 21 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
  * scope 决定读写哪个分库；嵌入缺失时检索结果显式标记降级。
  * @module @kenz1117/dsh-engram/tools/create
  */
@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { distillMemories } from '../flywheel/distill.ts'
+import { reflectObservations } from '../consolidation/reflect.ts'
 import { writeMirror } from '../mirror/markdown.ts'
 import type { EngramEmbedder } from '../embedder/interface.ts'
 import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
@@ -1485,6 +1486,65 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
   })
 
   /**
+   * 信念巩固 — 从尚未巩固的原始记忆抽象出带证据链的一句话信念，并复核 stale 信念。
+   * 与 distill 的关键差异：原始记忆全部保留，信念是叠加的抽象层（同主题向量近邻归并，
+   * 持续细化同一条）。reflect=suggest 档位下这是待巩固登记的执行出口；任何档位均可手动调。
+   */
+  const reflect = defineTool({
+    name: 'engram_reflect',
+    description: '信念巩固：把多条原始记忆经辅助 LLM 巩固为带证据数的高层信念（form 新建/refine 细化/still 维持/refute 否定），同主题自动归并；原始记忆保留不归档。反复出现的模式或新增一批记忆后调用。',
+    parameters: {
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '作用域，默认 user' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args, exec) {
+      const input = args as { scope?: unknown }
+      const scope = scopeOf(input.scope, 'user')
+      if (deps.call === undefined) throw new Error('engram_reflect: 辅助 LLM 不可用（宿主未提供 llm 服务），无法巩固')
+      const call = deps.call
+      const events = (exec.agent?.session?.snapshotEvents() ?? []) as unknown as Parameters<typeof routeFromEvents>[0]
+      const route = deps.routeOverride ?? routeFromEvents(events)
+      if (route === undefined) throw new Error('engram_reflect: 无法确定模型路由（会话尚无模型请求），请在 cordis.yml 配置 provider/model')
+      const store = await deps.openStore(scope)
+      const embedder = await deps.embedder
+      const outcome = await reflectObservations({
+        store,
+        embedder,
+        scope,
+        call: params => call({ ...params, sessionId: exec.agent === undefined ? undefined : String(exec.agent.session.id) }),
+        logRequest: (data) => {
+          void store.audit('reflect-request', 'AUX', JSON.stringify(data)).catch(() => { /* 审计失败不影响巩固 */ })
+        },
+        route,
+        signal: exec.signal,
+      })
+      // 消费该 scope 的 suggest 待巩固登记（detail 为 {scope,sessionId} JSON，越界/损坏条目忽略）。
+      const pending = await store.listAuditDetails('reflect-pending')
+      let consumed = 0
+      for (const detail of pending) {
+        try {
+          const parsed = JSON.parse(detail) as { scope?: unknown }
+          if (parsed.scope === scope) {
+            await store.clearAudit('reflect-pending', detail)
+            consumed += 1
+          }
+        } catch {
+          /* 损坏的 pending 条目留给清理流程，不阻断本次结果 */
+        }
+      }
+      const lines = [
+        `信念巩固完成：取材池 ${String(outcome.pool)} 条，新证据 ${String(outcome.candidates)} 条、待复核信念 ${String(outcome.staleReviewed)} 条；新建 ${String(outcome.formed)}，细化 ${String(outcome.refined)}，维持 ${String(outcome.confirmed)}，否定 ${String(outcome.refuted)}，跳过 ${String(outcome.skipped)}。`,
+        '信念是叠加在原始记忆之上的抽象层（证据 id 与证据数已留存，原始记忆未归档）。',
+      ]
+      if (consumed > 0) lines.push(`同时消费了 ${String(consumed)} 条会话结束时登记的待巩固任务。`)
+      return { text: lines.join('\n') }
+    },
+  })
+
+  /**
    * 渐进式披露 — 记忆铭牌批量访客：拿到一组 id 后才决定取哪几条。
    * 与 engram_search 配合使用：search 只返门牌号摘要，examine 才进房看铭牌。
    */
@@ -1715,7 +1775,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     },
   })
 
-  const tools = [save, search, factsTool, assess, timeline, episodeTimeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, examine, neighborsTool, tour, auditForgotten, ingestHistory, profileEdit]
+  const tools = [save, search, factsTool, assess, timeline, episodeTimeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, reflect, examine, neighborsTool, tour, auditForgotten, ingestHistory, profileEdit]
   // 执行前把该会话的 cwd 放进 ALS 上下文：project scope 的分库解析据此归属（并发会话互不串味）。
   return tools.map(tool => ({
     ...tool,

@@ -13,6 +13,9 @@ export type LegacyMigrationPolicy = 'eager' | 'conservative'
 /** 自动摄取档位：off 关闭；light 只读用户消息（每轮≤2 条）；eager 用户+助手消息（每轮≤5 条）。 */
 export type IngestModeConfig = 'off' | 'light' | 'eager'
 
+/** 信念巩固档位：off 仅允许手动 engram_reflect；suggest 会话结束只登记待巩固；auto 会话结束后自动巩固。 */
+export type ReflectModeConfig = 'off' | 'suggest' | 'auto'
+
 /** Jev System One 模型子配置：DEFER 模糊带自动裁决与矛盾边确认；默认关闭时四态判定保持纯规则。 */
 export interface JevConfig {
   /** 是否启用 Jev 裁决；默认 false。显式 true 时 apiKey 必填，缺失在加载期报错。 */
@@ -49,6 +52,8 @@ export interface EngramConfig {
   hfEndpoint?: string
   /** 自动摄取档位；默认 off（显式开启才写库）。 */
   ingest?: IngestModeConfig
+  /** 信念自动巩固档位；默认 off。suggest/auto 会话结束后触发，复用 provider/model 辅助路由。 */
+  reflect?: ReflectModeConfig
   /** 蒸馏/摄取覆盖路由的 provider；必须与 model 成对提供。 */
   provider?: string
   /** 蒸馏/摄取覆盖路由的 model；必须与 provider 成对提供。 */
@@ -130,6 +135,7 @@ export interface ResolvedEngramConfig {
   readonly modelCacheDir: string
   readonly hfEndpoint: string | undefined
   readonly ingest: IngestModeConfig
+  readonly reflect: ReflectModeConfig
   /** 成对校验后的路由覆盖；undefined = 从会话日志解析路由。 */
   readonly routeOverride: { readonly provider: string; readonly model: string } | undefined
   readonly decayAfterDays: number
@@ -153,7 +159,7 @@ export interface ResolvedEngramConfig {
 /** 合法配置键集合（未知键 loud 失败）。 */
 const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'legacyMigration', 'dbDir', 'injectProfile', 'profileTopN', 'modelCacheDir', 'hfEndpoint',
-  'ingest', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
+  'ingest', 'reflect', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
   'injectTokenBudget', 'injectItemBudgetStart', 'injectItemBudgetDecay', 'injectItemBudgetFloor',
   'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
   'autoSlot', 'reviewScheduling', 'assessReminder',
@@ -163,6 +169,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
 ])
 
 const INGEST_MODES: ReadonlySet<string> = new Set(['off', 'light', 'eager'])
+const REFLECT_MODES: ReadonlySet<string> = new Set(['off', 'suggest', 'auto'])
 
 /** Schemastery 校验面（cordis.yml 读取时校验）。 */
 export const Config: z<EngramConfig> = z.object({
@@ -173,6 +180,7 @@ export const Config: z<EngramConfig> = z.object({
   modelCacheDir: z.string(),
   hfEndpoint: z.string(),
   ingest: z.string() as unknown as z<IngestModeConfig>,
+  reflect: z.string() as unknown as z<ReflectModeConfig>,
   provider: z.string(),
   model: z.string(),
   decayAfterDays: z.number().step(1).min(1).max(3650),
@@ -220,6 +228,9 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   }
   if (config.ingest !== undefined && !INGEST_MODES.has(config.ingest)) {
     throw new Error(`dsh-engram: ingest must be one of off|light|eager, got "${String(config.ingest)}"`)
+  }
+  if (config.reflect !== undefined && !REFLECT_MODES.has(config.reflect)) {
+    throw new Error(`dsh-engram: reflect must be one of off|suggest|auto, got "${String(config.reflect)}"`)
   }
   if (config.profileTopN !== undefined && (!Number.isInteger(config.profileTopN) || config.profileTopN < 1 || config.profileTopN > 64)) {
     throw new Error('dsh-engram: profileTopN must be an integer in [1, 64]')
@@ -306,6 +317,7 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     modelCacheDir: config.modelCacheDir ?? join(dbDir, 'models'),
     hfEndpoint: config.hfEndpoint,
     ingest: config.ingest ?? 'off',
+    reflect: config.reflect ?? 'off',
     routeOverride: hasProvider && hasModel ? { provider: config.provider!, model: config.model! } : undefined,
     decayAfterDays: config.decayAfterDays ?? 30,
     decayImportanceBelow: config.decayImportanceBelow ?? 0.3,

@@ -32,6 +32,7 @@ import type {
   HistorySessionHeader,
 } from './ingest/history.ts'
 import { runConsolidation } from './consolidation/run.ts'
+import { reflectObservations } from './consolidation/reflect.ts'
 import type { IngestRequestEventData } from './ingest/hook.ts'
 import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
@@ -181,6 +182,12 @@ export function renderProfileWithCurated(
 const COMPRESS_MAX_TOKENS = 800
 /** 压缩辅助调用超时：压缩在 pre-step 关键路径上，必须限时防阻塞首轮请求。 */
 const COMPRESS_TIMEOUT_MS = 8000
+/** turn_start 注入的巩固信念条数上限（按证据数、新近度倒序）。 */
+const OBSERVATION_INJECT_LIMIT = 3
+/** 单条信念注入截断字符数。 */
+const OBSERVATION_INJECT_ITEM_CHARS = 120
+/** 信念区块总字符上限（独立于画像 token 预算，避免与画像互相挤压）。 */
+const OBSERVATION_INJECT_BLOCK_CHARS = 480
 
 const COMPRESS_SYSTEM = [
   '把记忆条目压缩为更短的一句话表述（每条不超过 40 个字符），保留可跨会话复用的关键信息（事实、偏好、决策、方法）。',
@@ -356,6 +363,17 @@ async function preStep(
         { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor },
       ).text
     }
+  }
+  // 巩固信念区块：active 信念按证据数/新近度取前 N，拼入同一份画像包；
+  // stale/refuted 不注入。区块独立于画像预算（固定硬上限），信念更新后画像 hash 变化自然触发重注。
+  const observations = await store.listObservations({ status: 'active', limit: OBSERVATION_INJECT_LIMIT })
+  if (observations.length > 0) {
+    const block = [
+      'Consolidated beliefs (distilled from multiple stored memories; verify against sources before high-stakes use):',
+      ...observations.map(observation =>
+        `- ${observation.belief.slice(0, OBSERVATION_INJECT_ITEM_CHARS)} (${String(observation.proofCount)} sources)`),
+    ].join('\n').slice(0, OBSERVATION_INJECT_BLOCK_CHARS)
+    text = `${text}\n\n${block}`
   }
   // 注入去重：同一会话内画像文本与上次相同时跳过（上一轮注入仍在上下文里）；
   // 新会话（lastProfileAgent 不同）必须注入，即使文本与上个会话相同。due 行纳入 hash 输入。
@@ -880,6 +898,59 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
         .catch((error: unknown) => {
           console.warn('[dsh-engram] 会话结束的收尾处理异常（不影响对话）：', error)
         })
+    })
+  }
+
+  if (resolved.reflect !== 'off') {
+    // 信念巩固：disposed 是 fire-and-forget 观察器。auto 后台巩固（user 库 + cwd 已建库的项目库）；
+    // suggest 只登记 reflect-pending（出口是 engram_reflect 工具）。与末轮摄取相互独立——
+    // reflect 取材幂等（已成为信念证据的记忆排除），并发漏抓由下次会话结束或手动调用补。
+    // 必须就地吞掉所有异常：宿主把未处理 rejection 当致命错误（见上一个 disposed 监听）。
+    ctx.on('session/disposed', (session) => {
+      // dispose 后事件源可能 detach：事件快照与 cwd 在同步段取一次。
+      const events = session.snapshotEvents() as unknown as readonly SessionEventLike[]
+      const sessionId = String(session.id)
+      const cwd = sessionCwd(session)
+      const route = resolved.routeOverride ?? routeFromEvents(events)
+      const targets: { scope: EngramScope; open: () => Promise<EngramStore> }[] = [
+        { scope: 'user', open: () => openStore('user') },
+      ]
+      // 项目宫殿仅处理库文件已存在的，避免为一次性 cwd 建空库（与衰减调度同纪律）。
+      if (cwd !== undefined && existsSync(join(resolved.dbDir, dbNameForCwd(cwd)))) {
+        targets.push({ scope: 'project', open: () => openStoreForProjectCwd(cwd) })
+      }
+      void (async () => {
+        for (const target of targets) {
+          try {
+            const store = await target.open()
+            if (resolved.reflect === 'suggest') {
+              const detail = JSON.stringify({ scope: target.scope, sessionId })
+              if (!await store.hasAudit('reflect-pending', detail)) {
+                await store.audit('reflect-pending', 'AUX', detail)
+              }
+              continue
+            }
+            // auto：会话没有模型请求时取不到路由，跳过本次（下次会话补）。
+            if (route === undefined) continue
+            const outcome = await reflectObservations({
+              store,
+              embedder: await embedder,
+              scope: target.scope,
+              call: params => streamText(ctx, { ...params, sessionId: session.id }),
+              logRequest: data => {
+                void store.audit('reflect-request', 'AUX', JSON.stringify(data)).catch(() => { /* 审计失败不影响巩固 */ })
+              },
+              route,
+              signal: AbortSignal.timeout(FINAL_INGEST_TIMEOUT_MS),
+            })
+            if (outcome.formed + outcome.refined + outcome.confirmed + outcome.refuted > 0) {
+              console.log(`[dsh-engram] 信念巩固完成（${target.scope}）：新建 ${String(outcome.formed)}，细化 ${String(outcome.refined)}，维持 ${String(outcome.confirmed)}，否定 ${String(outcome.refuted)}`)
+            }
+          } catch (error) {
+            console.warn(`[dsh-engram] 会话结束的信念巩固异常（${target.scope}，不影响对话）：`, error)
+          }
+        }
+      })()
     })
   }
 
