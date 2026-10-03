@@ -14,14 +14,10 @@ export type EngramKey =
   | 'scopeProject'
   | 'scopeShared'
   | 'projectFollow'
-  | 'projectFollowNamed'
   | 'projectFollowHint'
-  | 'projectPinned'
   | 'projectUnregistered'
-  | 'projectNoWorkspace'
   | 'projectSwitch'
   | 'projectMemories'
-  | 'projectProcessDefault'
   | 'refresh'
   | 'exportMd'
   | 'exportJson'
@@ -79,13 +75,10 @@ export type EngramKey =
   | 'detailSource'
   | 'detailRelations'
   | 'detailOperations'
-  | 'headerTitle'
-  | 'headerSubtitle'
   | 'tabToday'
   | 'tabLibrary'
   | 'tabCorridor'
   | 'tabLog'
-  | 'tabLibraryCount'
   | 'roomsTitle'
   | 'roomsHint'
   | 'healthEvaluatedAt'
@@ -274,6 +267,16 @@ export type EngramKey =
   | 'episodeAroundEmpty'
   | 'episodeClose'
   | 'tabEntities'
+  | 'tabBeliefs'
+  | 'beliefHint'
+  | 'beliefStatusAll'
+  | 'beliefStatusActive'
+  | 'beliefStatusStale'
+  | 'beliefStatusRefuted'
+  | 'beliefCount'
+  | 'beliefEvidence'
+  | 'beliefEvidenceEmpty'
+  | 'beliefNone'
   | 'entityHint'
   | 'entityKindAll'
   | 'entityKindPerson'
@@ -340,18 +343,14 @@ export const KIND_KEY: Readonly<Record<string, EngramKey>> = {
    数据层英文枚举（status/kind/op）不在此映射，文案键保持稳定以保证编译约束。 */
 export const zh: Record<EngramKey, string> = {
   nav: '记忆宫殿',
-  scopeUser: '私人宫殿',
-  scopeProject: '项目宫殿',
-  scopeShared: '共享宫殿',
+  scopeUser: '私人',
+  scopeProject: '项目',
+  scopeShared: '共享',
   projectFollow: '跟随当前工作区',
-  projectFollowNamed: '项目 · 跟随 {name}',
   projectFollowHint: '项目宫殿跟随 GUI 当前选中的工作区（按会话归属判定）',
-  projectPinned: '项目 · {name}',
   projectUnregistered: '未注册工作区',
-  projectNoWorkspace: '无工作区信息（进程默认）',
   projectSwitch: '项目宫殿来源',
   projectMemories: '{n} 条记忆',
-  projectProcessDefault: '进程默认目录',
   refresh: '重访',
   exportMd: '导出 MD',
   exportJson: '导出 JSON',
@@ -414,13 +413,10 @@ export const zh: Record<EngramKey, string> = {
   relSupersedes: '替代',
   relContradicts: '互斥',
   relRelated: '相邻',
-  headerTitle: '记忆宫殿',
-  headerSubtitle: '跨会话长期记忆宫殿',
   tabToday: '今日',
   tabLibrary: '陈展',
   tabCorridor: '走廊',
   tabLog: '日志',
-  tabLibraryCount: '{n} 条',
   roomsTitle: '房间目录',
   roomsHint: '每间满 9 个桩位后开新间',
   healthEvaluatedAt: '诊脉于 {time}',
@@ -486,7 +482,7 @@ export const zh: Record<EngramKey, string> = {
   teleFailed: '遥测加载失败',
   teleLoading: '聚合管家记录中…',
   teleGroupRecent: '近 7 天',
-  telePrivacyHint: '数据仅在本机聚合 · 不外传',
+  telePrivacyHint: '数据仅在本机聚合',
   telePrivacyTip: '所有 op_log 与遥测计数只在当前进程的 SQLite 里聚合，从未发送至任何外部服务；本机重启或卸载插件即清空。',
   teleWrites: '落成',
   teleIngest: '发掘',
@@ -577,8 +573,8 @@ export const zh: Record<EngramKey, string> = {
   profileOpCreate: '创建 v{to} · {chars} 字',
   profileOpEdit: '编辑 v{from}→v{to} · {chars} 字',
   profileOpRollback: '回滚 v{from}→v{to}（还原 v{restored}）· {chars} 字',
-  profileTitle: '画像 curated block',
-  profileEmpty: '尚无 curated 画像',
+  profileTitle: '常驻画像',
+  profileEmpty: '尚无常驻画像',
   profileEmptyHint: '在会话里让 agent 调 engram_profile_edit 创建；创建后会话开始时优先于自动派生画像注入。',
   profileCurrent: '当前内容 · v{n}',
   profileHistory: '版本历史（新→旧）',
@@ -604,6 +600,16 @@ export const zh: Record<EngramKey, string> = {
   episodeAroundEmpty: '邻近窗口内没有其他情景',
   episodeClose: '收起',
   tabEntities: '实体',
+  tabBeliefs: '信念',
+  beliefHint: '管家从多条记忆自动巩固出的一句话结论；展开「证据」可回查支撑它的原始记忆',
+  beliefStatusAll: '全部',
+  beliefStatusActive: '成立',
+  beliefStatusStale: '待复核',
+  beliefStatusRefuted: '已否定',
+  beliefCount: '{n} 条信念',
+  beliefEvidence: '证据 {n} 条',
+  beliefEvidenceEmpty: '证据记忆已被清理，信念保留',
+  beliefNone: '还没有巩固出信念；管家会在记忆积累后自动归纳',
   entityHint: '从记忆中抽取的人物、项目、工具与概念；点「查看」看一条实体牵出的所有记忆',
   entityKindAll: '全部类别',
   entityKindPerson: '人物',
@@ -662,18 +668,14 @@ export const zh: Record<EngramKey, string> = {
    数据层英文枚举（status/kind/op）不在此映射，文案键保持稳定。 */
 export const en: Record<EngramKey, string> = {
   nav: 'Memory Palace',
-  scopeUser: 'Private Palace',
-  scopeProject: 'Project Palace',
-  scopeShared: 'Shared Palace',
+  scopeUser: 'Private',
+  scopeProject: 'Project',
+  scopeShared: 'Shared',
   projectFollow: 'Follow the active workspace',
-  projectFollowNamed: 'Project · following {name}',
   projectFollowHint: 'The project palace follows the workspace selected in the GUI (by session ownership)',
-  projectPinned: 'Project · {name}',
   projectUnregistered: 'unregistered workspace',
-  projectNoWorkspace: 'No workspace info (process default)',
   projectSwitch: 'Project palace source',
   projectMemories: '{n} memories',
-  projectProcessDefault: 'Process default directory',
   refresh: 'Revisit',
   exportMd: 'Export MD',
   exportJson: 'Export JSON',
@@ -736,13 +738,10 @@ export const en: Record<EngramKey, string> = {
   relSupersedes: 'Supersedes',
   relContradicts: 'Contradicts',
   relRelated: 'Adjacent',
-  headerTitle: 'Memory Palace',
-  headerSubtitle: 'Cross-session long-term memory palace',
   tabToday: 'Today',
   tabLibrary: 'Palace',
   tabCorridor: 'Corridor',
   tabLog: 'Log',
-  tabLibraryCount: '{n} memories',
   roomsTitle: 'Room directory',
   roomsHint: 'A new room opens once 9 slots fill',
   healthEvaluatedAt: 'Scored {time}',
@@ -808,7 +807,7 @@ export const en: Record<EngramKey, string> = {
   teleFailed: 'Telemetry failed',
   teleLoading: 'Aggregating curator events…',
   teleGroupRecent: 'Last 7 days',
-  telePrivacyHint: 'Local aggregation only · never transmitted',
+  telePrivacyHint: 'Local aggregation only',
   telePrivacyTip: 'All op_log and telemetry counters are aggregated in this process\u2019s SQLite only; nothing is sent to any external service. Clearing the plugin or restarting the host wipes the data.',
   teleWrites: 'Opened',
   teleIngest: 'Excavated',
@@ -926,6 +925,16 @@ export const en: Record<EngramKey, string> = {
   episodeAroundEmpty: 'No other episodes within the proximity window',
   episodeClose: 'Collapse',
   tabEntities: 'Entities',
+  tabBeliefs: 'Beliefs',
+  beliefHint: 'One-line conclusions the butler consolidated from multiple memories; expand the evidence to inspect the underlying memories',
+  beliefStatusAll: 'All',
+  beliefStatusActive: 'Held',
+  beliefStatusStale: 'Stale',
+  beliefStatusRefuted: 'Refuted',
+  beliefCount: '{n} beliefs',
+  beliefEvidence: '{n} evidence',
+  beliefEvidenceEmpty: 'Evidence memories were purged; the belief is kept',
+  beliefNone: 'No consolidated beliefs yet; the butler induces them once memories accumulate',
   entityHint: 'People, projects, tools and concepts extracted from memories; open one to see every memory that mentions it',
   entityKindAll: 'All kinds',
   entityKindPerson: 'People',

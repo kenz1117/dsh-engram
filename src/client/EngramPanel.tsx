@@ -7,10 +7,10 @@
  * @module @kenz1117/dsh-engram/client/EngramPanel
  */
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
-import { KIND_KEY, NS, type EngramKey } from './locales.ts'
+import { KIND_KEY, NS, en, zh, type EngramKey } from './locales.ts'
 import { CorridorMap } from './CorridorMap.tsx'
 import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
@@ -28,6 +28,7 @@ const ICONS = {
   corridor: <><circle cx="5" cy="6" r="1.8" /><circle cx="19" cy="6" r="1.8" /><circle cx="12" cy="18" r="1.8" /><path d="M6.5 7.5L11 16.5M17.5 7.5L13 16.5M7 6h10" /></>,
   episodes: <><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></>,
   entities: <><path d="M12 3 L21 12 L12 21 L3 12 Z" /><circle cx="12" cy="12" r="2.5" /></>,
+  beliefs: <><path d="M9 18h6" /><path d="M10 21h4" /><path d="M12 3a6 6 0 00-3.5 10.9c.7.5 1.1 1.2 1.3 2.1h4.4c.2-.9.6-1.6 1.3-2.1A6 6 0 0012 3z" /></>,
   log: <><line x1="5" y1="6" x2="19" y2="6" /><line x1="5" y1="12" x2="19" y2="12" /><line x1="5" y1="18" x2="13" y2="18" /></>,
   backfill: <><path d="M12 4v11" /><path d="M7 10l5 5 5-5" /><line x1="4" y1="20" x2="20" y2="20" /></>,
   jev: <><path d="M12 3 L4 8 V16 L12 21 L20 16 V8 Z" /><path d="M9 12l2 2 4-4" /></>,
@@ -38,6 +39,7 @@ const ICONS = {
   // 功能图标
   folder: <><path d="M3 7 L9 7 L11 5 L21 5 L21 17 L3 17 Z" /></>,
   refresh: <><path d="M3 12a9 9 0 0115-6.7L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 01-15 6.7L3 16" /><path d="M3 21v-5h5" /></>,
+  export: <><path d="M12 15V4" /><path d="M8 8l4-4 4 4" /><path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" /></>,
   clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
   brand: <><path d="M12 2 L14.5 9 L22 9.5 L16 14.5 L18 22 L12 17.5 L6 22 L8 14.5 L2 9.5 L9.5 9 Z" /></>,
 } as const
@@ -105,6 +107,17 @@ interface ReviewView {
 
 /** 面板内部传递的翻译函数（渲染器按注册的 locale 声明合成的 t 的窄化签名）。 */
 type T = (key: EngramKey, params?: Record<string, unknown>) => string
+
+/** 中英词典（面板级语言覆盖用），与 locales.ts 注册给宿主的两份词典同源。 */
+const DICTS: Record<'zh' | 'en', Record<EngramKey, string>> = { zh, en }
+/** 合成面板级 t：与宿主词典同款 {param} 插值，未知键回退键名本身。 */
+function makeT(lang: 'zh' | 'en'): T {
+  const dict = DICTS[lang]
+  return (key, params) => (dict[key] ?? String(key)).replace(/\{(\w+)\}/g, (raw: string, name: string) => {
+    const value = params?.[name]
+    return value === undefined ? raw : String(value)
+  })
+}
 
 /** kind 数据值（存储层英文枚举，编辑表单下拉的 value 保持英文）。 */
 const KINDS = ['fact', 'preference', 'decision', 'episode', 'skill'] as const
@@ -438,49 +451,6 @@ function matchFollowTarget(list: EngramWorkspacesView | null, workspace: HostWor
   return list.items.find(item => typeof item.path === 'string' && pathKey(item.path) === key)
 }
 
-/**
- * 项目宫殿 chip 的文案与 hover 说明：固定 / 跟随 / 未注册 / 无工作区信息四态。
- * 固定优先判定（host 清单不依赖客户端服务，固定态在缺服务时依然准确）。
- */
-function projectChip(t: T, state: {
-  mode: string
-  available: boolean
-  items: readonly EngramProjectItem[]
-  followed: EngramProjectItem | undefined
-  processDefaultPath: string | null
-}): { label: string; title: string; tone: 'pinned' | 'follow' | 'muted' } {
-  if (state.mode !== 'follow') {
-    const item = state.items.find(entry => entry.dbName === state.mode)
-    if (item === undefined) {
-      return {
-        label: t('projectPinned', { name: `${shortDbName(state.mode)} · ${t('projectUnregistered')}` }),
-        title: state.mode,
-        tone: 'pinned',
-      }
-    }
-    const label = projectLabel(item)
-    return {
-      label: t('projectPinned', { name: label.unregistered ? `${label.name} · ${t('projectUnregistered')}` : label.name }),
-      title: item.path ?? item.dbName,
-      tone: 'pinned',
-    }
-  }
-  if (!state.available) return { label: t('projectNoWorkspace'), title: t('projectFollowHint'), tone: 'muted' }
-  if (state.followed === undefined) {
-    return {
-      label: t('projectPinned', { name: t('projectProcessDefault') }),
-      title: state.processDefaultPath ?? t('projectFollowHint'),
-      tone: 'pinned',
-    }
-  }
-  const label = projectLabel(state.followed)
-  return {
-    label: t('projectFollowNamed', { name: label.unregistered ? `${label.name} · ${t('projectUnregistered')}` : label.name }),
-    title: state.followed.path ?? t('projectFollowHint'),
-    tone: 'follow',
-  }
-}
-
 /** 绝对时间（审计时间线等需要精确时刻的位置）。 */
 function fmtTime(ms: number): string {
   // 时间格式跟随浏览器环境语言（宿主界面语言通常与浏览器一致）。
@@ -498,17 +468,16 @@ function relTime(t: T, ms: number): string {
   return t('timeDaysAgo', { n: Math.floor(hours / 24) })
 }
 
-/** 速览指标：大数 + 小标签 + 可选尾注；secondary 用于并排的次级计数。 */
-function Metric({ label, value, tail, secondary }: {
+/** 速览指标：大数 + 小标签 + 可选尾注。 */
+function Metric({ label, value, tail }: {
   label: string
   value: string | number
   tail?: string | undefined
-  secondary?: boolean
 }): React.ReactElement {
   return (
     <div className={styles.metric}>
       <span className={styles.metricLabel}>{label}</span>
-      <b className={secondary === true ? `${styles.metricValue} ${styles.metricValueSecondary}` : styles.metricValue}>{value}</b>
+      <b className={styles.metricValue}>{value}</b>
       {tail !== undefined && <span className={styles.metricTail}>{tail}</span>}
     </div>
   )
@@ -1589,6 +1558,120 @@ function EntityView({ t, scope, project, reloadTick }: {
   )
 }
 
+/** 信念视图的行（GET /api/engram/observations 的项）。 */
+interface BeliefRow {
+  readonly id: string
+  readonly scope: 'user' | 'project' | 'shared'
+  readonly belief: string
+  readonly status: 'active' | 'stale' | 'refuted'
+  readonly sourceIds: readonly string[]
+  readonly proofCount: number
+  readonly createdAt: number
+  readonly updatedAt: number
+  readonly lastValidatedAt: number
+}
+
+/** 信念状态 → 词典键 + pill 配色类（复用记忆状态色：active 绿 / stale 琥珀 / refuted 红）。 */
+const BELIEF_STATUS: Readonly<Record<'active' | 'stale' | 'refuted', { key: EngramKey; pill: 'statusActive' | 'statusArchived' | 'statusForgotten' }>> = {
+  active: { key: 'beliefStatusActive', pill: 'statusActive' },
+  stale: { key: 'beliefStatusStale', pill: 'statusArchived' },
+  refuted: { key: 'beliefStatusRefuted', pill: 'statusForgotten' },
+}
+
+/**
+ * 信念视图：巩固器（engram_reflect / auto 档）产出的信念列表。
+ * 状态筛选（成立/待复核/已否定）；点「证据」展开证据链——拉原始记忆行只读回查，
+ * 证据已被物理清理时给出「信念保留」提示（信念永不因证据消失而删除）。
+ */
+function BeliefsView({ t, scope, project, reloadTick }: {
+  t: T
+  scope: 'user' | 'project' | 'shared'
+  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
+  project: string | null
+  reloadTick: number
+}): React.ReactElement {
+  const [status, setStatus] = useState<'all' | 'active' | 'stale' | 'refuted'>('all')
+  const [data, setData] = useState<{ items: readonly BeliefRow[]; total: number } | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+  /** 展开证据链的信念 id（null = 全部收起）。 */
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [evidence, setEvidence] = useState<readonly MemoryRow[] | null>(null)
+  const [evidenceBusy, setEvidenceBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const params = new URLSearchParams({ scope })
+    if (status !== 'all') params.set('status', status)
+    api<{ items: readonly BeliefRow[]; total: number }>(`observations?${params.toString()}`)
+      .then(d => { if (!cancelled) { setData(d); setFailed(null) } })
+      .catch((err: Error) => { if (!cancelled) setFailed(err.message) })
+    return () => { cancelled = true }
+  }, [scope, project, status, reloadTick])
+
+  /** 展开/收起证据链：ids 逗号拼 query（上限 50，store 端截断兜底）；切换时清旧证据。 */
+  const toggleEvidence = (row: BeliefRow): void => {
+    if (openId === row.id) { setOpenId(null); setEvidence(null); return }
+    setOpenId(row.id)
+    setEvidence(null)
+    setEvidenceBusy(true)
+    api<{ items: readonly MemoryRow[] }>(`observation-evidence?scope=${scope}&ids=${encodeURIComponent(row.sourceIds.join(','))}`)
+      .then(d => { setEvidence(d.items); setEvidenceBusy(false); setFailed(null) })
+      .catch((err: Error) => { setFailed(err.message); setEvidenceBusy(false) })
+  }
+
+  return (
+    <>
+      <div className={styles.chipRow}>
+        {([
+          ['all', t('beliefStatusAll')],
+          ['active', t('beliefStatusActive')],
+          ['stale', t('beliefStatusStale')],
+          ['refuted', t('beliefStatusRefuted')],
+        ] as const).map(([value, label]) => (
+          <button key={value} type="button" aria-pressed={status === value}
+            className={status === value ? `${styles.chip} ${styles.chipOn}` : styles.chip}
+            onClick={() => { setStatus(value); setOpenId(null); setEvidence(null) }}>
+            {label}
+          </button>
+        ))}
+        {data !== null && <span className={styles.sectionHint}>{t('beliefCount', { n: data.total })}</span>}
+      </div>
+      {failed !== null && <div className={styles.expandLoading}>{t('loadFailed', { msg: failed })}</div>}
+      {data === null && failed === null && <div className={styles.expandLoading}>{t('loading')}</div>}
+      {data !== null && data.items.length === 0 && <div className={styles.empty}>{t('beliefNone')}</div>}
+      {data !== null && data.items.map(row => (
+        <section key={row.id} className={`${styles.panelCard} ${styles.beliefCard}`}>
+          <p className={styles.beliefText}>{row.belief}</p>
+          <div className={styles.beliefMeta}>
+            <span className={`${styles.pill} ${styles[BELIEF_STATUS[row.status].pill]}`}>{t(BELIEF_STATUS[row.status].key)}</span>
+            <button type="button" aria-expanded={openId === row.id}
+              className={openId === row.id ? `${styles.button} ${styles.chipOn}` : styles.button}
+              onClick={() => { toggleEvidence(row) }}>
+              {t('beliefEvidence', { n: row.proofCount })}
+            </button>
+            <time className={styles.beliefTime} title={new Date(row.updatedAt).toLocaleString()}>
+              {fmtTime(row.updatedAt)}
+            </time>
+          </div>
+          {openId === row.id && (
+            <div className={styles.expand}>
+              {evidenceBusy && <div className={styles.expandLoading}>{t('loading')}</div>}
+              {evidence !== null && evidence.length === 0 && <div className={styles.expandLoading}>{t('beliefEvidenceEmpty')}</div>}
+              {evidence !== null && evidence.map(item => (
+                <div key={item.id} className={styles.episodeRow} title={item.id}>
+                  <time className={styles.episodeRowTime}>{fmtTime(item.createdAt)}</time>
+                  <span className={styles.episodeRowKind}>{kindLabel(t, item.kind)}</span>
+                  <span className={styles.episodeRowText}>{item.content}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      ))}
+    </>
+  )
+}
+
 /** 宫殿健康分卡：5 维 0-100 + 总分 + 每维度进度条。 */
 interface HealthReport {
   readonly overall: number
@@ -1675,7 +1758,7 @@ function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string
 }
 
 /**
- * 今日速览：三个主指标（记忆 / 开放 / 清晰度）+ 近 7 天三个次级计数 + 健康分环。
+ * 今日速览：三个主指标（记忆 / 开放 / 清晰度）+ 健康分环；近 7 天四项次级计数与诊脉时间并排下沉底行。
  * 取代原先常驻的九格日报条——主次分层，其余计数下沉到「管家日志」tab。
  */
 function TodayHero({ t, overview, dueCount }: { t: T; overview: ReturnType<typeof usePalaceOverview>; dueCount: number }): React.ReactElement {
@@ -1698,19 +1781,33 @@ function TodayHero({ t, overview, dueCount }: { t: T; overview: ReturnType<typeo
           <Metric label={t('kpiSignal')} value={`${String(Math.round((stats?.signalRatio ?? 0) * 100))}%`}
             tail={t('cardRedacted', { n: stats?.redacted ?? 0 })} />
         </div>
-        <div className={styles.heroSide}>
-          <Metric label={t('teleWrites')} value={counts.writes} secondary />
-          <Metric label={t('teleIngest')} value={counts.ingestRequests} secondary />
-          <Metric label={t('teleConsolidate')} value={counts.consolidations} secondary />
-          {/* 今日到期：复习调度的消费者是 agent，这里只给观测计数（角标/陈展筛选可达）。 */}
-          <Metric label={t('heroDue')} value={dueCount} secondary />
-          <HealthRing score={health?.overall ?? 0} />
-        </div>
+        <HealthRing score={health?.overall ?? 0} />
       </div>
       <div className={styles.heroFoot}>
-        <span className={styles.sectionHint}>
-          {health === null ? t('healthLoading') : t('healthEvaluatedAt', { time: relTime(t, health.evaluatedAt) })}
-        </span>
+        {/* 近 7 天四项次级计数（落成/发掘/整理/今日到期）内联下沉到底行，与诊脉时间同行 */}
+        <div className={styles.heroStats}>
+          <span className={styles.heroStat}>
+            <span className={styles.heroStatLabel}>{t('teleWrites')}</span>
+            <span className={styles.heroStatValue}>{counts.writes}</span>
+          </span>
+          <span className={styles.heroStat}>
+            <span className={styles.heroStatLabel}>{t('teleIngest')}</span>
+            <span className={styles.heroStatValue}>{counts.ingestRequests}</span>
+          </span>
+          <span className={styles.heroStat}>
+            <span className={styles.heroStatLabel}>{t('teleConsolidate')}</span>
+            <span className={styles.heroStatValue}>{counts.consolidations}</span>
+          </span>
+          {/* 今日到期：复习调度的消费者是 agent，这里只给观测计数（角标/陈展筛选可达）；有待忆时数字点亮警示色 */}
+          <span className={styles.heroStat}>
+            <span className={styles.heroStatLabel}>{t('heroDue')}</span>
+            <span className={dueCount > 0 ? `${styles.heroStatValue} ${styles.heroStatDue}` : styles.heroStatValue}>{dueCount}</span>
+          </span>
+          <span className={styles.heroFootDivider} aria-hidden="true" />
+          <span className={styles.sectionHint}>
+            {health === null ? t('healthLoading') : t('healthEvaluatedAt', { time: relTime(t, health.evaluatedAt) })}
+          </span>
+        </div>
         {/* 隐私元数据：叹号图标 + 短标签 + hover/聚焦弹出长说明。 */}
         <span className={styles.telePrivacy} role="note" aria-label={t('telePrivacyHint')} tabIndex={0}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
@@ -2287,8 +2384,9 @@ function ExportMenu({ t, scope, project }: {
   return (
     <div className={styles.exportWrap} ref={wrapRef}>
       <button type="button" className={styles.button} aria-haspopup="menu" aria-expanded={open}
+        title={t('export')} aria-label={t('export')}
         onClick={() => { setOpen(value => !value) }}>
-        {t('export')}
+        <Icon name="export" className={styles.brandIcon} />
         <span className={styles.exportCaret} aria-hidden="true">▾</span>
       </button>
       {open && (
@@ -2314,9 +2412,12 @@ export type EngramSectionProps = PropsLocale<typeof NS> & {
   readonly sessions?: SessionsLike | undefined
 }
 
-/** 设置页「记忆库」section 主组件（t 由渲染器按 locale: NS 声明合成）。 */
-export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): React.ReactElement {
+/** 设置页「记忆库」section 主组件（t 由渲染器按 locale: NS 声明合成；面板级语言覆盖在组件内 shadow 之）。 */
+export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionProps): React.ReactElement {
   const toast = useToast()
+  /** 面板级语言覆盖（持久化）：默认跟随宿主（采样宿主 t 输出探测词典语言），Header「中 | EN」段控强制覆盖。 */
+  const [lang, setLang] = usePersistedState<'zh' | 'en'>('library.lang', hostT('scopeUser') === zh.scopeUser ? 'zh' : 'en', ['zh', 'en'])
+  const t = useMemo<T>(() => makeT(lang), [lang])
   /** 全局 scope（持久化）：Header 三宫格是唯一切换器，驱动今日速览、各视图卡片、陈展列表与导出。 */
   const [scope, setScope] = usePersistedState<'user' | 'project' | 'shared'>('library.scope', 'user', ['user', 'project', 'shared'])
   /** 库顶 status / kind / q 过滤器（持久化）。 */
@@ -2335,7 +2436,7 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
   const [offset, setOffset] = useState(0)
   const [list, setList] = useState<ListResult | null>(null)
   const [error, setError] = useState<string | null>(null)
-  /** 行内展开态：互斥的唯一展开条目（review 或 edit）。 */
+  /** 行内展开态：互斥的唯一展开条目（review 或 edit）。浮层由 .drawerLayer sticky 钉在滚动区可见顶部，无需滚动定位。 */
   const [expanded, setExpanded] = useState<{ kind: 'review' | 'edit'; record: MemoryRow } | null>(null)
   const [reloadTick, setReloadTick] = useState(0)
   /** 批量选择：条目 id 集合（scope/过滤/翻页/搜索变更时清空）。 */
@@ -2343,7 +2444,7 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
   /** 批量遗忘的两段式确认。 */
   const [confirmForget, setConfirmForget] = useState(false)
   /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / episodes 往事时间线 / entities 实体词典 / log 管家日志 / backfill 历史回填 / jev Jev 裁决配置。 */
-  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'episodes' | 'entities' | 'log' | 'backfill' | 'jev'>('today')
+  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'episodes' | 'entities' | 'beliefs' | 'log' | 'backfill' | 'jev'>('today')
   /** 项目宫殿来源（持久化）：'follow' = 跟随 GUI 当前工作区；其它值 = 固定的 host 分库 dbName。 */
   const [projectMode, setProjectMode] = usePersistedString('library.project', 'follow')
   /** GUI 当前工作区（与侧边栏同一判定）与 host 的项目宫殿清单。 */
@@ -2366,14 +2467,6 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
   const projectSelector = projectMode === 'follow' ? followedProject?.dbName ?? null : projectMode
   // 渲染期挂到 api() 的注入点：父先渲染，保证子组件 effect 的首批请求已带上选择器。
   activeProjectSelector = projectSelector
-  /** Header chip 的四态文案（固定 / 跟随 / 未注册 / 无工作区信息）。 */
-  const chip = projectChip(t, {
-    mode: projectMode,
-    available: currentWorkspace.available,
-    items: workspaceList?.items ?? [],
-    followed: followedProject,
-    processDefaultPath: workspaceList?.processDefault?.path ?? null,
-  })
   /** 固定的 dbName 不在 host 清单里（工作区被删除 / 只从会话 cwd 见过）：下拉补一项避免选中态丢失。 */
   const pinnedMissing = projectMode !== 'follow'
     && !(workspaceList?.items ?? []).some(item => item.dbName === projectMode)
@@ -2536,23 +2629,41 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
 
   return (
     <div className={styles.panel}>
-      {/* 角落暖色渐变水印：amber→rose conic 模糊圆，只露右上角（克制不喧宾夺主） */}
-      <div className={styles.brandWatermark} aria-hidden="true" />
-      {/* Header：去掉 Logo + 标题 + 副标题，改成「角落签名 + 功能栏」。
-          左：品牌色块 + 版本号芯片 + 当前 scope 微芯片（签名位）；
-          右：scope 三宫格 + 今日到期角标 + 重访 + 导出。 */}
+      {/* 对角双光斑水印由 .panel::before/::after 伪元素绘制，不再占用子元素名额。 */}
+      {/* Drawer：sticky 层必须是面板第一个子元素——它位于面板顶部，向下滚动时被滚出头顶即被 sticky
+          钉在宿主滚动区可见顶部；放末尾则永远在视口下方、sticky 永不生效（已踩坑）。浮层随视野出现，页面零滚动。 */}
+      {expanded !== null && (
+        <>
+          <div className={styles.drawerScrim} onClick={() => { setExpanded(null) }} />
+          <div className={styles.drawerLayer}>
+            <aside className={styles.drawer} role="dialog" aria-label={t('drawerTitle')}>
+              <header className={styles.drawerHead}>
+                <div className={styles.drawerTitle}>
+                  <h3>{t('drawerTitle')}</h3>
+                  <span title={expanded.record.id}>
+                    {`#${expanded.record.id.slice(0, 8)}…`}
+                  </span>
+                </div>
+                <button type="button" className={styles.drawerClose} aria-label={t('drawerClose')}
+                  onClick={() => { setExpanded(null) }}>
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                    <path d="M2 2 L12 12 M12 2 L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                  </svg>
+                </button>
+              </header>
+              <div className={styles.drawerBody}>
+                {expanded.kind === 'review'
+                  ? <ReviewBody t={t} recordId={expanded.record.id} scope={expanded.record.scope} project={projectSelector} />
+                  : <EditForm t={t} record={expanded.record} onClose={() => { setExpanded(null) }}
+                      onSaved={() => { setExpanded(null); reload() }} toast={toast} />}
+              </div>
+            </aside>
+          </div>
+        </>
+      )}
+      {/* Header：单行两端对齐，按设置弹窗 ~600px 内容区设计，无任何品牌装饰。
+          左：scope 三宫格（当前 scope 在此高亮）；右：今日到期角标 + 重访 + 导出。 */}
       <div className={styles.header}>
-        <div className={styles.signature}>
-          {/* 22×22 渐变方块 brandMark（替代原宫殿 Logo），用品牌渐变填充 + 玫瑰色微光 */}
-          <span className={styles.brandMark} aria-hidden="true" />
-          {/* 版本号芯片：amber 染色的等宽字体（科技感签名） */}
-          <span className={styles.versionChip}>v0.7.14</span>
-          {/* 当前 scope 微芯片：图标 + 名称 */}
-          <span className={styles.scopeBadge}>
-            <Icon name={scope === 'user' ? 'user' : scope === 'project' ? 'project' : 'shared'} className={styles.scopeIcon} />
-            <strong>{t(SCOPE_KEY[scope])}</strong>
-          </span>
-        </div>
         <div className={styles.headerActions}>
           <div className={`${styles.segGroup} ${styles.segScope}`}>
             <span className={styles.segIndicator}
@@ -2566,32 +2677,8 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
               </button>
             ))}
           </div>
-          {/* 今日待回忆角标：钟形图标 + 数字 */}
-          {dueCount > 0 && (
-            <button type="button" className={styles.dueBadge}
-              title={t('dueBadgeLabel', { n: dueCount })} aria-label={t('dueBadgeLabel', { n: dueCount })}
-              onClick={goToDue}>
-              <Icon name="clock" className={styles.dueIcon} />
-              {dueCount}
-            </button>
-          )}
-          <button type="button" className={styles.button} onClick={() => { reload(); refreshDue() }}>
-            <Icon name="refresh" className={styles.brandIcon} />
-            {t('refresh')}
-          </button>
-          <ExportMenu t={t} scope={scope} project={projectSelector} />
-        </div>
-        {/* 项目宫殿来源：独占一行（flex-basis: 100%），紧贴作用域三宫格下方、Tab 栏之上——
-            只在 project 作用域显示（私人/共享宫殿没有工作区概念）。chip 显示当前落在哪个工作区分库
-            （跟随 / 固定 / 未注册 / 无工作区信息）、hover 给完整路径，旁边下拉可临时固定到别的项目库。 */}
-        {scope === 'project' && (
-          <div className={styles.wsBar}>
-            <span
-              className={`${styles.wsChip}${chip.tone === 'follow' ? ` ${styles.wsFollow}` : chip.tone === 'muted' ? ` ${styles.wsMuted}` : ''}`}
-              title={chip.title}>
-              <Icon name="folder" className={styles.wsChipIcon} />
-              {chip.label}
-            </span>
+          {/* 项目宫殿工作区下拉：紧贴三宫格同行（仅 project 作用域），替代旧版独占一行的 chip + 下拉 */}
+          {scope === 'project' && (
             <select className={`${styles.input} ${styles.wsSelect}`} value={projectMode}
               aria-label={t('projectSwitch')} title={t('projectSwitch')}
               onChange={event => { setProjectMode(event.target.value); setOffset(0); setExpanded(null); clearSelection() }}>
@@ -2603,8 +2690,31 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
                 <option value={projectMode}>{`${shortDbName(projectMode)} · ${t('projectUnregistered')}`}</option>
               )}
             </select>
+          )}
+        </div>
+        <div className={styles.headerActions}>
+          {/* 今日待回忆角标：钟形图标 + 数字 */}
+          {dueCount > 0 && (
+            <button type="button" className={styles.dueBadge}
+              title={t('dueBadgeLabel', { n: dueCount })} aria-label={t('dueBadgeLabel', { n: dueCount })}
+              onClick={goToDue}>
+              <Icon name="clock" className={styles.dueIcon} />
+              {dueCount}
+            </button>
+          )}
+          <button type="button" className={styles.button} title={t('refresh')} aria-label={t('refresh')}
+            onClick={() => { reload(); refreshDue() }}>
+            <Icon name="refresh" className={styles.brandIcon} />
+          </button>
+          {/* 语言段控：面板级中英覆盖，与宿主语言设置相互独立；选择持久化在本机 */}
+          <div className={styles.langSeg} role="group" aria-label="Language">
+            <button type="button" className={lang === 'zh' ? `${styles.langOpt} ${styles.langOn}` : styles.langOpt}
+              onClick={() => { setLang('zh') }}>中</button>
+            <button type="button" className={lang === 'en' ? `${styles.langOpt} ${styles.langOn}` : styles.langOpt}
+              onClick={() => { setLang('en') }}>EN</button>
           </div>
-        )}
+          <ExportMenu t={t} scope={scope} project={projectSelector} />
+        </div>
       </div>
 
       {/* 顶部 Tab Bar：八个视图，每个 Tab 项前置线性图标；当前项用 amber→rose 渐变彩条作下划线。
@@ -2623,7 +2733,6 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
           onClick={() => { setActiveTab('library') }}>
           <Icon name="library" className={styles.tabIcon} />
           {t('tabLibrary')}
-          <small>{t('tabLibraryCount', { n: list?.total ?? 0 })}</small>
         </button>
         <button type="button" role="tab"
           className={activeTab === 'corridor' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
@@ -2645,6 +2754,13 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
           onClick={() => { setActiveTab('entities') }}>
           <Icon name="entities" className={styles.tabIcon} />
           {t('tabEntities')}
+        </button>
+        <button type="button" role="tab"
+          className={activeTab === 'beliefs' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
+          aria-selected={activeTab === 'beliefs'}
+          onClick={() => { setActiveTab('beliefs') }}>
+          <Icon name="beliefs" className={styles.tabIcon} />
+          {t('tabBeliefs')}
         </button>
         <button type="button" role="tab"
           className={activeTab === 'log' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
@@ -2920,6 +3036,18 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
         </div>
       )}
 
+      {activeTab === 'beliefs' && (
+        <div className={styles.tabPanel}>
+          <section className={styles.section}>
+            <div className={styles.sectionHead}>
+              <h4 className={styles.sectionTitle}>{t('tabBeliefs')}</h4>
+              <span className={styles.sectionHint}>{t('beliefHint')}</span>
+            </div>
+            <BeliefsView t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
+          </section>
+        </div>
+      )}
+
       {activeTab === 'log' && (
         <div className={styles.tabPanel}>
           <LogPanel t={t} telemetry={overview.telemetry} project={projectSelector} />
@@ -2957,34 +3085,6 @@ export function EngramSection({ t, workspaces, sessions }: EngramSectionProps): 
         </div>
       )}
 
-      {/* Drawer：行内展开升级为右滑入聚焦态，避免列表被展开压塌。 */}
-      {expanded !== null && (
-        <>
-          <div className={styles.drawerScrim} onClick={() => { setExpanded(null) }} />
-          <aside className={styles.drawer} role="dialog" aria-label={t('drawerTitle')}>
-            <header className={styles.drawerHead}>
-              <div className={styles.drawerTitle}>
-                <h3>{t('drawerTitle')}</h3>
-                <span title={expanded.record.id}>
-                  {`#${expanded.record.id.slice(0, 8)}…`}
-                </span>
-              </div>
-              <button type="button" className={styles.drawerClose} aria-label={t('drawerClose')}
-                onClick={() => { setExpanded(null) }}>
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                  <path d="M2 2 L12 12 M12 2 L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-                </svg>
-              </button>
-            </header>
-            <div className={styles.drawerBody}>
-              {expanded.kind === 'review'
-                ? <ReviewBody t={t} recordId={expanded.record.id} scope={expanded.record.scope} project={projectSelector} />
-                : <EditForm t={t} record={expanded.record} onClose={() => { setExpanded(null) }}
-                    onSaved={() => { setExpanded(null); reload() }} toast={toast} />}
-            </div>
-          </aside>
-        </>
-      )}
       {/* Toast 叠层（右上角，position:fixed 脱离 panel 容器）。 */}
       {toast.viewport}
     </div>

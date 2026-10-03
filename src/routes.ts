@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, ListFilter, ReviewGrade } from './types.ts'
+import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, ListFilter, ObservationStatus, ReviewGrade } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
@@ -319,6 +319,28 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 createdAt: hit.record.createdAt,
               })),
             })
+            return
+          }
+          if (req.method === 'GET' && route === 'observations') {
+            // 巩固信念列表：面板信念页。status 缺省全部；按证据数降序（store 默认排序）。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const status = url.searchParams.get('status')
+            const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? 100) || 100))
+            const items = await (await storeFor(scope)).listObservations({
+              ...(status !== null && status !== '' && status !== 'all' ? { status: status as ObservationStatus } : {}),
+              limit,
+            })
+            json(res, 200, { scope, items, total: items.length })
+            return
+          }
+          if (req.method === 'GET' && route === 'observation-evidence') {
+            // 信念证据链回查：sourceIds → 原始记忆行（只读，含已归档——证据链必须可回溯到任何历史状态）。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const ids = (url.searchParams.get('ids') ?? '')
+              .split(',').map(part => part.trim()).filter(part => part !== '').slice(0, 50)
+            if (ids.length === 0) { json(res, 400, { error: 'ids required' }); return }
+            const items = await (await storeFor(scope)).getMany(ids as never)
+            json(res, 200, { scope, items })
             return
           }
           if (req.method === 'GET' && route === 'entities') {
