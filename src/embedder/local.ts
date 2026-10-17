@@ -2,9 +2,9 @@
  * transformers.js 本地嵌入实现：量化权重（q8），离线推理。模型首次使用需联网
  * 下载到 cacheDir；之后完全离线，数据不出机。
  *
- * 默认模型仍是 Xenova/bge-small-zh-v1.5（中文 bge 小模型，512 维），但模型选择是
- * 部署属性而不是代码属性——处理俄语文本要用多语言模型，因此模型标识与池化方式
- * 都来自配置。
+ * 默认模型是多语言 MiniLM（384 维）：宫殿里存的常是俄语、英语与中文混排的文字，
+ * 中文专用小模型在这类文本上明显掉分。模型标识与池化方式都来自配置——换模型是
+ * 改配置，不是改代码；但换模型必须重建库中向量（维度不符会被 store 拒绝）。
  * @module @kenz1117/dsh-engram/embedder/local
  */
 
@@ -13,8 +13,13 @@ import { message } from '../i18n/messages.ts'
 import { EngramError } from '../types.ts'
 import type { EngramEmbedder } from './interface.ts'
 
-/** 模型标识（bge 中文小模型，512 维输出）；保留为默认值以兼容旧配置。 */
-export const ENGRAM_MODEL_ID = 'Xenova/bge-small-zh-v1.5'
+/**
+ * 默认模型标识：多语言 MiniLM，384 维。
+ *
+ * 旧默认值 Xenova/bge-small-zh-v1.5（512 维）仍是合法取值，写进配置即可回到它；
+ * 但两套向量不可比，切换时要么把模型改回去，要么用新模型重建库中向量。
+ */
+export const ENGRAM_MODEL_ID = 'Xenova/paraphrase-multilingual-MiniLM-L12-v2'
 
 /**
  * 把 token 归并成单个向量的方式。

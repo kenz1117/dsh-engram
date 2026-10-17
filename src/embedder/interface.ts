@@ -8,7 +8,8 @@ export interface EngramEmbedder {
   /**
    * 批量嵌入；实现可内部分批。
    * @param texts - 待嵌入文本列表。
-   * @returns 与输入同序的归一化向量（bge-small-zh-v1.5 为 512 维）。
+   * @returns 与输入同序的归一化向量；维度由模型决定，不再是常量
+   *   （默认多语言 MiniLM 为 384 维，中文 bge-small-zh 为 512 维）。
    */
   embed(texts: readonly string[]): Promise<Float32Array[]>
   /** 模型标识（写入诊断）。 */

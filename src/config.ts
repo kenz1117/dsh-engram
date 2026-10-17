@@ -36,7 +36,7 @@ export type EmbedderPooling = 'mean' | 'cls'
 export interface EmbedderConfig {
   /** 后端；默认 local——旧版本的行为原样保留。 */
   kind?: EmbedderKind
-  /** local：transformers.js 模型标识；默认 Xenova/bge-small-zh-v1.5。 */
+  /** local：transformers.js 模型标识；默认 Xenova/paraphrase-multilingual-MiniLM-L12-v2（384 维）。 */
   localModel?: string
   /** local：池化方式；默认 mean。 */
   localPooling?: EmbedderPooling

@@ -9,12 +9,12 @@ import { createLocalEmbedder } from '../src/embedder/local.ts'
 const endpoint = process.env.HF_ENDPOINT ?? 'https://huggingface.co'
 const shouldRun = process.env.ENGRAM_E2E === '1'
 const reachable = shouldRun
-  && await fetch(`${endpoint}/Xenova/bge-small-zh-v1.5/resolve/main/config.json`, { signal: AbortSignal.timeout(8000) })
+  && await fetch(`${endpoint}/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/config.json`, { signal: AbortSignal.timeout(8000) })
     .then(response => response.ok)
     .catch(() => false)
 
 describe.runIf(reachable)('createLocalEmbedder (e2e)', () => {
-  it('产出 512 维归一化向量，语义相近句子相似度更高', async () => {
+  it('默认模型产出 384 维归一化向量，语义相近句子相似度更高', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'engram-model-'))
     const embedder = await createLocalEmbedder(dir, process.env.HF_ENDPOINT)
     const [first, second, third] = await embedder.embed([
@@ -22,7 +22,7 @@ describe.runIf(reachable)('createLocalEmbedder (e2e)', () => {
       '天气晴朗，适合出门散步',
       '正弦函数的导数是余弦函数',
     ])
-    expect(first!.length).toBe(512)
+    expect(first!.length).toBe(384)
     const norm = Math.sqrt(first!.reduce((sum, v) => sum + v * v, 0))
     expect(norm).toBeCloseTo(1, 1)
     const dot = (a: Float32Array, b: Float32Array): number =>
