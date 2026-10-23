@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh-engram · Memory Palace — local-first long-term memory for DeepSeek Harness</title>
+<meta name="description" content="Local-first cross-session long-term memory for DeepSeek Harness: dual-scope SQLite stores, hybrid FTS5 + local-vector retrieval, an evidence gate, provenance audit and SM-2 spaced repetition. 22 narrow tools, zero external services.">
+<link rel="icon" href="https://raw.githubusercontent.com/kenz1117/dsh-engram/main/icon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #0f131b;
+    --bg-soft: #151a24;
+    --line: rgba(255,255,255,0.10);
+    --fg: #e9edf5;
+    --muted: #9aa5b6;
+    --gold: #e8a33c;
+    --gold-dim: #d4a017;
+    --max: 1040px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1000px 600px at 12% -5%, rgba(212,160,23,0.13), transparent 60%),
+      radial-gradient(900px 560px at 95% 12%, rgba(107,150,255,0.11), transparent 60%),
+      var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--gold); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+  header { padding: 72px 0 28px; }
+  .eyebrow {
+    font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--gold-dim); font-weight: 700; margin: 0 0 18px;
+  }
+  h1 { font-size: clamp(34px, 6vw, 60px); line-height: 1.08; letter-spacing: -0.02em; margin: 0 0 18px; font-weight: 800; }
+  h1 .accent { color: var(--gold); }
+  .lede { font-size: clamp(17px, 2.2vw, 21px); color: var(--muted); max-width: 760px; margin: 0 0 30px; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 18px; }
+  code.cmd {
+    display: block; background: var(--bg-soft); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px 18px; font-size: 15px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--fg); overflow-x: auto; white-space: nowrap;
+  }
+  .btn {
+    display: inline-block; padding: 11px 20px; border-radius: 999px;
+    border: 1px solid var(--line); background: rgba(255,255,255,0.05);
+    color: var(--fg); font-size: 15px; font-weight: 600;
+  }
+  .btn.primary { background: var(--gold); border-color: var(--gold); color: #17120a; }
+  .btn:hover { text-decoration: none; border-color: var(--gold); }
+  .chips { display: flex; gap: 10px; flex-wrap: wrap; margin: 22px 0 0; padding: 0; list-style: none; }
+  .chips li {
+    font-size: 14px; padding: 7px 15px; border-radius: 999px;
+    border: 1px solid var(--line); background: rgba(255,255,255,0.04); color: #c8d0de;
+  }
+  .chips li b { color: var(--gold); }
+  section { padding: 54px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: clamp(22px, 3vw, 30px); margin: 0 0 8px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 28px; font-size: 16px; }
+  .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); }
+  .card {
+    background: var(--bg-soft); border: 1px solid var(--line); border-radius: 14px; padding: 22px;
+  }
+  .card h3 { margin: 0 0 8px; font-size: 17px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td.us { color: var(--fg); background: rgba(232,163,60,0.07); font-weight: 600; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; }
+  .shots { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .shot { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--bg-soft); }
+  .shot img { width: 100%; display: block; }
+  .shot p { margin: 0; padding: 12px 16px; font-size: 14px; color: var(--muted); }
+  .flow {
+    background: var(--bg-soft); border: 1px solid var(--line); border-radius: 14px;
+    padding: 22px; overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px; line-height: 1.5; color: #cbd3e0; white-space: pre;
+  }
+  footer { padding: 40px 0 64px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); }
+  footer a { color: var(--muted); text-decoration: underline; }
+  .zh { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <p class="eyebrow">DeepSeek Harness Plugin · 记忆宫殿</p>
+  <h1>Local-first long-term memory.<br><span class="accent">For your coding agent.</span></h1>
+  <p class="lede">
+    Cross-session long-term memory on plain local SQLite. No external service, no API key, no Docker —
+    one command and it works. Hybrid FTS5 + local-vector retrieval, an evidence gate, full provenance audit,
+    and SM-2 spaced repetition, behind 22 narrow-parameter tools and a zh / en / ru panel.
+  </p>
+  <code class="cmd">dsh plugin --profile web add @kenz1117/dsh-engram</code>
+  <div class="cta" style="margin-top:18px">
+    <a class="btn primary" href="https://github.com/kenz1117/dsh-engram">View on GitHub</a>
+    <a class="btn" href="https://www.npmjs.com/package/@kenz1117/dsh-engram">npm</a>
+    <a class="btn" href="https://awesome-dsh-plugin.com/p/kenz1117/dsh-engram/">DSH plugin store</a>
+    <a class="btn" href="https://github.com/kenz1117/dsh-engram/blob/main/README.md">中文 README</a>
+  </div>
+  <ul class="chips">
+    <li><b>22</b> narrow tools</li>
+    <li><b>0</b> external services</li>
+    <li>FTS5 + local vectors, RRF fusion</li>
+    <li>Evidence gate</li>
+    <li>Provenance audit</li>
+    <li>SM-2 spaced repetition</li>
+    <li>zh / en / ru</li>
+  </ul>
+</header>
+
+<section class="wrap">
+  <h2>Why this one</h2>
+  <p class="sub">Most memory plugins want you to stand up infrastructure first. Three mainstream shapes, side by side.</p>
+  <div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th></th><th>dsh-engram</th><th>Server-based<br><span style="text-transform:none">(Postgres / pgvector / Milvus / Python service)</span></th><th>File-based<br><span style="text-transform:none">(plain Markdown memory)</span></th></tr>
+    </thead>
+    <tbody>
+      <tr><th>Setup</th><td class="us">One npm command, works immediately</td><td>Docker + database + vector store + migrations</td><td>One npm command</td></tr>
+      <tr><th>External deps</th><td class="us">None — offline embeddings, degrades to keyword-only</td><td>Required, usually plus an LLM API key</td><td>None</td></tr>
+      <tr><th>Agent tools</th><td class="us">22 — save, search, facts, timelines, audit, export, distill, beliefs, review</td><td>Usually 1–3 (search only)</td><td>Usually 0–1</td></tr>
+      <tr><th>Evidence gate</th><td class="us">Yes — enforced in code, three conditions required</td><td>Generally none</td><td>Generally none</td></tr>
+      <tr><th>Audit</th><td class="us">Session/turn/seq provenance, supersede chains, contradiction edges, full op_log</td><td>Usually logs only</td><td>None</td></tr>
+      <tr><th>Spaced repetition</th><td class="us">SM-2 — cues only, never the body</td><td>None</td><td>None</td></tr>
+      <tr><th>Injection safety</th><td class="us">Protocol tags, redaction on write, capture placeholders</td><td>None</td><td>None</td></tr>
+      <tr><th>Portability</th><td class="us">Markdown / JSON export + Obsidian / Logseq mirror</td><td>Varies</td><td>It is already files</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>How a memory flows</h2>
+  <p class="sub">Capture, retrieval, adjudication, consolidation — all local, all auditable.</p>
+  <div class="flow">  session log --+
+               +--&gt; capture / save --&gt; four dispositions: accept · merge · defer · drop
+  agent call+
+                                            |
+                                            SQLite dual store: user.db (follows you) + project-&lt;hash&gt;.db (follows the repo)
+                                            |
+      +----------------------+----------------------+----------------------+
+      v                          v                        v
+      FTS5 keyword lane          local vector lane (RRF)  one-hop relation edges
+      +----------------------+----------------------+----------------------+
+                                            v
+                                            engram_search --&gt; hits carry id= / ref= and a batch id
+                                            v
+                                            engram_assess (evidence gate): not enough -&gt; keep searching
+                                            v
+                                            profile injection &lt;-- beliefs · facts · entities &lt;-- distill · decay · SM-2</div>
+</section>
+
+<section class="wrap">
+  <h2>What you get</h2>
+  <p class="sub">Six things no other memory plugin in the store does at once.</p>
+  <div class="grid">
+    <div class="card"><h3>Evidence gate</h3><p>Search hits only mean “relevant”, not “enough to answer”. <code>engram_assess</code> is enforced in code: the claim, a valid ref from the same batch, and <code>nextStrategy=answer</code> must all hold.</p></div>
+    <div class="card"><h3>Spaced repetition</h3><p><code>engram_review_queue</code> hands out coordinates and placard cues but never the body — recall first, reveal later, then self-grade to drive the SM-2 schedule.</p></div>
+    <div class="card"><h3>Full provenance</h3><p>Every memory records its source session, turn and event seq. Supersede chains, contradiction edges and a complete <code>op_log</code> are queryable.</p></div>
+    <div class="card"><h3>Two scopes</h3><p><code>user.db</code> follows you; <code>project-&lt;hash&gt;.db</code> follows the repository. Preferences travel with the person, conventions travel with the repo.</p></div>
+    <div class="card"><h3>Injection-safe</h3><p>Protocol tags on every recall, redaction of keys and PII before write, and capture placeholders that break the self-reinforcement echo loop.</p></div>
+    <div class="card"><h3>Portable</h3><p>Export Markdown or JSON, with a redacted view safe to share — or mirror to an Obsidian / Logseq friendly directory of linked notes.</p></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>The panel</h2>
+  <p class="sub">Nine views in the sidebar: today, library, corridor, spiral, episodes, entities, beliefs, log, ops.</p>
+  <div class="shots">
+    <div class="shot">
+      <img src="https://raw.githubusercontent.com/kenz1117/dsh-engram/main/docs/screenshots/today.png" alt="Today view: KPI hero, activity heatmap, room directory" loading="lazy">
+      <p><b>Today</b> — KPI hero, six-month activity heatmap, room directory, refurb list.</p>
+    </div>
+    <div class="shot">
+      <img src="https://raw.githubusercontent.com/kenz1117/dsh-engram/main/docs/screenshots/refurb-fullwidth.png" alt="Refurb list: full-width, complete texts, in-place actions" loading="lazy">
+      <p><b>Refurb</b> — every suggestion shows its full reasoning and the complete memory text, read and acted on in place.</p>
+    </div>
+    <div class="shot">
+      <img src="https://raw.githubusercontent.com/kenz1117/dsh-engram/main/docs/screenshots/library.png" alt="Library view: filters, sorting, inline details" loading="lazy">
+      <p><b>Library</b> — the whole store: filter by room, state and content; sort by time or by tour route.</p>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap">
+  <p>
+    MIT licensed · <a href="https://github.com/kenz1117/dsh-engram">Source</a> ·
+    <a href="https://github.com/kenz1117/dsh-engram/blob/main/CHANGELOG.md">Changelog</a> ·
+    <a href="https://github.com/kenz1117/dsh-engram/blob/main/CONTRIBUTING.md">Contributing</a> ·
+    <a href="https://awesome-dsh-plugin.com/p/kenz1117/dsh-engram/">Plugin store</a>
+  </p>
+  <p class="zh">中文说明与完整文档见 <a href="https://github.com/kenz1117/dsh-engram/blob/main/README.md">README.md</a>。</p>
+</footer>
+
+</body>
+</html>

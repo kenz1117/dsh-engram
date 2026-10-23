@@ -4,11 +4,14 @@
 
 # dsh-engram · Memory Palace
 
-<p align="center">Cross-session long-term memory for DeepSeek Harness — it puts the memory palace's <b>information architecture</b> (not its neuroscience metaphor) into the agent: <b>location as index</b> (every memory pinned to a <code>room#slot</code> coordinate), <b>fixed route as order</b> (the tour route is append-only), <b>skeleton reused long-term</b> (a topic always lands in the same room and index), and <b>every marker unique</b> (placard rule: unique · distinctive · dated). Paired with spaced-repetition retrieval practice (cues only, never the body) and a knowledge flywheel (capture → reinforce → distill → decay). Pure TypeScript: no external processes, no Python dependency.</p>
+<p align="center"><b>Local-first long-term memory for your coding agent.</b><br>
+Cross-session long-term memory on plain local SQLite: <b>no external service, no API key, no Docker</b> — one command and it works.<br>
+22 narrow-parameter tools · hybrid retrieval (FTS5 + local vectors, RRF) · an evidence gate · full provenance audit · SM-2 spaced-repetition review · a zh / en / ru panel.</p>
 
 <p align="center">
   <a href="https://github.com/kenz1117/dsh-engram/blob/main/LICENSE"><img alt="GitHub license" src="https://img.shields.io/github/license/kenz1117/dsh-engram"></a>
   <a href="https://github.com/kenz1117/dsh-engram"><img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/kenz1117/dsh-engram"></a>
+  <a href="https://github.com/kenz1117/dsh-engram/actions/workflows/checks.yml"><img alt="CI" src="https://github.com/kenz1117/dsh-engram/actions/workflows/checks.yml/badge.svg"></a>
   <a href="https://www.npmjs.com/package/@kenz1117/dsh-engram"><img alt="npm version" src="https://img.shields.io/npm/v/@kenz1117/dsh-engram"></a>
   <a href="https://www.npmjs.com/package/@kenz1117/dsh-engram"><img alt="npm downloads" src="https://img.shields.io/npm/dm/@kenz1117/dsh-engram"></a>
   <a href="https://github.com/kenz1117/dsh-engram/issues"><img alt="GitHub issues" src="https://img.shields.io/github/issues/kenz1117/dsh-engram"></a>
@@ -20,6 +23,28 @@
 
 </div>
 
+<details>
+<summary><b>Contents</b></summary>
+
+- [Quick Start](#quick-start)
+- [Why this one](#why-this-one)
+- [How a memory flows](#how-a-memory-flows)
+- [Screenshots](#screenshots)
+- [Palace Structure: the Directory Is the Room, the Path Is the Route](#palace-structure-the-directory-is-the-room-the-path-is-the-route)
+- [Features](#features)
+- [Tools (22, narrow parameters)](#tools-22-narrow-parameters)
+- [Configuration](#configuration)
+- [How It Works](#how-it-works)
+- [Web Management Panel](#web-management-panel)
+- [Development](#development)
+- [Model Experience](#model-experience)
+- [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
+- [Roadmap](#roadmap)
+- [Acknowledgements](#acknowledgements)
+- [License](#license)
+
+</details>
+
 ---
 
 ## Quick Start
@@ -30,6 +55,53 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 
 Zero configuration after install (stores and model cache default to `~/.dsh/engram`; profile injection on, automatic capture off).
 
+**Let your agent install it** — paste this into any agent:
+
+```text
+Run this command to install dsh-engram, a cross-session long-term memory plugin for DeepSeek Harness:
+  dsh plugin --profile web add @kenz1117/dsh-engram
+Then confirm the "Memory Palace" entry appears in the plugin center sidebar, and open a new session to
+run engram_stats and confirm 22 engram_* tools are registered.
+```
+
+## Why this one
+
+Plenty of memory plugins exist, but most want you to stand up infrastructure first. Three mainstream shapes, side by side (compared against each project's public README and npm dependency declarations):
+
+| | **dsh-engram** | Server-based (Postgres/pgvector/Milvus/Python service) | File-based (plain Markdown memory) |
+|---|---|---|---|
+| Setup cost | One npm command, **works immediately** | Docker + database + vector store + migrations | One npm command |
+| External dependencies | **None**: embeddings run offline and degrade to keyword-only with an explicit marker | Required, usually plus an LLM API key | None |
+| Agent-facing tools | **22 narrow-parameter tools** across the whole lifecycle — save, search, fact chains, timelines, audit, export, distill, beliefs, review | Usually 1–3 (search only) | Usually 0–1 |
+| Evidence gate | **Yes**: `engram_assess` is enforced in code — "claims sufficient" + at least one valid ref from this batch + `nextStrategy=answer` | Generally none | Generally none |
+| Audit | Session/turn/seq provenance, supersede chains, contradiction edges, full `op_log` | Usually logs only | None |
+| Review | **SM-2 spaced repetition**: coordinates and placard cues only, never the body — recall first, reveal later | None | None |
+| Injection safety | Protocol tags block prompt injection, redaction on write, capture placeholders break self-reinforcement loops | None | None |
+| Portability | Markdown / JSON export + Obsidian/Logseq-friendly mirror | Varies | It is already files |
+| UI languages | zh / en / ru | Varies | Usually one |
+
+In one line: **we make memory a local library you install once, not a service you operate.**
+
+## How a memory flows
+
+```
+  session log --+
+               +--> capture / save --> four dispositions: accept · merge · defer · drop
+  agent call+
+                                            |
+                                            SQLite dual store: user.db (follows you) + project-<hash>.db (follows the repo)
+                                            |
+      +----------------------+----------------------+----------------------+
+      v                          v                        v
+      FTS5 keyword lane          local vector lane (RRF)  one-hop relation edges
+      +----------------------+----------------------+----------------------+
+                                            v
+                                            engram_search --> hits carry id= / ref= and a batch id
+                                            v
+                                            engram_assess (evidence gate): not enough -> keep searching
+                                            v
+                                            profile injection <-- beliefs · facts · entities <-- distill · decay · SM-2
+```
 
 ## Screenshots
 
@@ -46,6 +118,8 @@ Zero configuration after install (stores and model cache default to `~/.dsh/engr
 <p align="center"><img src="docs/screenshots/library.png" width="820" alt="Library view: filters, sorting, inline details"></p>
 
 ## Palace Structure: the Directory Is the Room, the Path Is the Route
+
+A cross-session long-term memory plugin for DeepSeek Harness — it puts the memory palace's <b>information architecture</b> (not its neuroscience metaphor) into the agent: <b>location as index</b> (every memory pinned to a <code>room#slot</code> coordinate), <b>fixed route as order</b> (the tour route is append-only), <b>skeleton reused long-term</b> (a topic always lands in the same room and index), and <b>every marker unique</b> (placard rule: unique · distinctive · dated). Paired with spaced-repetition retrieval practice (cues only, never the body) and a knowledge flywheel (capture → reinforce → distill → decay).
 
 What actually works in a memory palace is its **information architecture**, not the biology — machines can use the former, while an AI has neither the latter nor any need for it. Stripped down, there are only four things:
 
@@ -97,7 +171,7 @@ Sensory and emotional dimensions (smell, temperature, emotional weight) are deli
 - **Portable data**: `engram_export` exports Markdown / JSON files in one step, with a redacted-view variant (secondary scrubbing + 40-char preview truncation, share-safe). `engram_mirror` writes an Obsidian / Logseq-friendly mirror directory (one Markdown per memory with YAML frontmatter + `[[id]]` backlinks), turning the palace into a human-readable private knowledge base.
 - **AGI Architecture Exploration (dsh-market · AGI Architecture)**: listed in dsh-market's "AGI Architecture Exploration" category as a cognitive-science reframe of agent long-term memory — memory palace (imagery labels + room placards), corridor topology (force-directed graph), closure questions (the ingest prompt nudges the model to ask clarifying questions), consolidation merging (heuristic dedup + cosine similarity) — sitting alongside MemGPT / Letta in the "agent memory architecture" conversation.
 
-## Tools (21, narrow parameters)
+## Tools (22, narrow parameters)
 
 | Tool | Purpose |
 |---|---|
@@ -263,7 +337,7 @@ Each turn's first step appends a plugin-source user snapshot: `User memory profi
 
 #### Token effect
 
-Profile injection is a conditional fixed cost (bounded by both the entry cap and the token budget); the tool schemas are a standing cost (20 narrow-parameter tools).
+Profile injection is a conditional fixed cost (bounded by both the entry cap and the token budget); the tool schemas are a standing cost (22 narrow-parameter tools).
 
 #### KV Cache effect
 

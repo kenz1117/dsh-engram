@@ -4,11 +4,14 @@
 
 # dsh-engram · 记忆宫殿
 
-<p align="center">DeepSeek Harness 跨会话长期记忆插件 — 把记忆宫殿的<b>信息架构</b>（而不是它的神经科学隐喻）真正落进 agent：<b>位置当索引</b>（每条记忆钉在「房间#桩位」坐标上）、<b>固定路线定顺序</b>（巡游路线只增不改）、<b>骨架长期复用</b>（同主题永远同房同序）、<b>标记独一无二</b>（门牌纪律：唯一 · 差异化 · 带日期）。配套间隔重复的检索练习（只给线索、不给正文）与知识飞轮（摄取 → 强化 → 蒸馏 → 衰减）。纯 TypeScript，零外部进程、零 Python 依赖。</p>
+<p align="center"><b>Local-first long-term memory for your coding agent.</b><br>
+纯本地 SQLite 的跨会话长期记忆：<b>零外部服务 · 零 API Key · 零 Docker</b>，一条命令装完即用。<br>
+22 个窄参数工具 · 混合检索（FTS5 + 本地向量 RRF）· 证据门 · 全链路审计 · SM-2 间隔重复复习 · 面板中英俄文。</p>
 
 <p align="center">
   <a href="https://github.com/kenz1117/dsh-engram/blob/main/LICENSE"><img alt="GitHub license" src="https://img.shields.io/github/license/kenz1117/dsh-engram"></a>
   <a href="https://github.com/kenz1117/dsh-engram"><img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/kenz1117/dsh-engram"></a>
+  <a href="https://github.com/kenz1117/dsh-engram/actions/workflows/checks.yml"><img alt="CI" src="https://github.com/kenz1117/dsh-engram/actions/workflows/checks.yml/badge.svg"></a>
   <a href="https://www.npmjs.com/package/@kenz1117/dsh-engram"><img alt="npm version" src="https://img.shields.io/npm/v/@kenz1117/dsh-engram"></a>
   <a href="https://www.npmjs.com/package/@kenz1117/dsh-engram"><img alt="npm downloads" src="https://img.shields.io/npm/dm/@kenz1117/dsh-engram"></a>
   <a href="https://github.com/kenz1117/dsh-engram/issues"><img alt="GitHub issues" src="https://img.shields.io/github/issues/kenz1117/dsh-engram"></a>
@@ -20,6 +23,28 @@
 
 </div>
 
+<details>
+<summary><b>目录</b></summary>
+
+- [快速开始](#快速开始)
+- [为什么是它](#为什么是它)
+- [记忆怎么流动](#记忆怎么流动)
+- [界面速览](#界面速览)
+- [宫殿结构：目录即房间，路径即路线](#宫殿结构目录即房间路径即路线)
+- [特性](#特性)
+- [工具（22 个，窄参数）](#工具22-个窄参数)
+- [配置](#配置)
+- [工作原理](#工作原理)
+- [Web 管理面板](#web-管理面板)
+- [开发](#开发)
+- [Model Experience](#model-experience)
+- [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
+- [路线图](#路线图)
+- [致谢](#致谢)
+- [许可证](#许可证)
+
+</details>
+
 ---
 
 ## 快速开始
@@ -29,6 +54,54 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 ```
 
 安装后无需配置即可使用（默认分库与模型缓存在 `~/.dsh/engram`，画像注入开启，自动摄取关闭）。
+
+**让 agent 自己装**——把下面这段话贴给任意 agent：
+
+```text
+请执行这条命令安装 dsh-engram（DeepSeek Harness 的跨会话长期记忆插件）：
+  dsh plugin --profile web add @kenz1117/dsh-engram
+装完后确认插件中心出现「记忆宫殿」侧栏入口，并在新会话里用 engram_stats
+确认已注册 22 个 engram_* 工具。
+```
+
+## 为什么是它
+
+记忆插件不少，但多数要你先准备一整套基础设施。这里是三条主流路线与本插件的对照（对照对象为各项目公开 README 与 npm 依赖声明）：
+
+| | **dsh-engram** | 服务端型（Postgres/pgvector/Milvus/Python 服务） | 文件型（纯 Markdown 记忆） |
+|---|---|---|---|
+| 安装成本 | 一条 npm 命令，**装完即用** | Docker + 数据库 + 向量库 + 迁移 | 一条 npm 命令 |
+| 外部依赖 | **无**：嵌入模型离线推理，失败自动降级纯关键词并显式标记 | 必装，通常还要 LLM API Key | 无 |
+| agent 工具面 | **22 个窄参数工具**，覆盖保存/检索/事实链/时间线/审计/导出/蒸馏/信念/复习全生命周期 | 常见 1–3 个（只给检索） | 常见 0–1 个 |
+| 证据门 | **有**：`engram_assess` 由代码强制「声称充足 + 本批次有效证据 + nextStrategy=answer」三者齐备才判充足 | 一般无 | 一般无 |
+| 审计 | 来源会话/轮次/seq 三级溯源 + 取代链 + 矛盾边 + op_log 全量流水 | 通常只有日志 | 无 |
+| 复习 | **SM-2 间隔重复**：只给坐标与门牌线索，不给正文，先回忆后揭示 | 无 | 无 |
+| 注入防护 | 协议标签防提示注入 + 入库脱敏 + 召回占位防自强化回声 | 无 | 无 |
+| 可携带 | Markdown / JSON 导出 + Obsidian/Logseq 友好镜像 | 看实现 | 本来就是文件 |
+| 界面语言 | zh / en / ru | 看实现 | 一般单语 |
+
+一句话：**我们把「记忆」做成一个装完就能用的本地库，而不是一个需要你运维的服务。**
+
+## 记忆怎么流动
+
+```
+  会话日志 --+
+            +--> 摄取 / 保存 --> 写入四态: accept · merge · defer · drop
+  agent 调用+
+                                            |
+                                            SQLite 双库: user.db（跟人走）+ project-<hash>.db（跟仓库走）
+                                            |
+      +----------------------+----------------------+----------------------+
+      v                          v                        v
+      FTS5 关键词道              本地向量道 (RRF)         关系边一跳扩展
+      +----------------------+----------------------+----------------------+
+                                            v
+                                            engram_search --> 命中行带 id= / ref= 与批次 id
+                                            v
+                                            engram_assess（证据门）: 不足以回答就继续检索
+                                            v
+                                            每轮注入画像 <-- 信念 · 事实链 · 实体 <-- 蒸馏 · 巩固 · 衰减 · SM-2
+```
 
 ## 界面速览
 
@@ -46,6 +119,8 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 
 
 ## 宫殿结构：目录即房间，路径即路线
+
+DeepSeek Harness 跨会话长期记忆插件 —— 把记忆宫殿的**信息架构**（而不是它的神经科学隐喻）真正落进 agent：**位置当索引**（每条记忆钉在「房间#桩位」坐标上）、**固定路线定顺序**（巡游路线只增不改）、**骨架长期复用**（同主题永远同房同序）、**标记独一无二**（门牌纪律：唯一 · 差异化 · 带日期）。配套间隔重复的检索练习（只给线索、不给正文）与知识飞轮（摄取 → 强化 → 蒸馏 → 衰减）。
 
 记忆宫殿真正管用的是它的**信息架构**，不是那套生物学机制——前者机器完全能用，后者 AI 既没有也不需要。拆开看只有四件事：
 
@@ -97,7 +172,7 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 - **数据可携带**：`engram_export` 一键导出 Markdown / JSON 文件，支持脱敏视图（内容二次清洗 + 预览截断，分享安全）。`engram_mirror` 导出可漫游的镜像目录（Obsidian / Logseq 友好：每条记忆一个 Markdown，正文 + YAML frontmatter + 双向链接 `[[id]]`），让「宫殿」也成为可人读的私人知识库。
 - **认知架构探索（dsh-market · AGI 架构探索）**：本仓库是 dsh-market「AGI 架构探索」类目下，对 agent 长期记忆的认知科学方法论重构——记忆宫殿（意象标签 + 房间铭牌）、走廊拓扑（力导向图）、闭环提问（摄入时让模型主动追问用户细节）、巩固合并（启发式去重 + 余弦相似度），与 MemGPT/Letta 同层「agent 记忆架构」叙事。
 
-## 工具（21 个，窄参数）
+## 工具（22 个，窄参数）
 
 | 工具 | 作用 |
 |---|---|
@@ -264,7 +339,7 @@ pnpm test
 
 #### Token effect
 
-画像注入为条件性固定成本（受条数上限与 token 预算双重约束）；工具 schema 为常驻成本（20 个窄参数工具）。
+画像注入为条件性固定成本（受条数上限与 token 预算双重约束）；工具 schema 为常驻成本（22 个窄参数工具）。
 
 #### KV Cache effect
 
