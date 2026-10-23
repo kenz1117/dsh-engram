@@ -10,6 +10,10 @@
 
 ## [Unreleased]
 
+_暂无。_
+
+## [0.9.9] - 2026-10-23
+
 ### 文档与市场曝光
 
 - README 首屏重写（中英双语同步）：新增一句话英文定位句「Local-first long-term memory for your coding agent.」、可折叠目录、「为什么是它」三条主流路线对照表、记忆流动 ASCII 流程图、**给 agent 自己装的安装 prompt**；新增 CI 徽章。
@@ -17,6 +21,12 @@
 - 新增本 CHANGELOG。
 - 修正文档中的工具数量：实际注册 **22** 个 `engram_*` 工具（原文档写作 21，英文版另一处写作 20）。
 - `package.json` 补 `homepage` / `bugs` / 更全的 `keywords`。
+
+
+### 商店与社区
+
+- 商店条目描述更新到 v0.9.8 现状并补 `icon` 字段（category 保持 `agi` 不变）。
+- 仓库描述、主页与 topics 补齐；启用 GitHub Pages 落地页 `https://kenz1117.github.io/dsh-engram/`。
 
 ## [0.9.8] - 2026-10-22
 
@@ -198,7 +208,8 @@
 
 - 首个可用版本：`engram_*` 工具集、插件入口、画像注入、SQLite + FTS5 + 关系边 + op log 的本地存储。
 
-[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.9.8...HEAD
+[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.9.9...HEAD
+[0.9.9]: https://github.com/kenz1117/dsh-engram/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/kenz1117/dsh-engram/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/kenz1117/dsh-engram/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/kenz1117/dsh-engram/compare/v0.9.5...v0.9.6
