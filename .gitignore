@@ -3,3 +3,6 @@ lib/
 *.log
 *.tsbuildinfo
 .DS_Store
+
+# 本地打包产物
+*.tgz
