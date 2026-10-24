@@ -60,6 +60,7 @@ import { judgeBase, labelToStamp, languageOfLabels, MODEL_LABEL_KEY } from './re
 import type { CatalogModel } from './registry/base-state.ts'
 import { readBaseCensus } from './registry/base-census.ts'
 import { planBaseVectors, runVectorConvert } from './registry/convert.ts'
+import { PalaceGuard } from './registry/palace-guard.ts'
 import { loadVectorSchema } from './registry/vector-schema.ts'
 import { migrateProjectDb, migrationWarning, resolveProjectIdentity } from './project/identity.ts'
 import { findProjectPalace, listProjectPalaces } from './project/registry.ts'
@@ -829,6 +830,14 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
    * от которого условие защищает.
    */
   let basesLanguage: EngramLanguage = resolved.language
+  /**
+   * Предохранитель смены языка: одно окно на процесс, состояние — в памяти.
+   *
+   * Окно живёт минуту и имеет смысл, пока живёт процесс; переживать перезапуск ему
+   * незачем, а запись на диск превращала бы проверку в ещё одну вещь, которую надо
+   * обслуживать (решение 24.10).
+   */
+  const palaceGuard = new PalaceGuard()
   /** Ожидание базы под текущий язык: пересчитывается, а не берётся из сборки плагина. */
   const baseTargetNow = (): {
     readonly label: string | undefined
@@ -1636,6 +1645,12 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
         return reason === undefined ? { ok: true, language } : { ok: false, language, error: reason }
       },
       palaceChangeWindowSec: resolved.palaceChangeWindowSec,
+      // Предохранитель смены языка живёт на сервере: он сам помнит, когда открылось окно и
+      // на каком языке стояли базы в этот момент. Клиент больше не присылает ни начала
+      // отсчёта, ни «языка, от которого уходят» — проверяется состояние, а не присланное
+      // (решение 24.10 после ревью #36).
+      palaceGuard,
+      palaceCurrentLanguage: async () => basesLanguage,
       dictionary: dictionaryDeps,
       dictionaryFill: dictionaryFillDeps,
       localePacks: localePacksDeps,

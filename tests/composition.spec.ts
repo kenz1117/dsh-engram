@@ -97,7 +97,8 @@ const llmDouble = {
 
 const EXPECTED_TOOLS = [
   'engram_assess', 'engram_audit_forgotten', 'engram_distill', 'engram_episode_timeline', 'engram_examine',
-  'engram_export', 'engram_facts', 'engram_forget', 'engram_import', 'engram_ingest_history', 'engram_neighbors', 'engram_profile_edit',
+  'engram_export', 'engram_facts', 'engram_forget', 'engram_import', 'engram_ingest_history', 'engram_language_guide',
+  'engram_neighbors', 'engram_profile_edit',
   'engram_reflect', 'engram_report', 'engram_review', 'engram_review_queue', 'engram_save', 'engram_search', 'engram_stats',
   'engram_timeline', 'engram_tour', 'engram_update',
 ]
@@ -237,14 +238,15 @@ async function rawPost(port: number, path: string, raw: string): Promise<{ statu
 }
 
 describe('dsh-engram real Loader composition', () => {
-  it('装载后 21 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
+  it('装载后 23 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
     const names = () => loaded.tools.schemas().map(schema => schema.name)
     for (const expected of EXPECTED_TOOLS) {
       expect(names()).toContain(expected)
     }
+    expect(names().filter(name => name.startsWith('engram_'))).toHaveLength(EXPECTED_TOOLS.length)
 
-    // HMR 安全：卸载 engram 行后 21 个工具全部释放（tools 服务仍在，其余工具不受影响）。
+    // HMR 安全：卸载 engram 行后 23 个工具全部释放（tools 服务仍在，其余工具不受影响）。
     const entry = [...loaded.loader.entries()]
       .find(candidate => candidate.options.name === '@kenz1117/dsh-engram')
     expect(entry).toBeDefined()
@@ -338,6 +340,66 @@ describe('dsh-engram real Loader composition', () => {
       { id: dropped!.id, scope: 'user', reason: 'x', affects: 'x', stillUseful: 'x' },
       { origin: 'https://evil.example' })
     expect(evil.status).toBe(403)
+  })
+
+  /**
+   * Предохранитель смены языка: состояние на сервере, а не в панели (решение 24.10).
+   *
+   * Проверяется то, ради чего состояние переехало на сервер: клиент не может выполнить
+   * условие собранного действия, назвав серверу выдуманные «язык, от которого уходят» и
+   * «начало окна». Раньше оба эти поля присылала панель, и проверялось присланное.
+   */
+  it('联锁 смены языка: окно открывает сервер, клиент подделать не может', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+
+    // Без открытого окна смена отклоняется — условие не собрано.
+    const noWindow = await call(port, 'POST', '/api/engram/palace-change', { language: 'fr' })
+    expect(noWindow.status).toBe(409)
+    expect((noWindow.json as { reason: string }).reason).toBe('no-window')
+
+    // Тот же маршрут, но с присланными «from» и «startedAt»: раньше этого хватало,
+    // чтобы условие выполнилось по построению. Теперь — нет: сервер смотрит на своё
+    // состояние, а окно не открыто.
+    const forged = await call(port, 'POST', '/api/engram/palace-change', {
+      language: 'fr',
+      from: 'ru',
+      startedAt: Date.now(),
+    })
+    expect(forged.status).toBe(409)
+    expect((forged.json as { reason: string }).reason).toBe('no-window')
+
+    // Второй путь записи языка тоже под предохранителем: раньше он писал настройку,
+    // проверив только код языка, — и обходил всё условие целиком.
+    const bypass = await call(port, 'POST', '/api/engram/palace-language', { language: 'fr' })
+    expect(bypass.status).toBe(409)
+    expect((bypass.json as { reason: string }).reason).toBe('no-window')
+
+    // Окно открывает сервер; в ответе — его собственное начало отсчёта.
+    const opened = await call(port, 'POST', '/api/engram/palace-change/open', {})
+    expect(opened.status).toBe(200)
+    const window = opened.json as { ok: boolean, startedAt: number, from: string, left: number }
+    expect(window.ok).toBe(true)
+    expect(window.startedAt).toBeGreaterThan(0)
+    expect(typeof window.from).toBe('string')
+    expect(window.left).toBeGreaterThan(0)
+
+    // Повторное открытие не продлевает окно: начало остаётся прежним.
+    const reopened = await call(port, 'POST', '/api/engram/palace-change/open', {})
+    expect((reopened.json as { startedAt: number }).startedAt).toBe(window.startedAt)
+
+    // Язык, который сервер считает текущим, менять нельзя — «not-changed».
+    const same = await call(port, 'POST', '/api/engram/palace-change', { language: window.from })
+    expect(same.status).toBe(409)
+    expect((same.json as { reason: string }).reason).toBe('not-changed')
+    // А вот язык, отличный от текущего, проходит: окно открыто и не истекло.
+    // Дальше может не дойти — запись языка требует сервиса настроек, которого в тестовой
+    // сборке нет (500 от writePalaceLanguage). Проверяем здесь именно решение о допуске:
+    // оно не 409, значит условие собрано и предохранитель пропустил.
+    const other = window.from === 'fr' ? 'de' : 'fr'
+    const changed = await call(port, 'POST', '/api/engram/palace-change', { language: other })
+    expect(changed.status).not.toBe(409)
+    expect((changed.json as { reason?: string }).reason).toBeUndefined()
   })
 
   it('导入链路：大体积导出件能进能出（issue #34——117/165 KB 的导出件曾被当成「不是 JSON 对象」拒掉）', { timeout: 60_000 }, async () => {

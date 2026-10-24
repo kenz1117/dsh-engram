@@ -22,7 +22,7 @@ import type { EngramEmbedder } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
 import type { ProjectPalaceKind } from './project/registry.ts'
 import type { BaseActionId, BaseStateId } from './registry/base-state.ts'
-import { checkPalaceChange } from './registry/palace-change.ts'
+import type { PalaceGuard } from './registry/palace-guard.ts'
 import type { ResolvedHistoryRules, ResolvedJevConfig } from './config.ts'
 import { effectiveJevConfig, jevConfigView, loadJevOverride, parseJevPatch, saveJevOverride } from './jev/runtime.ts'
 import { testJevConnection } from './jev/client.ts'
@@ -603,6 +603,20 @@ export interface RouteDeps {
    * числу с сервером: иначе панель показывала бы «ещё 30 секунд», а сервер уже отказывал.
    */
   readonly palaceChangeWindowSec: number
+  /**
+   * Предохранитель смены языка: состояние окна на сервере.
+   *
+   * Сервер сам помнит, когда окно открылось и на каком языке стояли базы в этот момент, —
+   * поэтому клиент не может ни продлить окно, ни назвать «язык, от которого уходят»
+   * (решение 24.10 после ревью #36).
+   */
+  readonly palaceGuard: PalaceGuard
+  /**
+   * Язык, на котором стоят базы сейчас, — то, от чего уходят при смене.
+   *
+   * Сервер знает его сам: это язык, на котором стоят базы (метки баз либо язык настройки).
+   */
+  readonly palaceCurrentLanguage: () => Promise<string>
   /** Подключён ли пересчёт векторов (этап 2 блока Б); false — кнопка умеет только метку. */
   readonly convertAvailable: boolean
   /** 历史回填（面板「历史回填」tab）：估算 / 启动 / 取消 / 查进度 + 部署默认规则。 */
@@ -1407,26 +1421,49 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             json(res, 200, await deps.convertBases())
             return
           }
+          if (req.method === 'POST' && route === 'palace-change/open') {
+            // Первое событие собранного условия: окно открывает сервер, и он же remembers
+            // его начало и язык, на котором стояли базы в этот момент. Панель после этого
+            // только показывает отсчёт — но отсчёт считается по серверному началу, а не по
+            // её собственному таймеру (решение 24.10).
+            if (!guardWrite(req, res)) return
+            const language = await deps.palaceCurrentLanguage()
+            const window = deps.palaceGuard.open(language, Date.now())
+            json(res, 200, {
+              ok: true,
+              startedAt: window.startedAt,
+              from: window.from,
+              left: deps.palaceGuard.left(Date.now(), deps.palaceChangeWindowSec),
+              windowSec: deps.palaceChangeWindowSec,
+            })
+            return
+          }
           if (req.method === 'POST' && route === 'palace-change') {
             // Смена языка дворца собранным условием (решение 20–21.10): язык выбран,
             // предохранитель снят, «Выполнить» нажато — всё в одном окне, отсчёт с
-            // первого события. Тело: { language, from, startedAt }.
+            // первого события.
             //
             // Проверка здесь, а не только в панели: панель может быть старой, а запрос —
-            // прийти снаружи. Язык и окно проверяются одной формулой с панелью
-            // (см. registry/palace-change), и отказ называет причину.
+            // прийти снаружи. Но основание проверки — серверное состояние: окно должно
+            // быть открыто (открыть его может только маршрут palace-change/open, и момент
+            // его открытия сервер запомнил сам), а язык, от которого уходят, сервер знает
+            // тоже сам. Присланные панелью `from` и `startedAt` не входят в решение:
+            // иначе условие выполнялось бы по построению у любого клиента (ревью #36).
             if (!guardWrite(req, res)) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
-            const verdict = checkPalaceChange({
-              language: typeof body['language'] === 'string' ? body['language'] : '',
-              from: typeof body['from'] === 'string' ? body['from'] : '',
-              startedAt: typeof body['startedAt'] === 'number' ? body['startedAt'] : Number.NaN,
-            }, Date.now(), deps.palaceChangeWindowSec)
+            const verdict = deps.palaceGuard.check(
+              typeof body['language'] === 'string' ? body['language'] : '',
+              Date.now(),
+              deps.palaceChangeWindowSec,
+            )
             if (!verdict.ok) {
               json(res, 409, { ok: false, reason: verdict.reason })
               return
             }
+            // Окно закрыто: следующая смена языка начнётся новым открытием, а не продолжит
+            // это же окно.
+            deps.palaceGuard.close()
             const written = await deps.writePalaceLanguage(String(body['language']))
             if (!written.ok) { json(res, 200, { ...written, labels: null, convert: null }); return }
             // Что делать с базами, решает их новое состояние, а не клиент: после записи
@@ -1440,6 +1477,16 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'POST' && route === 'palace-language') {
             // Обслуживание: язык дворца выбран человеком. Пишется в конфигурацию
             // плагина; неизвестный язык — отказ, а не «ближайший похожий».
+            //
+            // Этот маршрут — то же самое действие, что и palace-change, только без
+            // пересчёта баз, поэтому и предохранитель здесь тот же: окно должно быть
+            // открыто, а окно — не истекло. Иначе это был бы обход: один и тот же
+            // предохранитель на двух маршрутах — это предохранитель, которого нет
+            // (ревью #36).
+            //
+            // «Язык должен отличаться» здесь не требуется: этот маршрут записывает
+            // выбранный язык (первая настройка), и «язык тот же» здесь — не ошибка, а
+            // отсутствие изменений. Проверка на отличие живёт в palace-change.
             if (!guardWrite(req, res)) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
@@ -1448,6 +1495,12 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               json(res, 400, { ok: false, error: `unknown palace language: ${String(wanted)}` })
               return
             }
+            const verdict = deps.palaceGuard.check(wanted, Date.now(), deps.palaceChangeWindowSec, { requireChanged: false })
+            if (!verdict.ok) {
+              json(res, 409, { ok: false, reason: verdict.reason })
+              return
+            }
+            deps.palaceGuard.close()
             json(res, 200, await deps.writePalaceLanguage(wanted))
             return
           }

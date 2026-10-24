@@ -2499,6 +2499,23 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
       .catch((error: Error) => { if (!cancelled) setFailed(error.message) })
     return () => { cancelled = true }
   }, [])
+  /**
+   * Окно открывает сервер: он сам запоминает начало отсчёта и язык, на котором стоят базы
+   * (решение 24.10). Без этого сервер откажет в записи: предохранитель держит сервер,
+   * и открыть окно должен он.
+   *
+   * Открытие здесь — то самое первое событие собранного условия: человек увидел окно и
+   * начал выбирать.
+   */
+  useEffect(() => {
+    if (dryRun === true) return
+    void api<{ ok: boolean, startedAt: number, left: number }>('palace-change/open', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+      .catch(() => { /* окно не открылось — запись будет отклонена, и это правильно */ })
+  }, [dryRun])
   if (palace === null || closed) return null
   /**
    * Закрыть окно.
@@ -3971,8 +3988,28 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
     ? styles.baseStateGood
     : baseKind === 'convert' ? styles.baseStateAlarm : styles.baseStateBad
 
-  /** Первое из трёх событий открывает окно; следующие его не продлевают. */
-  const beginWindow = (): void => { setStartedAt(current => current ?? Date.now()) }
+  /**
+   * Первое из трёх событий открывает окно; следующие его не продлевают.
+   *
+   * Окно открывает сервер: он сам запоминает момент и язык, на котором стояли базы, —
+   * поэтому клиент не может ни продлить окно, ни назвать «язык, от которого уходят»
+   * (решение 24.10). Панель берёт у сервера начало отсчёта и показывает его, но основание
+   * решения остаётся на сервере.
+   */
+  const beginWindow = (): void => {
+    if (startedAt !== null) return
+    void api<{ ok: boolean, startedAt: number, left: number }>('palace-change/open', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+      .then((answer) => {
+        if (!answer.ok) return
+        setStartedAt(answer.startedAt)
+        setLeft(answer.left)
+      })
+      .catch(() => { /* окно не открылось — кнопка останется запертой, и это правильно */ })
+  }
 
   /** Выбор языка: первое событие окна, в настройку ничего не пишется. */
   const pickLanguage = (language: string): void => {
@@ -4014,7 +4051,6 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
   const applyChange = (): void => {
     if (busy || locked || !languageChanged) return
     if (startedAt === null || left <= 0) return
-    const started = startedAt
     setBusy(true)
     void api<{
       ok: boolean
@@ -4026,7 +4062,10 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
     }>('palace-change', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ language: chosenLanguage, from: currentLanguage, startedAt: started }),
+      // Только выбранный язык: окно и «язык, от которого уходят» сервер знает сам.
+      // Присылать их отсюда было бы всё равно, что не присылать ничего, — проверялся бы
+      // присланное, а не состояние (ревью #36).
+      body: JSON.stringify({ language: chosenLanguage }),
     })
       .then(async (answer) => {
         if (!answer.ok) {
