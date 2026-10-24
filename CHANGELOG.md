@@ -21,6 +21,17 @@
 - **打包修复**：`i18n/`、`registry/`、`docs/agent-language-guide.ru.md` 三条路径补进 `package.json` 的 `files`；`scripts/check-hook-order.mjs` 新增静态钩子顺序检查（React 只在运行时报 #310，构建与 `tsc` 不会）。
 - **文档**：新增 `docs/author/`（中英俄三语的作者向设计文档与插图，留在仓库不进包）、`docs/tech-debt.md`；工具数 22 → 23 同步到 README（中英）与落地页。
 
+### ⚠️ 升级说明：存量库需要重建向量
+
+**升级后默认嵌入模型从 512 维的 `bge-small-zh` 变为 384 维的 `minilm-l12`（多语言）。** 宫殿语言为中文的库不受影响（`registry/bindings.json` 里 zh 仍绑定 bge-small-zh 512 维）；其余语言的库——包括语言未设、回落默认（`ru`）的库——会落到 384 维的多语言模型。
+
+**两套向量不可比，维度也不一致。** 仍在旧模型上的库写入时会被拒绝（`store.embedderDimensionMismatch`：比较与写入都拒绝，不做静默截断）——**如果不重建，升级看起来就像「坏了」**。处理办法二选一：
+
+- 用新模型重建：`pnpm backfill --force`（重建全部向量；不带 `--force` 时脚本在写入前就发现维度不符并报错退出，绝不会写出混合维度的库）；
+- 或把模型改回去：在配置里写 `embedder.localModel: 'Xenova/bge-small-zh-v1.5'`（此时与旧库同维，可继续用）。
+
+想按语言分别用不同模型，改 `registry/bindings.json` 即可，无需动代码。
+
 ## [0.9.9] - 2026-10-23
 
 ### 文档与市场曝光
