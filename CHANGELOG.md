@@ -6,9 +6,16 @@
 - 安装：`dsh plugin --profile web add @kenz1117/dsh-engram`
 - 仓库：<https://github.com/kenz1117/dsh-engram>
 
-> **v0.x 阶段的版本约定**：`0.MINOR.PATCH` 里的 `MINOR` 是**功能批次**而不是稳定性刻度——0.7.x 整批是「记忆宫殿信息架构」，0.8.x 整批是「面板重构」，0.9.x 整批是「稳定性与可审计」。同一批次内的 `PATCH` 位通常是修复与加固。
+> **v0.x 阶段的版本约定**：`0.MINOR.PATCH` 里的 `MINOR` 是**功能批次**而不是稳定性刻度——0.7.x 整批是「记忆宫殿信息架构」，0.8.x 整批是「面板重构」，0.9.x 整批是「稳定性与可审计」，0.10.x 整批是「多语言与数据驱动」。同一批次内的 `PATCH` 位通常是修复与加固。
 
 ## [Unreleased]
+
+_暂无。_
+
+## [0.10.0] - 2026-10-24
+
+> **0.10 是新的一批功能**：0.9.x 整批是「稳定性与可审计」，0.10.x 整批是「多语言与数据驱动」。
+> 本版首次把「默认值」从代码属性改为数据属性——模型、语言绑定、服务端词典都不再写死在代码里。
 
 ### 多语言层、数据注册表与库维护（合并 #36）
 
@@ -17,7 +24,8 @@
 - **新增 `engram_language_guide` 工具**（工具总数 22 → **23**）：输出 `<包根>/docs/agent-language-guide.ru.md`，兑现首启窗口对未内置语言用户的「agent 会输出一份说明」承诺。
 - **面板新增「维护」视图**：库状态、模型标签、向量重算（`runVectorConvert`）、宫殿语言切换、词典查看与维护。
 - **面板词典接口**：`/api/engram/locales` 提供「非内置语言 + 面板词典」，客户端 `src/client/index.ts` 拉取后 `addLanguage` + `register(NS, code, entries)`；路由不可用时回落到内置语言。
-- **已知边界**记于 `docs/tech-debt.md`（四条，均不阻塞使用）：语言切换联锁目前只在客户端生效、远程嵌入器不参与目标模型选择、未知维度的库可能被盖上目标标签、向量转换只校验条数不校验每条长度。
+- **语言切换的联锁移到服务端**（`src/registry/palace-guard.ts`）：窗口的状态现在活在服务端——它自己记住第一个事件（由 `palace-change/open` 打开窗口）与那一刻库所在的语言，并按自己的状态计算窗口。客户端不再发送 `from` 与 `startedAt`：此前校验的是"客户端送来的值"而非实际状态，任何客户端都能靠伪造当前时间让条件自动成立。重复开窗不会延长窗口；另一条写入路径（`palace-language`）同样受联锁约束（一个联锁挂在两条路径上，等于没有联锁）。此条关闭 `docs/tech-debt.md` 的 3.1。
+- **其余已知边界**记于 `docs/tech-debt.md`（三条，均不阻塞使用）：远程嵌入器不参与目标模型选择、未知维度的库可能被盖上目标标签、向量转换只校验条数不校验每条长度。
 - **打包修复**：`i18n/`、`registry/`、`docs/agent-language-guide.ru.md` 三条路径补进 `package.json` 的 `files`；`scripts/check-hook-order.mjs` 新增静态钩子顺序检查（React 只在运行时报 #310，构建与 `tsc` 不会）。
 - **文档**：新增 `docs/author/`（中英俄三语的作者向设计文档与插图，留在仓库不进包）、`docs/tech-debt.md`；工具数 22 → 23 同步到 README（中英）与落地页。
 
@@ -228,7 +236,8 @@
 
 - 首个可用版本：`engram_*` 工具集、插件入口、画像注入、SQLite + FTS5 + 关系边 + op log 的本地存储。
 
-[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.9.9...HEAD
+[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/kenz1117/dsh-engram/compare/v0.9.9...v0.10.0
 [0.9.9]: https://github.com/kenz1117/dsh-engram/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/kenz1117/dsh-engram/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/kenz1117/dsh-engram/compare/v0.9.6...v0.9.7
