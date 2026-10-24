@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The memory palace — what was done: multilingual support and order in the bases</title>
+<style>
+:root {
+  --ink: #0f172a; --ink2: #334155; --muted: #64748b; --line: #e2e8f0; --soft: #f8fafc;
+  --brand: #4338ca; --brand2: #6366f1; --accent: #7c3aed;
+  --ok: #10b981; --warn: #f59e0b; --err: #f87171;
+  --mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; padding: 0 0 80px;
+  background: #f4f5f9; color: var(--ink);
+  font-family: 'Segoe UI', 'Noto Sans', Arial, sans-serif;
+  font-size: 16px; line-height: 1.62;
+}
+.page { max-width: 1040px; margin: 0 auto; background: #fff; padding: 56px 64px 72px; box-shadow: 0 12px 40px -24px rgba(15,23,42,.35); }
+header.doc { border-bottom: 3px solid var(--brand); padding-bottom: 22px; margin-bottom: 34px; }
+header.doc .kicker { font-size: 12.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+header.doc h1 { margin: 10px 0 6px; font-size: 34px; line-height: 1.18; letter-spacing: -.01em; }
+header.doc .lead { margin: 0; color: var(--ink2); font-size: 17px; }
+header.doc .meta { margin-top: 14px; color: var(--muted); font-size: 13.5px; }
+h2 { font-size: 25px; line-height: 1.22; margin: 54px 0 16px; padding-top: 8px; border-top: 1px solid var(--line); }
+h2 .num { color: var(--brand2); font-weight: 700; margin-right: 10px; }
+h3 { font-size: 18.5px; margin: 30px 0 10px; color: var(--ink); }
+h4 { font-size: 16px; margin: 22px 0 8px; color: var(--ink2); }
+p { margin: 0 0 12px; }
+ul, ol { margin: 0 0 14px; padding-left: 24px; }
+li { margin: 5px 0; }
+li > ul, li > ol { margin: 6px 0 4px; }
+a { color: var(--brand); }
+code, .mono { font-family: var(--mono); font-size: 13.5px; background: #f1f5f9; border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+pre { background: #0f172a; color: #e2e8f0; padding: 14px 18px; border-radius: 10px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+pre code { background: none; border: 0; padding: 0; color: inherit; }
+table { width: 100%; border-collapse: collapse; margin: 6px 0 20px; font-size: 14.5px; }
+th { text-align: left; font-weight: 600; color: var(--ink2); background: var(--soft); border-bottom: 2px solid var(--line); padding: 9px 12px; }
+td { border-bottom: 1px solid var(--line); padding: 9px 12px; vertical-align: top; }
+td:first-child { white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+.note, .warnbox, .dec { border-radius: 10px; padding: 14px 18px; margin: 16px 0 20px; font-size: 15px; }
+.note { background: #f5f3ff; border-left: 4px solid var(--accent); }
+.warnbox { background: #fffbeb; border-left: 4px solid var(--warn); }
+.dec { background: #ecfdf5; border-left: 4px solid var(--ok); }
+.note b, .warnbox b, .dec b { display: block; margin-bottom: 4px; }
+.fig { margin: 22px 0 26px; padding: 14px 14px 6px; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+.fig svg { display: block; width: 100%; height: auto; }
+.fig figcaption { margin-top: 10px; font-size: 13.5px; color: var(--muted); }
+.totop { margin: 26px 0 0; text-align: right; }
+.btn { display: inline-block; padding: 7px 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--soft); color: var(--ink2); text-decoration: none; font-size: 14px; }
+.btn:hover { border-color: var(--brand2); color: var(--brand); }
+#toc { background: var(--soft); border: 1px solid var(--line); border-radius: 14px; padding: 22px 26px; margin-bottom: 8px; }
+#toc h2 { margin: 0 0 12px; border: 0; padding: 0; font-size: 20px; }
+#toc ol { margin: 0; padding-left: 22px; }
+#toc li { margin: 4px 0; }
+#toc a { text-decoration: none; }
+#toc a:hover { text-decoration: underline; }
+dl.terms { margin: 0; }
+dl.terms dt { font-weight: 600; margin-top: 16px; color: var(--ink); }
+dl.terms dd { margin: 4px 0 0; color: var(--ink2); }
+.small { font-size: 14px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="page">
+<header class="doc">
+  <div class="kicker">dsh-engram · dsv180 fork · pr/upstream-lift branch</div>
+  <h1>The memory palace: what was done</h1>
+  <p class="lead">Multilingual support, data registries, base handling, interlock guards and incidental fixes — in a single description, with the reasons behind the decisions and the diagrams.</p>
+  <div class="meta">Draft of 23 October 2026 · plugin version 0.9.8-dsv.27 · written against the author's release v0.9.3 (<span class="mono">1aa2e82</span>), lifted onto v0.9.8 (<span class="mono">9ee94b0</span>)</div>
+</header>
+
+<div class="warnbox"><b>This document was written against 0.9.3; the rebase is done</b>
+Everything described here was done and verified on the author’s release <b>v0.9.3</b> (commit <span class="mono">1aa2e82</span>). <b>On 23 October 2026 the branch was lifted onto the author’s current version — v0.9.8, pull request <a href="https://github.com/kenz1117/dsh-engram/pull/36">#36</a>.</b> What changed in the rebase: Jev is assembled from the DSH provider and model (the author’s version of that part is newer than ours, so ours was not carried over); reading the request body moved into his <span class="mono">http-body</span> module with a byte limit and 413/400 answers — which now also covers our routes; the code dictionaries keep en and zh, Russian arrives as a file. Nothing described below was rolled back: the rebase changed <i>how</i> it is done, not <i>what</i> is done. Your two fixes after review (<span class="mono">0694dc5</span>, <span class="mono">70682fe</span>) are kept as they are; the fourth commit (<span class="mono">b3df0d7</span>) put back what the rebase had dropped: the fork's build marker, the client half of file-provided languages, and the failure kind and HTTP code in the Jev check line.</div>
+
+<div id="toc">
+<h2>Table of contents</h2>
+<p class="small">Immediately after the table of contents comes <a href="#terms">Terms and abbreviations</a>: it is revisited when a word is not clear.</p>
+<ol>
+  <li><a href="#c1">The problem: why the palace did not work in other languages</a></li>
+  <li><a href="#c2">The palace axis: how the language is determined on the first run</a></li>
+  <li><a href="#c3">Changing the palace language: a single assembled condition</a></li>
+  <li><a href="#c4">The base label and the language registry: language as data</a></li>
+  <li><a href="#c5">Dictionaries: what stays in the code, what arrives as a file</a></li>
+  <li><a href="#c6">The model, the bindings and the vector dimension</a></li>
+  <li><a href="#c7">The base schema: how the handler knows what lies where</a></li>
+  <li><a href="#c8">The curated profile: why the rules moved into a separate package</a></li>
+  <li><a href="#c9">What we fixed along the way and why</a></li>
+  <li><a href="#c10">How this was verified and how it is shipped</a></li>
+  <li><a href="#c11">Maintenance: base states, repair and the log</a></li>
+  <li><a href="#c12">What remains and what we ask of the author</a></li>
+  <li><a href="#c13">Conformance to the work plan</a></li>
+</ol>
+<p class="small">Appendices: <a href="#appA">A. Commit chronology</a> · <a href="#appB">B. Files: what was added and what was changed</a></p>
+</div>
+
+<h2 id="terms"><span class="num">·</span>Terms and abbreviations</h2>
+<p>Words that occur frequently in the text but may mean something else for the author. This section need not be read in full — it is revisited when a term is not clear.</p>
+<dl class="terms">
+<dt>The memory palace (palace)</dt>
+<dd>The plugin's memory store: memories (nodes), observations, entities, the profile. It lives in SQLite files in the plugin's data directory. “The palace” in our texts is this store, not the interface.</dd>
+
+<dt>The panel (EngramPanel)</dt>
+<dd>The plugin's interface inside DSH: the “Today”, “Library”, “Corridor”, “Log”, “Maintenance” tabs. The panel is the client half: it draws and does not decide what is written to the base.</dd>
+
+<dt>The host (DSH), the fiber, the plugin</dt>
+<dd>DSH is the application inside which the plugin lives. The fiber is the loaded instance of the plugin in the host process. “Restarting the plugin” means restarting DSH: the palace language is applied on the next start.</dd>
+
+<dt>The palace language</dt>
+<dd>The <code>config.language</code> key. It determines: which model the vectors are computed with, in which language the plugin writes service texts and instructions to the agent, in which language new memories will be written, and with which label the bases are signed. It changes semi-automatically: from a dialogue with the human or by answering in the window.</dd>
+
+<dt>The interface language</dt>
+<dd>The language of the panel's labels and service messages. It can be switched freely at any moment and affects neither the model, nor the palace language, nor the data. The two axes must not be confused — that is the main point of chapter 2.</dd>
+
+<dt>The base label (model_label)</dt>
+<dd>A string in the <code>meta</code> table of a base file, of the form <code>ru-minilm-l12</code>: language code, hyphen, short model name. The only thing we write into someone else's base. The language is the part of the label up to the first hyphen; the model name is not a language.</dd>
+
+<dt>The registries (registry/*.json)</dt>
+<dd>Shipped data instead of constants in the code: <code>models.json</code> — the model catalog (dimension, pooling, type), <code>bindings.json</code> — the “language → model” binding, <code>languages.json</code> — which languages the palace knows, <code>schema.json</code> — which tables carry vectors. The user layers lie in the data directory and take precedence over the shipped defaults.</dd>
+
+<dt>The schema declaration</dt>
+<dd><code>registry/schema.json</code>. For each table: <code>role</code> (user or service), <code>properties.vector.text</code> — which field to read the text from, <code>properties.vector.where</code> — which rows participate. The vector field is not declared: it is derived as the only field of type BLOB.</dd>
+
+<dt>The seven base states</dt>
+<dd><code>absent</code> — the file does not exist yet; <code>empty</code> — there are no memories; <code>no-label</code> — there is no label; <code>other-model</code> — the label is someone else's; <code>mixed-dims</code> — vectors of different lengths; <code>missing-vectors</code> — some memories have no vector; <code>normal</code> — everything is in place.</dd>
+
+<dt>The four actions</dt>
+<dd><code>none</code> — nothing; <code>write-label</code> — write the label, leave the vectors alone; <code>convert</code> — recompute the vectors with the selected model; <code>repair</code> — fill in vectors for the memories that have none.</dd>
+
+<dt>Vector recompute (conversion)</dt>
+<dd>One operation for two occasions: moving to another model and repair. The criterion is one — a row of the schema scope whose vector is empty or whose length does not equal the expected one. The text of the memories does not change.</dd>
+
+<dt>The embedder, the vector, the dimension</dt>
+<dd>The embedder is the model that turns text into a vector (a set of numbers). The dimension is how many numbers the vector holds: <code>bge-small-zh</code> has 512, the multilingual <code>minilm-l12</code> has 384. Vectors of different dimensions cannot be compared, so the dimension is a hard requirement, not a warning.</dd>
+
+<dt>Cosine (similarity threshold)</dt>
+<dd>A measure of closeness between two vectors, from 0 to 1. It decides whether memories count as duplicates (<code>MERGE_COSINE = 0.92</code>), whether merging is deferred (<code>DEFER_COSINE = 0.88</code>), whether they contradict each other (<code>CONTRADICTION_COSINE = 0.88</code>), and whether a memory is included in search (<code>MIN_COSINE = 0.2</code>).</dd>
+
+<dt>Dictionary, built-in set, user layer</dt>
+<dd>The dictionary is a file of “English string → translation”. The built-in set is the translations in code (<code>src/i18n/catalog</code>, <code>src/client/locales</code>). The user layer is a file in the data directory; it takes precedence over the shipped default and is not lost on reinstallation.</dd>
+
+<dt>Curated profile</dt>
+<dd>A block of rules that the person maintains themselves through the <code>engram_profile_edit</code> tool. It is inserted at the start of the session before the automatically derived profile and takes precedence over it. In the session text it arrives as a separate package, <code>&lt;engram_profile&gt;</code>.</dd>
+
+<dt>Interlock guard</dt>
+<dd>A checkbox that blocks a dangerous action by default. Clearing it is a separate, deliberate act by the person, not a setting.</dd>
+
+<dt>Assembled condition</dt>
+<dd>Our name for the rule that triggers the switch of the palace language: the language change, the cleared interlock guard and the pressed button are combined with “AND” inside a time window. If it did not come together, nothing happens.</dd>
+
+<dt>Maintenance card</dt>
+<dd>A panel section showing the state of the bases, the selected model, languages and dictionaries. It shows one summary word about the bases (“healthy”, “needs repair”, “needs conversion”) and a single button that performs what follows from the state.</dd>
+
+<dt>Base snapshot</dt>
+<dd>A copy of the base made with the <code>VACUUM INTO</code> command. Unlike copying the file, it is consistent: it does not catch the base mid-write.</dd>
+
+<dt>Gate (check)</dt>
+<dd>A mandatory check before shipping: types, text consistency, tests, code rules. “The gate is green” means “the check has passed”.</dd>
+
+<dt>PR, upstream, branch</dt>
+<dd>The upstream is the author’s repository (<code>kenz1117/dsh-engram</code>), our base is its tag <code>v0.9.3</code>. Our work lives in the <code>work/dsv</code> branch; two pull requests are already merged: #20 (Jev) on 21 October, #21 (the embedder and multilingual support) on 22 October.</dd>
+
+<dt>Jev (System One)</dt>
+<dd>An external check of memories at the author’s end. Our part is the interface and the substitution of values, not the provider check.</dd>
+
+<dt>FTS (full-text search)</dt>
+<dd>SQLite service tables for word search (<code>nodes_fts</code> and its shadows). They carry no vectors and do not go into base processing — in the schema declaration they are marked as <code>role: service</code>.</dd>
+
+<dt>Locale</dt>
+<dd>The operating system language. It is taken as is (“fr”, “ru”), without reducing it to our three languages: otherwise a French user would be offered English as if it were their own language.</dd>
+
+<dt>Balloon (toast)</dt>
+<dd>A pop-up message of the panel. The panel has its own mechanism and its own kinds: <code>info</code>, <code>success</code>, <code>error</code>, <code>warning</code> and <code>reset</code> — pastel pink for an event that happened by itself and broke nothing.</dd>
+</dl>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c1"><span class="num">1.</span>The task: why the palace did not work in other languages</h2>
+
+<p>The author’s memory palace is designed for two languages: Chinese and English. The interface texts and service messages sit in the code, the embedding model is Chinese (<code>bge-small-zh</code>, 512 numbers per vector), and the notion of “language” in the configuration was essentially one word: the string <code>auto | zh | en | ru</code>, hardcoded in TypeScript in four places. Three troubles followed from this, each of them visible on live data.</p>
+
+<h3>Trouble one: the language cannot be changed without breaking the bases</h3>
+<p>The model determines the vector length. Changing the model means getting bases where some vectors are of one length and some of another. Search over such data either breaks or quietly loses half the memories. At the same time, the base did not record <em>what</em> it was counted with: the only sign was the vector length, and that says nothing about the language.</p>
+
+<h3>Trouble two: a language cannot be added without rebuilding the plugin</h3>
+<p>The triple <code>zh | en | ru</code> lived in the code: in config validation, in parsing the base label, in the panel’s selection list and in the language set of the server half. A fourth language required editing TypeScript in each of the four places and a new release. For a tool that people install themselves this is unacceptable: language is data, not code.</p>
+
+<h3>Trouble three: two different things were called by the same word, “language”</h3>
+<p>The language of the panel labels switches freely, at any moment, and must not change anything in memory. The palace language holds the model, the instructions to the agent and the language of new memories. While both were called “language”, any decision about them was made at random. We split them into two axes — this is the first thing to understand about all the rest of the work.</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 480" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="480" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">Two language axes: interface and palace</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">These are different things and must not be confused: one changes only text, the other the behaviour of memory</text>
+<rect x="40" y="92" width="920" height="150" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">INTERFACE AXIS · free switch</text>
+<rect x="60" y="124" width="260" height="100" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="190" y="162.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Panel language</text>
+<text x="190" y="179.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">auto or manual; follows the language</text>
+<text x="190" y="194.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">DSH</text>
+<rect x="360" y="124" width="260" height="100" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="490" y="162.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Label dictionaries</text>
+<text x="490" y="179.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">zh / en / ru in code, the rest —</text>
+<text x="490" y="194.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">via a file</text>
+<rect x="660" y="124" width="280" height="100" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="800" y="170" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">Only text changes</text>
+<text x="800" y="187" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">neither the model, nor the labels, nor the memories</text>
+<path d="M 320 174 L 358 174" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 620 174 L 658 174" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="40" y="258" width="920" height="160" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="286" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">PALACE AXIS · the switch the palace controls</text>
+<rect x="60" y="292" width="260" height="108" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="190" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">config.language</text>
+<text x="190" y="351.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">semi-automatic: from the dialogues or</text>
+<text x="190" y="366.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">by an answer in the window</text>
+<rect x="360" y="292" width="260" height="108" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="490" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">What it holds</text>
+<text x="490" y="351.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">the model, instructions, the language of new</text>
+<text x="490" y="366.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">memories, the base label</text>
+<rect x="660" y="292" width="280" height="108" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="800" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">Changes the palace behaviour</text>
+<text x="800" y="351.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">so a language change goes together with</text>
+<text x="800" y="366.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">a recompute of the bases</text>
+<path d="M 320 346 L 358 346" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 620 346 L 658 346" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 120 224 L 120 290" fill="none" stroke="#f59e0b" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#arwA)"/>
+<text x="128" y="262" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#b45309" text-anchor="start" font-weight="600">no effect</text>
+<text x="40" y="452" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#475569" text-anchor="start">Choosing an interface language “to look” does not convert the palace, and changing the palace language does not touch what is stored — only what it will write next.</text>
+</svg><figcaption>Fig. 1. Two language axes. The upper one changes only text, the lower one the behaviour of memory. That is why choosing a language “to take a look” does not convert the palace, and changing the palace language does not touch what is already written.</figcaption></figure>
+
+<div class="dec"><b>How we framed the task</b>
+Make the palace language an <em>explicit</em> state (visible and controllable), rather than a consequence of whichever model happens to be installed; make a new language addable as data — a dictionary file and a row in the bindings registry; and make any switch to another language always accompanied by a vector recompute, rather than leaving the palace in a state where “half is in one and half in the other”.</div>
+
+<h3>What already works</h3>
+<ul>
+  <li>The palace language is determined on the first run and written to the configuration; the window with four choices works.</li>
+  <li>The base label <code>&lt;lang&gt;-&lt;model&gt;</code> is set in <code>meta</code> and read back; it shows whose base it is. Since 22.10 the label is set automatically when the base is opened — but only where that spoils nothing (chapter 4).</li>
+  <li>The registries <code>models.json</code>, <code>bindings.json</code>, <code>languages.json</code>, <code>schema.json</code> are data; a language and a model are added with a file.</li>
+  <li>The vector recompute from the maintenance card works and has been verified on live bases. Repair works separately: computing the missing vectors for records that have none, without changing either the language or the model (chapter 11).</li>
+  <li>Russian lives in the file <code>i18n/ru.txt</code> (485 texts, 501 lines in the file); English and Chinese remain in the author's code.</li>
+  <li>The dictionary is reconciled against the program with four numbers — keys in the program, lines in the file, without a translation, without a key (chapter 5).</li>
+</ul>
+<p>What is not finished yet is in chapter 11, which also says what of it is our work and what awaits the author.</p>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c2"><span class="num">2.</span>The palace axis: how the language is determined on first run</h2>
+
+<p>The palace language is not a setting for show. It holds too much to be set silently, so it is decided once and by a clear rule: <em>if the person has already spoken with the agent in some language, that is the palace language; if there was no speech to go on — we ask</em>.</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="700" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">First run: how the palace picks the language</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">One fork at the start, three outcomes. The window asks only where nothing can decide</text>
+<rect x="340" y="104" width="320" height="56" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="500" y="128" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">is config.language set?</text>
+<text x="500" y="145" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">concrete language code</text>
+<text x="352" y="96" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#4f46e5" text-anchor="start">no — we decide it</text>
+<path d="M 500 160 L 500 186" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="340" y="186" width="320" height="62" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="500" y="213" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Read the person's speech</text>
+<text x="500" y="230" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">current session only; logs are not read</text>
+<path d="M 500 248 L 500 274" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="340" y="274" width="320" height="64" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="500" y="302" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">Dialogue language determined?</text>
+<text x="500" y="319" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">min 40 letters, share ≥ 0.6</text>
+<path d="M 340 306 L 200 306 L 200 372" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="208" y="298" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#047857" text-anchor="start">yes, bases match</text>
+<path d="M 500 338 L 500 372" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="508" y="360" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#b45309" text-anchor="start">no utterances</text>
+<path d="M 660 306 L 800 306 L 800 372" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="700" y="298" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#b45309" text-anchor="start">bases in other language</text>
+<rect x="40" y="372" width="300" height="190" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">AUTO — palace decides</text>
+<rect x="60" y="404" width="258" height="66" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="189" y="433" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">Writes the dialogue language to config</text>
+<text x="189" y="450" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">only backed by the person's voice</text>
+<rect x="60" y="484" width="258" height="60" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="189" y="501.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Panel reports what it chose</text>
+<text x="189" y="518.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">settled</text>
+<text x="189" y="535.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">“applies after restart”</text>
+<rect x="340" y="372" width="320" height="250" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="360" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">QUESTION — no basis</text>
+<rect x="360" y="404" width="280" height="72" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="500" y="428.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">Window at panel root</text>
+<text x="500" y="445.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">ZH / EN / RU / Other language; default</text>
+<text x="500" y="460.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">— Windows locale</text>
+<rect x="360" y="490" width="280" height="92" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="500" y="517" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Choice written as language code</text>
+<text x="500" y="534" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">ZH, EN, RU — as is; “other language” —</text>
+<text x="500" y="549" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">the real locale code (fr), not an</text>
+<text x="500" y="564" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">English substitute</text>
+<rect x="680" y="372" width="280" height="250" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="700" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">MISMATCH</text>
+<rect x="700" y="404" width="240" height="72" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="820" y="436" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">Window: dialogues X, bases Y</text>
+<text x="820" y="453" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">default — the dialogue language</text>
+<rect x="700" y="490" width="240" height="92" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="820" y="524.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Same picker window</text>
+<text x="820" y="541.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">one installation cannot live in</text>
+<text x="820" y="556.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">two languages</text>
+<path d="M 200 562 L 200 640 L 500 640" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 500 582 L 500 640" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 820 622 L 820 640 L 500 640" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="340" y="640" width="320" height="46" rx="10" fill="#4338ca" stroke="#4338ca" stroke-width="2"/>
+<text x="500" y="666.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#ffffff" text-anchor="middle">Plugin restart — language takes effect</text>
+<text x="40" y="690" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#991b1b" text-anchor="start">At no step are records or vectors converted: the language is a switch, not a conversion</text>
+</svg><figcaption>Fig. 2. First run. There is one fork: whether the language is set in the configuration. If not, the palace looks at the person's speech and at the base labels, and the window appears only where nothing can decide or where the signals diverge.</figcaption></figure>
+
+<h3>What exactly counts as the person's voice</h3>
+<p>Utterances are taken only from the <em>current</em> session and only those where <code>source.kind === 'user'</code>. This matters more than it seems: the same events carry English service texts — a runtime snapshot, the skill catalog, agent instructions, insertions from other plugins. In a live check the palace erred on exactly these once: the “dialogue language” came out English because service text was taken for speech. After the fix, anything unfamiliar is not counted at all: erring towards “ask” is safer than assigning someone else's language.</p>
+
+<p>Session logs are not read at startup. This is not caution but a cure: a log is read in full, and on live data that cost hundreds of megabytes of memory on every host start — once the host even crashed because of it. The utterances of the current session already sit in the process memory.</p>
+
+<h3>Threshold: when a language is considered determined</h3>
+<p>At least 40 letters in the sample are required, and the share of the dominant language must be at least 0.6. “privet” and “ok” do not determine the language — otherwise the palace would switch on one random phrase. The split follows the script: Cyrillic means Russian, ideographs Chinese, Latin English. A mixed utterance like “ok, spasibo” gives no voice at all.</p>
+
+<h3>Three cases the panel sees</h3>
+<table>
+<tr><th>Case</th><th>When</th><th>What the palace does</th></tr>
+<tr><td><code>auto</code></td><td>The person's speech is recognised, the bases are in the same language or do not exist yet</td><td>Writes the dialogue language itself; the panel reports what it settled on</td></tr>
+<tr><td><code>ask</code></td><td>There were no utterances, or too few of them</td><td>Asks in the window; the default is the Windows locale</td></tr>
+<tr><td><code>mismatch</code></td><td>Dialogues are in one language and the base labels in another (or the bases are labelled in different languages)</td><td>Shows the mismatch and leads into the same picker window</td></tr>
+</table>
+
+<h3>Why the locale is taken as is</h3>
+<p>The machine locale does not reduce to our three languages. A French user is offered “other language”, not English posing as his own — because substituting someone else's language is not help but a deception that surfaces a week later. If the locale could not be read, “other language” is not submitted: the person is told the code was not determined and is offered one of the palace's languages.</p>
+
+<div class="note"><b>Writing the language is a separate tick after startup</b>
+Editing the configuration on a starting fiber would take the normal path (a remount in the middle of applying settings), so the write is deferred to the next tick and goes the “live” path: the value changes on the fly, the plugin is not reloaded. Only a decision backed by the dialogue is written; the locale and the interface preference are too weak for that.</div>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c3"><span class="num">3.</span>Changing the palace language: one assembled condition</h2>
+
+<p>Changing the palace language is not “one more setting alongside”. It changes what the palace will write with from now on, and therefore it goes together with the recompute of the bases — as one action, not two neighbouring ones. And it can only be started deliberately: three conditions are combined with an “AND”.</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="560" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">Palace language change: one assembled condition, not three separate buttons</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">Until the condition is fully assembled, nothing is written to the configuration</text>
+<rect x="40" y="120" width="300" height="70" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="190" y="151" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">1. A different palace language is selected</text>
+<text x="190" y="168" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">a human, not automation</text>
+<rect x="40" y="214" width="300" height="70" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="190" y="245" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">2. Interlock guard removed</text>
+<text x="190" y="262" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">checkbox in the same form</text>
+<rect x="40" y="308" width="300" height="70" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="190" y="339" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">3. “Run” pressed</text>
+<text x="190" y="356" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">only this sends the request</text>
+<path d="M 340 155 L 400 240" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 340 249 L 400 249" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 340 343 L 400 258" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="400" y="196" width="220" height="106" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="510" y="237.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">AND: all three conditions</text>
+<text x="510" y="254.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">go to the server as one request</text>
+<text x="510" y="269.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">and are checked together</text>
+<path d="M 620 249 L 676 249" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="676" y="196" width="300" height="106" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="826" y="237.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">Recompute of the bases started</text>
+<text x="826" y="254.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">language change and vector conversion are one</text>
+<text x="826" y="269.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">action, not two neighbouring ones</text>
+<rect x="40" y="420" width="936" height="58" rx="10" fill="#fef2f2" stroke="#f87171" stroke-width="1.5"/>
+<text x="508" y="445" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#991b1b" text-anchor="middle">30-second window is a setting, palaceChangeWindowSec, not a constant</text>
+<text x="508" y="462" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b91c1c" text-anchor="middle">the countdown starts from the FIRST of the three events and lives in the form itself: this is a human's consent, not a background task</text>
+<rect x="40" y="490" width="936" height="52" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="508" y="512" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Window expired — the choice falls back to the language the bases are on, the interlock guard goes back</text>
+<text x="508" y="529" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">nothing to roll back: nothing is written before “Run”, the form simply forgets the not-yet-assembled choice</text>
+</svg><figcaption>Fig. 3. The assembled condition. The language is selected, the interlock guard is removed, the button is pressed — and only then does one request go out, which the server checks as a whole. The window expires — the choice falls away, nothing has been recorded.</figcaption></figure>
+
+<h3>Why three conditions and not one button</h3>
+<p>The customer's wording was direct: “the user can start the conversion only deliberately: select another language, clear the checkbox, press the button — all in AND mode, and all actions within a minute. The minute has passed — everything reverted to what it was”. This guards not against a mistake in the code but against an accidental movement of the hand: the palace language cannot be changed “just to look” and then forgotten.</p>
+
+<h3>The window is thirty seconds, and it is a setting</h3>
+<p>The window length lives in the plugin settings (<code>palaceChangeWindowSec</code>), not as a constant in the code: it must be changeable without a rebuild. The countdown starts from the <em>first</em> of the three events — the language change or the removal of the interlock guard, whichever happened earlier. The window lives in the form itself, not on the server: it is a human's consent, not a background task. Two tabs get one form each, and a condition assembled in one cannot be completed by actions in the other — and that is how it should be.</p>
+
+<div class="warnbox"><b>Before “Run” is pressed, nothing is written to the configuration</b>
+That is why “the window has passed” means “the form forgot the not-yet-assembled choice”, not “what was recorded has been rolled back”. There is nothing to roll back. The choice returns to the language the bases are on (it is taken from the label), and the interlock guard goes back on its own.</div>
+
+<h3>One request, not three</h3>
+<p>One request goes to the server with all three conditions, and the same request checks them. Otherwise calls spread over time could add up to a permission after the fact: “changed the language yesterday, cleared the tick today, pressed the button tomorrow” — and the result would be an action the human never assembled.</p>
+
+<h3>How it is done</h3>
+<p>The condition check is one pure function (<code>src/registry/palace-change.ts</code>), and both halves count by it: the panel decides what to show, the server decides whether to accept the request. Three things are checked: the language — an existing code and not the same one; the start of the window — real time, not from the future; the window has not expired. A rejection names the reason in words (“window expired”, “the same language is selected”), not with an error code.</p>
+<p>“Run” sends one <code>POST palace-change</code> request, and that same request carries the matter through to the end: writes the language into the configuration, rewrites the base labels into the new language, recomputes the vectors. Separate “language first, bases after” steps do not exist, deliberately — the intermediate state “new language, old bases” would be seen by a human and not understood.</p>
+<p>The button is still there for work without a language change: when the selected language matches the current one, no window is required, and the button stamps the label or computes the missing vectors. Otherwise repairing a base with memories without a vector would only be possible by “change the language and put it back”.</p>
+
+<h3>What can already be checked</h3>
+<p>The mechanics of the interlock guard and the countdown are checked by the “Panel test” button in the maintenance card: the same window opens in test mode, does not touch the configuration, and when the window expires shows a pink balloon “the interlock guard is back in place, the choice is reset”. Pink, not red: nothing broke, the event happened by itself.</p>
+
+<div class="note"><b>What of this stands in the panel today</b>
+The palace language switcher appeared on 22.10 and is described in the section “What was closed 22–23.10” (chapter 12): in the maintenance card it is the block “Palace language” — selection, interlock guard and “Run” in one row. The same button also works without a language change: when the selected language matches the current one, no window is required, and it stamps the label or computes the missing vectors. What is still missing is a separate indicator of divergence between the interface language and the palace language: a person who switched the interface “to look” does not see that the palace stands on another language.</div>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c4"><span class="num">4.</span>Base label and language registry: language as data</h2>
+
+<p>So that the palace knows which language the base is on, one row is written into it — a label in the <code>meta</code> table:</p>
+<pre><code>key = model_label
+value = ru-minilm-l12</code></pre>
+<p>The label is the only thing we write into someone else's base. Not dimensions, not time, not version: the dimension follows from the model catalog by the model name, while a copy would give a second source of truth that would sooner or later diverge from the first.</p>
+
+<h3>Who sets the label, and when</h3>
+<p>The label is not asked of the human at every convenient occasion, but it is not set “just in case” either. The rule is one — <code>labelToStamp</code> in <code>src/registry/base-state.ts</code> — and it works when the base is opened, before any button:</p>
+<ul>
+  <li><strong>The base is empty</strong> — the label is set at once: we will write into it with that very model, there is nothing to argue about.</li>
+  <li><strong>The base has no label, but the data is already on the target model</strong> — the label is applied: this is a signature, not a conversion, the vectors are untouched.</li>
+  <li><strong>The base has no label, and the data is on a foreign model or of mixed dimensions</strong> — there is no label: that one needs a recompute, and a signature would lie. Such a base stays visible as “no label” until a human acts.</li>
+  <li><strong>The label is already set</strong> — it is left alone: even if it names a foreign model, it is a fact about the data, not a reason to rewrite it.</li>
+  <li><strong>The base could not be read</strong> (corrupt file, locked by a writer) — there is no signature: a base that looks empty may turn out to be foreign, merely unreadable at that moment. A read or write error does not prevent opening — the base simply remains without a label, and this is stated in the log.</li>
+</ul>
+<p>The rule is the same as for the button: there is no second source of truth about the label. The only difference is that the button walks all bases at once and can recompute, while the signing on open cannot.</p>
+
+<h3>How the language is read from the label</h3>
+<p>The language is the part of the label up to the <em>first</em> hyphen. We split on the first one precisely because hyphens occur both in the model name (<code>minilm-l12</code>) and in the language subtag: <code>zh-Hans-minilm-l12</code> yields <code>zh</code>, not “no label”. The model name is never counted as a language — this rule had to be introduced separately, because the temptation to “guess the language from the model” is great and always wrong.</p>
+
+<h3>The language code is no longer a closed list</h3>
+<p>Previously the allowed values lived as a string in the code. Now they are a file, <code>registry/languages.json</code>. The file has a user layer (<code>&lt;dbDir&gt;/registry/languages.json</code>): a new language is declared by a line next to the data, without editing the package — the line replaces the same-named one from the shipped default and does not require repeating the whole list. By the same path a language reaches both switchers: the server serves the panel dictionary on a separate route, the client declares the language to the host and registers the texts.</p>
+<pre><code>{ "formatVersion": 1,
+  "languages": [
+    { "code": "zh", "label": "中文",    "builtin": true  },
+    { "code": "en", "label": "English", "builtin": true  },
+    { "code": "ru", "label": "Русский", "builtin": false }
+  ] }</code></pre>
+<ul>
+  <li><code>label</code> — what the language is called for a human in the selection list (the panel used to show <code>ZH</code>, now <code>中文</code>).</li>
+  <li><code>builtin</code> — whether the plugin has a built-in set of texts. Two are built in: <code>zh</code> (the author's) and <code>en</code> (the completeness reference). The rest come as a file.</li>
+</ul>
+<p>The <code>builtin</code> flag is not there for looks: without it one cannot distinguish “the language exists but there are no translations yet” from “there is no such language at all”. The panel gets the language list from the server in the same response as the base state: its own copy of the triple has been removed from the client build, otherwise a language added by a file would appear on the server but not in the selection list.</p>
+
+<div class="dec"><b>The fourth choice passes the real code</b>
+“Other language” is no longer turned into English. The locale code is written to the palace as is — for example <code>fr</code>. A palace with such a language works: it takes service texts in English (there is no built-in set for <code>fr</code>), understands memories, and once the file <code>&lt;dbDir&gt;/i18n/fr.txt</code> appears it will speak French. Substituting <code>en</code> instead would mean passing off a foreign language as “yours”.</div>
+
+<h3>What this gives the author</h3>
+<p>A new language is added with three pieces of data: a line in <code>languages.json</code>, a dictionary file, and a line in <code>bindings.json</code> (which model to count as this language). Not a single TypeScript edit, not a single rebuild. That is exactly why the language list is a file and not a constant: otherwise “support one more language” would mean “release a new version of the plugin”.</p>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c5"><span class="num">5.</span>Dictionaries: what stays in code, what comes as a file</h2>
+
+<p>Interface and service-message translations live in two places, and this is not duplication but two different purposes. In code — what must always be there, with no files: two sets, English (the completeness reference and the source of keys) and Chinese (the author's wording). As a file — everything else, including Russian.</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 620" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="620" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">Dictionaries: what stays in code, what comes as a file</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">English and Chinese are built-in sets. Russian and any next language are a file, with no TypeScript edits</text>
+<rect x="40" y="92" width="440" height="236" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">IN THE BUILD (shipped, code)</text>
+<rect x="60" y="124" width="400" height="58" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+<text x="260" y="141.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#4c1d95" text-anchor="middle">src/i18n/catalog/*.ts — server messages</text>
+<text x="260" y="158.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">en — completeness reference and source of keys, zh — the author's</text>
+<text x="260" y="173.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">wording</text>
+<rect x="60" y="194" width="400" height="58" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+<text x="260" y="211.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#4c1d95" text-anchor="middle">src/client/locales/*.ts — panel texts</text>
+<text x="260" y="228.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">en, zh, ru: interface labels, switched together with the language</text>
+<text x="260" y="243.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">DSH</text>
+<rect x="60" y="264" width="400" height="50" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="260" y="285" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">An edit here requires a rebuild and a release</text>
+<text x="260" y="302" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">so everything that must be edited without one lives as a file</text>
+<rect x="520" y="92" width="440" height="236" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="540" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">AS A FILE (data, dbDir)</text>
+<rect x="540" y="124" width="400" height="58" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="740" y="149" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">i18n/ru.txt — 485 texts</text>
+<text x="740" y="166" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">the shipped translation of server messages</text>
+<rect x="540" y="194" width="400" height="58" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="740" y="219" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">&lt;dbDir&gt;/i18n/ru.txt — the user layer</text>
+<text x="740" y="236" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">outranks the shipped default; survives reinstall</text>
+<rect x="540" y="264" width="400" height="50" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="740" y="285" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">&lt;dbDir&gt;/i18n/panel.ru.txt</text>
+<text x="740" y="302" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">same for the panel: different file, same format</text>
+<path d="M 260 328 L 260 360" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 740 328 L 740 360" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="140" y="360" width="240" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="260" y="383" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Server half</text>
+<text x="260" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">message(language, key)</text>
+<rect x="620" y="360" width="240" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="740" y="383" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Panel</text>
+<text x="740" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">t(key)</text>
+<rect x="140" y="444" width="720" height="66" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="500" y="473" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">Fallback order: file dictionary → built-in set → English text</text>
+<text x="500" y="490" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">no file — the texts are not empty: the English string remains, so a language can be added even before translation</text>
+<rect x="140" y="530" width="720" height="62" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="500" y="557" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">A new language is added by data, not by code</text>
+<text x="500" y="574" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">the file &lt;dbDir&gt;/i18n/fr.txt + lines in registry/bindings.json; the panel learns about it from registry/languages.json</text>
+</svg><figcaption>Fig. 4. Two sources of texts. The built-in sets stay with the author in code; Russian and any next language come as a file into the data directory, and the file takes precedence over the shipped default.</figcaption></figure>
+
+<h3>The dictionary key is an English string</h3>
+<p>The dictionary is keyed not by key names but by the English text: the English string on the left, the translation on the right, the separator a tab. This allows translations to be edited without knowledge of the code and does not break when a key is renamed. The price is that the English wording becomes part of the contract: if the text in the code changes, the translation will no longer be found. That is why texts are edited rarely, and this is a deliberate choice in favour of “editable without a rebuild”.</p>
+
+<h3>Two sets, two files</h3>
+<table>
+<tr><th>Set</th><th>Shipped default file</th><th>User layer</th></tr>
+<tr><td>Server messages (texts of tools, prompts, warnings)</td><td><code>i18n/&lt;lang&gt;.txt</code></td><td><code>&lt;dbDir&gt;/i18n/&lt;language&gt;.txt</code></td></tr>
+<tr><td>Panel texts</td><td><code>i18n/panel.&lt;language&gt;.txt</code></td><td><code>&lt;dbDir&gt;/i18n/panel.&lt;language&gt;.txt</code></td></tr>
+</table>
+<p>The sets are not mixed: identical English strings mean different things in them, so “Model and dictionaries” in the panel and in the messages are two different translations. Both sets share the same format, layers and parsing rules.</p>
+
+<h3>Fallback order</h3>
+<p>File dictionary → built-in set → English text. A missing file is neither an error nor an empty label: the English string stays. That is exactly why a new language can be declared before its translation is ready: the palace keeps working while the texts are translated gradually.</p>
+
+<h3>Editing translations from the panel</h3>
+<p>The maintenance card has a dictionary screen: a table of “English string — translation”, saving into the user layer (the shipped default belongs to the release, we do not edit it) and a <b>“Translate”</b> button. It sends the working model exactly those cells where there is no translation and does not rewrite what is already done; the translations that come back land in the panel draft, and the file is changed by “Save”. An empty cell removes the edit rather than writing an empty string; only what changed is saved, so that editing one cell does not wipe the others.</p>
+
+<h3>Dictionary reconciliation with the program</h3>
+<p>The dictionary screen answers not only “what is written here” but also “does it match the program”. Above the table stand four numbers that are computed on every opening, not by a button:</p>
+<table>
+<tr><th>Number</th><th>What it means</th></tr>
+<tr><td><code>keys in the program</code></td><td>How many strings the code itself declares — the reference we check against</td></tr>
+<tr><td><code>strings in the dictionary</code></td><td>How many strings are in the person's file, including placeholders without a translation</td></tr>
+<tr><td><code>without translation</code></td><td>The program's keys have nothing to show: there is no text either in the edit or in the shipped default — they will go out in English</td></tr>
+<tr><td><code>without key</code></td><td>File strings whose left-hand side is not in the program: the key was renamed or deleted but the translation remained</td></tr>
+</table>
+<p>The numbers are computed independently, and a match of the first two proves nothing: the keys could have diverged one for one. That is why the findings stand next to them, and each is clickable — “without translation” and “without key” filter the table. A string without a key cannot simply be thrown away: it is not lost on saving, otherwise the very first edit would erase a translation that the program still has nothing to attach it to.</p>
+<p>The second thing that came out of this: the “Create” button no longer writes an empty placeholder. It lays out a file with all the program's keys and empty right-hand parts — the placeholder is visible in full at once, and “without translation” on it honestly equals the number of keys. The file still remains valid: an empty right-hand part is a placeholder, not breakage.</p>
+
+<h3>What goes to the model so that the terminology does not drift apart</h3>
+<p>The request is not a list of strings but an object with two keys: <code>strings</code> (what to translate) and <code>glossary</code> (the pairs already accepted in this same dictionary). The glossary is assembled from the translated strings of the set — short labels first — and grows as the pass goes on, so that one concept does not get different words in neighbouring batches. The instruction states outright: a word from <code>glossary</code> is not rewritten, one exact term per concept for the whole answer, no ambiguous words, no literal calques and no synonyms for the accepted one; and these are labels, not sentences.</p>
+
+<h3>Why the batch is exactly this size</h3>
+<p>In the working model, reasoning goes into the same output tokens as the answer. A measurement on the live model (French, panel set) showed where completeness ends:</p>
+<table>
+<tr><th>Batch</th><th>Output tokens</th><th>Time</th><th>Translated</th><th>Same words on repeat</th></tr>
+<tr><td>10</td><td>696</td><td>3.8 s</td><td>10 of 10</td><td>10 of 10</td></tr>
+<tr><td>20</td><td>2 619</td><td>20.5 s</td><td>20 of 20</td><td>19 of 20</td></tr>
+<tr><td>30</td><td>3 244</td><td>13.3 s</td><td>30 of 30</td><td>27 of 30</td></tr>
+<tr><td>40</td><td>4 415</td><td>28.0 s</td><td>40 of 40</td><td>32 of 40</td></tr>
+<tr><td>60</td><td>5 807</td><td>30.7 s</td><td>59 of 60</td><td>50 of 59</td></tr>
+</table>
+<p>With the former output limit of 4096 tokens, a batch of forty terms broke off in the middle, and only part of the pairs was salvaged from the answer — hence the complaint “filled in half”. Hence the settings: a batch of 30 strings, an output limit of 16 384 tokens (headroom for the wandering length of the reasoning), a batch length limit of 2400 characters and a wait of 180 seconds.</p>
+
+<h3>French: the whole path end to end, without base conversion</h3>
+<p>Verified on the live data catalog: the language <code>fr</code> was declared in the registry, empty <code>i18n/fr.txt</code> and <code>i18n/panel.fr.txt</code> were created, filled by the working model through the same code as the button, and declared to the host at startup — the language landed in both pickers, the palace's and the interface's. No vector recompute was started: a language can be introduced without touching the bases.</p>
+<p>The result of that run: <b>468 strings out of 481</b> in the messages dictionary and <b>478 out of 493</b> in the panel dictionary. The remainder was analysed rather than written off as “the model could not”. Thirteen strings of the messages set are placeholders made of substitutions alone (“{reason} {count}”, “, ”, “—”): there is nothing to translate in them, and now they do not go into the request at all. The other twelve are words that are written the same in French as in English (<code>Provenance</code>, <code>messages</code>, <code>base</code>, <code>Pause</code>, <code>Concepts</code>, <code>contradiction</code>, <code>Adjacent</code>, <code>consolidation</code>, <code>Jev</code>): the translation would coincide with the source, and by the rule a coincidence means “no translation” — and that is correct, a French speaker sees exactly the same word.</p>
+<p>State as of 23.10 (live data catalog): <code>fr.txt</code> holds 460 pairs and not a single empty right-hand part, <code>panel.fr.txt</code> — 480. The key set has grown to 488 since then, so the French dictionary again has strings “without translation” — that is a normal state, not breakage: new keys arrive in English until they are translated with the same button. It is precisely for such cases that the dictionary reconciliation with the program appeared (see above).</p>
+<p>The terminology did not come out as a calque: <i>Room</i> → <i>Salle</i>, <i>Corridor</i> → <i>Couloir</i>, <i>Placard</i> → <i>Cartel</i> (a museum label, not “placard” — a cupboard), <i>Memory Palace</i> → <i>Palais de mémoire</i>, <i>Tour</i> → <i>Visite</i>.</p>
+<p>Two fixes came out of a run. First: a batch from which not a single pair was accepted (the model spent the whole allowance on reasoning) is split in half and asked again — otherwise filling stopped with the error “the model reached its limit” — and the person saw an unfinished dictionary. Second: the instruction now explains what the tool itself means (the palace is a memory store, a room is a category, a corridor is links, a placard is a record title, repetition is intervals), because the model refused to translate short labels like <code>Pause</code> or <code>Capture</code> as ambiguous.</p>
+
+<div class="note"><b>Why Russian is not in the code</b>
+Russian was our first experience of a “language as data”, and it went through end to end: 485 texts in a file, edits without a rebuild, shipped and user layers, a consistency check against the key set. The second experience was French: an empty dictionary, translation by the model, the language in both pickers, and not a single code change for a language. This is no longer a hypothesis but a proven path.</div>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c6"><span class="num">6.</span>Model, bindings and vector dimension</h2>
+
+<p>The model is not chosen “in the settings” but by the language of the palace. There is one rule: a binding <code>language → model</code> in <code>bindings.json</code>, otherwise the default <code>*</code>. A separate setting can override the choice, but that is a deliberate exception, not the usual path.</p>
+
+<pre><code>// registry/models.json — что модель умеет
+{ "id": "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+  "label": "minilm-l12",          // короткое имя: попадает в метку базы
+  "pooling": "mean", "dtype": "q8", "dimensions": 384 }
+
+// registry/bindings.json — какой моделью считать язык
+{ "bindings": { "zh": "Xenova/bge-small-zh-v1.5", "*": "Xenova/paraphrase-multilingual-MiniLM-L12-v2" },
+  "default": "en" }</code></pre>
+
+<h3>What matters here</h3>
+<ul>
+  <li><strong>Dimension comes from the catalog, not from the code.</strong> <code>bge-small-zh</code> has 512 numbers, the multilingual <code>minilm-l12</code> has 384. The recompute takes the expected length from there; there is no longer a constant in the converter.</li>
+  <li><strong>The language of the model is not an indicator.</strong> A Chinese model does not at all mean “a base in Chinese”: the language comes from the label, and the model from the binding. The same multilingual model can serve Russian, English and French, and the labels of the bases will differ.</li>
+  <li><strong>Dimension is a hard condition on writing, a soft one on reading.</strong> A vector of foreign length cannot be written: it will not compare with the others. A base with a foreign length can be read — search degrades to word search, but it does not fall silent and does not lose records.</li>
+  <li><strong>The package default</strong> (<code>default</code>) is accepted only if the release actually ships texts for it. A declared but empty language is worse than English.</li>
+  <li><strong>A remote model is a separate choice.</strong> If an OpenAI-compatible endpoint is selected in the settings, the local entry is not chosen at all, and the dimension is learned from the first vector: for such a model there is nowhere to declare it. The base label is still assembled the same way — from the language and the name — otherwise there would be nothing to check the base against.</li>
+</ul>
+
+<h3>Thresholds visible in behavior</h3>
+<table>
+<tr><th>Threshold</th><th>Value</th><th>What it decides</th></tr>
+<tr><td><code>MIN_COSINE</code></td><td>0,2</td><td>Below it a record does not enter semantic search</td></tr>
+<tr><td><code>MERGE_COSINE</code></td><td>0,92</td><td>Above it records are considered the same</td></tr>
+<tr><td><code>DEFER_COSINE</code></td><td>0,88</td><td>Above it merging is deferred until a re-check</td></tr>
+<tr><td><code>CONTRADICTION_COSINE</code></td><td>0,88</td><td>Below it, with a shared topic, the records contradict each other</td></tr>
+<tr><td><code>DIALOGUE_MIN_LETTERS</code></td><td>40</td><td>Fewer letters — the dialogue language is not determined</td></tr>
+<tr><td><code>DIALOGUE_SHARE</code></td><td>0,6</td><td>A smaller share — the dialogue language is not determined</td></tr>
+</table>
+<p class="small">The similarity thresholds are the author's; we did not change them. They are listed here because without them it is unclear why “recompute vectors” is required at all: comparison via cosine works only within one model.</p>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c7"><span class="num">7.</span>Base schema: how the handler knows what lies where</h2>
+
+<p>The list of tables with vectors must not live in the code. Otherwise a table added by the author silently drops out of all our operations: recompute, repair, state check. So it is declared as data — the file <code>registry/schema.json</code> — and is read by the same rules as the model catalog: the shipped default is mandatory, and the user layer in the data directory overrides it.</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 800" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1040" height="800" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">Base schema: what the handler reads and how that becomes an action</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">The table list is data, not code. The handler takes the declaration, inspects the base and decides what to do with it</text>
+<rect x="360" y="104" width="340" height="66" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+<text x="530" y="133" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#4c1d95" text-anchor="middle">registry/schema.json</text>
+<text x="530" y="150" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">shipped default; &lt;dbDir&gt;/registry/schema.json layer wins</text>
+<rect x="360" y="196" width="340" height="72" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="530" y="220.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">Declaration parsing</text>
+<text x="530" y="237.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">role, properties.vector.text,</text>
+<text x="530" y="252.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">properties.vector.where</text>
+<rect x="360" y="294" width="340" height="62" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="530" y="321" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">VectorTableSpec[]</text>
+<text x="530" y="338" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">nodes and observations — “here lie the vectors”</text>
+<rect x="360" y="382" width="340" height="76" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="530" y="416" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Base inspection: read only</text>
+<text x="530" y="433" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">PRAGMA table_info, row count, vector lengths</text>
+<rect x="360" y="484" width="340" height="84" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="530" y="522" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">judgeBase → 7 states → 4 actions</text>
+<text x="530" y="539" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">the rule reads facts and expectation, base unchanged</text>
+<rect x="360" y="594" width="340" height="62" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="530" y="621" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">Button performs the action</text>
+<text x="530" y="638" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">write-label / convert / repair / nothing</text>
+<path d="M 530 170 L 530 194" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 268 L 530 292" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 356 L 530 380" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 458 L 530 482" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 568 L 530 592" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="40" y="92" width="290" height="400" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">WHAT THE DECLARATION SAYS</text>
+<rect x="60" y="124" width="250" height="70" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="147.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">role: user | service</text>
+<text x="185" y="164.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">service (FTS shadows) is skipped, not</text>
+<text x="185" y="179.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">analyzed</text>
+<rect x="60" y="208" width="250" height="70" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="239" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">text — the text field</text>
+<text x="185" y="256" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">the model string is read from it</text>
+<rect x="60" y="292" width="250" height="74" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="317.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">where — row condition</text>
+<text x="185" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">nodes: status = «active»;</text>
+<text x="185" y="349.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">observations: all</text>
+<rect x="60" y="380" width="250" height="74" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="405.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">vector field not declared</text>
+<text x="185" y="422.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">inferred: the only BLOB field in</text>
+<text x="185" y="437.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">the row</text>
+<path d="M 310 250 L 358 250" fill="none" stroke="#8b5cf6" stroke-width="1.6" marker-end="url(#arwA)"/>
+<text x="312" y="242" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#6d28d9" text-anchor="start">data</text>
+<rect x="40" y="522" width="290" height="84" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="552.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Palace files: &lt;dbDir&gt;/*.db</text>
+<text x="185" y="569.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">user.db, shared.db, project-&lt;hash&gt;.db — one</text>
+<text x="185" y="584.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">file per scope</text>
+<path d="M 330 546 L 358 460" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="268" y="596" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="10.5" fill="#64748b" text-anchor="start">read by the same declaration</text>
+<rect x="740" y="466" width="270" height="210" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="760" y="494" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">IF THE ACTION IS A RECOMPUTE</text>
+<rect x="760" y="490" width="230" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="875" y="513" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Plan: who needs it</text>
+<text x="875" y="530" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">vector empty or wrong length</text>
+<rect x="760" y="552" width="230" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="875" y="567.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Batches of 16 texts</text>
+<text x="875" y="584.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">the model limit does not decide</text>
+<text x="875" y="599.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">the fate of the base</text>
+<rect x="760" y="614" width="230" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="875" y="637" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Write — via the store</text>
+<text x="875" y="654" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">one connection per base</text>
+<path d="M 700 625 L 738 625" fill="none" stroke="#10b981" stroke-width="1.6" marker-end="url(#arwT)"/>
+<rect x="740" y="92" width="270" height="350" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="760" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">STATES THAT ARE VISIBLE</text>
+<text x="762" y="132" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· absent — no base yet</text>
+<text x="762" y="162" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· empty — no records</text>
+<text x="762" y="192" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· no-label — no label</text>
+<text x="762" y="222" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· other-model — the label is foreign</text>
+<text x="762" y="252" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· mixed-dims — vectors differ in length</text>
+<text x="762" y="282" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· missing-vectors — records with no vector</text>
+<text x="762" y="312" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· normal — all in place</text>
+<text x="762" y="366" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#7c3aed" text-anchor="start">Four actions: none, write-label,</text>
+<text x="762" y="384" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#7c3aed" text-anchor="start">convert, repair. State → action is</text>
+<text x="762" y="402" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#7c3aed" text-anchor="start">one rule, not panel markup.</text>
+<path d="M 738 526 L 702 526" fill="none" stroke="#6366f1" stroke-width="1.6"/>
+<rect x="40" y="700" width="960" height="74" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="520" y="725.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">Extension without our code</text>
+<text x="520" y="742.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">the author added a table with a vector — one line appears in the declaration, and the state check, label and recompute start seeing it; no TypeScript edit and</text>
+<text x="520" y="757.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">rebuild the plugin</text>
+</svg><figcaption>Fig. 5. The path from a schema declaration to an action on the base. The handler reads only the declaration and does not know tables by name; the rule turns facts about the base into one of seven states and one of four actions.</figcaption></figure>
+
+<h3>What is declared and what is inferred</h3>
+<ul>
+  <li><strong>Declared:</strong> the table <code>role</code> (<code>user</code> or <code>service</code>), the field holding text for the model (<code>properties.vector.text</code>) and the condition for row participation (<code>properties.vector.where</code>).</li>
+  <li><strong>Inferred:</strong> the vector field is the only field of type BLOB in a table row. If there are two BLOB fields, the declaration is rejected with a complaint: it is unclear where to write.</li>
+  <li><strong>Not declared at all:</strong> the dimension. It follows from the model catalog by label, not from the schema file.</li>
+</ul>
+
+<pre><code>{ "formatVersion": 1, "schemaVersion": 13,
+  "tables": {
+    "nodes":        { "role": "user",
+                      "properties": { "vector": { "text": "content", "where": "status = 'active'" } },
+                      "fields": { "id": "TEXT", "content": "TEXT", "embedding": "BLOB", "...": "..." } },
+    "observations": { "role": "user",
+                      "properties": { "vector": { "text": "belief", "where": null } } },
+    "nodes_fts":    { "role": "service" }
+  } }</code></pre>
+
+<p>The service tables are listed as a clear example of the walker skipping what is marked without analysing its contents: FTS shadows carry no user vectors, and an attempt to process them would be a mistake. For <code>observations</code> the condition <code>null</code> means “all rows participate”: observations are not archived the way memories are.</p>
+
+<h3>Seven states and four actions</h3>
+<table>
+<tr><th>State</th><th>What is visible</th><th>Action</th></tr>
+<tr><td><code>absent</code></td><td>There is no base file yet (it is created by the author's code)</td><td><code>none</code></td></tr>
+<tr><td><code>empty</code></td><td>The file exists, there are no records in the schema scope</td><td><code>none</code></td></tr>
+<tr><td><code>no-label</code></td><td>There is no label; the model is guessed from the vector length</td><td><code>write-label</code> or <code>convert</code></td></tr>
+<tr><td><code>other-model</code></td><td>A label exists, but the model is not the one we will write with</td><td><code>convert</code></td></tr>
+<tr><td><code>mixed-dims</code></td><td>The vector length does not match the label</td><td><code>convert</code></td></tr>
+<tr><td><code>missing-vectors</code></td><td>Some of the records have no vector</td><td><code>repair</code></td></tr>
+<tr><td><code>normal</code></td><td>The label matches, all vectors are of that length</td><td><code>none</code></td></tr>
+</table>
+<p>The order of the checks matters and is fixed: a mismatch must not be declared before it is established whose base this is — otherwise a foreign model would look like corrupted vectors. The rule is pure: it receives facts about the base and an expectation, and returns a state and an action. That is why it is verified by a test with no disk and no SQLite, and the panel merely names it in words.</p>
+
+<h3>How the recompute proceeds</h3>
+<ol>
+  <li><strong>Plan.</strong> A separate connection in “read-only” mode walks the tables from the declaration and selects the rows of the scope whose vector is empty or whose length is not the expected one.</li>
+  <li><strong>Batches.</strong> Texts go to the model in batches of 16: the model's output limit must not decide the fate of the whole base.</li>
+  <li><strong>Writing.</strong> The vectors are written by the storage — the base has a single connection, and it lives there. The converter only reads and computes.</li>
+  <li><strong>Label.</strong> After a successful recompute the base label is rewritten to the new language and model. The label and the vectors change in one operation, not two.</li>
+</ol>
+<p>Empty text is not a failure but a fact about the content: the row has nothing to build a vector from. Such rows are reported as a separate number, not silently skipped and not lumped into the overall error count.</p>
+
+<h3>Repair: compute the missing vectors and sign the base without changing the language</h3>
+<p>The <code>missing-vectors</code> state means records whose vector is empty while the label may well be correct. Running a recompute of the whole base for the sake of six rows is unnecessary and harmful: the other vectors are already correct. That is why this state has its own action — <code>repair</code> — and the button executes it as two requests in a row: <code>base-label</code> writes the missing labels, <code>base-convert</code> computes what lacks a vector.</p>
+<p>The practical point: a base with records lacking a vector stops being called “needs repair” after a single click, and for that one does not have to change either the language of the palace or the model. The price of such a repair is exactly one recompute of what is missing, not of the whole file.</p>
+
+<h3>Boundaries: what we deliberately do not build</h3>
+<ul>
+  <li><strong>There is no restore machinery.</strong> Conversion is a one-off human action; a rollback to the previous state is not provided for. Only a checkpoint is needed, so that an interrupted recompute can be continued: a partially recomputed base is the <code>mixed-dims</code> state, and a repeated run carries the work through to the end.</li>
+  <li><strong>The recompute goes straight into the live base,</strong> with no temporary copy: the base is small, and a copy would double both space and time. The fallback path is the base export, which the author already has.</li>
+  <li><strong>What cannot be converted is reported separately.</strong> A row that failed to be recomputed is not lost and does not block the others: it lands in the report as a separate list with the reason.</li>
+</ul>
+
+<div class="warnbox"><b>What the recompute does not do</b>
+It does not change the text of records, does not create or drop tables, does not touch service tables. The plan is a read: if it never comes to pressing “Run”, the same rows, texts, vectors and label remain in the base. This is verified by a test, not promised.</div>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c8"><span class="num">8.</span>Curated profile: why the rules moved into a separate packet</h2>
+
+<p>The palace holds two kinds of knowledge about a person: the inferred profile (what the system inferred on its own) and the curated block — the rules a person wrote themselves via <code>engram_profile_edit</code>. The second outranks the first, and that is where the trap lay.</p>
+
+<h3>What was wrong</h3>
+<p>The curated block was inserted at the start of the session mixed together with the inferred profile and with historical memories, in the common memory text. The agent read side by side “rules maintained by the person” and “memories that may be wrong”, and there was nothing to tell them apart except their wording. The second half of the problem was the memory block itself: it receives records the person did not write, and they looked just like rules.</p>
+
+<h3>What was done</h3>
+<p>The rules now arrive as a separate packet <code>&lt;engram_profile&gt;</code> with its own header-guidance: these are the person's instructions, they must be followed and treated as primary — as opposed to the memories below, which are only material. The separate tag exists so that the protection against substitution can distinguish a marked-up packet from text that merely looks like markup.</p>
+
+<div class="note"><b>Two attempts, and the first was cancelled</b>
+At first we wanted a “cheap fix”: to prepend a header inside the existing memory block. We cancelled it and did the expensive but correct thing: a header inside shared text does not separate rules from memories, it only adds one more formulation that can be confused with the content. A separate package is a separate place, a separate tag, a separate check.</div>
+
+<h3>What this gives</h3>
+<ul>
+  <li>The person’s rules are visible separately from the system’s conclusions — to the person, to the agent, and to the security check.</li>
+  <li>The block is not “diluted”: anything not written by the person does not get into it.</li>
+  <li>Editing, rollback and version history live in one place, with optimistic locking: an edit does not silently overwrite someone else’s edit.</li>
+</ul>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c9"><span class="num">9.</span>What we fixed along the way and why</h2>
+
+<p>The work did not happen beside the author’s code but through it: while we were doing multilingual support, defects that got in the way surfaced. Below is what was fixed in passing. This is not “rewrote it while we were there”: every item once got in the way, and without it the next step could not be taken.</p>
+
+<h3>Interface</h3>
+<ul>
+  <li><strong>The panel menu no longer slides away.</strong> The menu and the tabs were part of the scrollable content, so the page “slid” underneath them, and with a long list the menu disappeared from view. Now the menu is pinned to the top and does not take part in content scrolling. For the same reason the layers were reworked: the full-screen dictionary edit screen opened “at the click position” and on a long card ended up past the bottom edge — from the outside it looked like “clicked and nothing happened”. Now the layers live outside the scrollable area.</li>
+  <li><strong>The buttons on the dictionary screen came to life.</strong> Save, cancel and model fill were markup without handlers: the screen opened and then nothing happened. Now only what changed is saved, an empty cell removes the edit, and model fill writes a draft, not a file.</li>
+  <li><strong>The panel language follows the host.</strong> Previously the panel kept its own choice and could speak one language while the host was switched to another. Now the source is the DSH setting, and a manual panel language choice remains a deliberate override.</li>
+  <li><strong>The maintenance card texts come from the panel’s built-in dictionaries.</strong> The card read a server-side language file, so its labels did not switch together with the interface and could end up in a language the person does not expect.</li>
+  <li><strong>The full model identifier was removed from the selection row</strong> (<code>Xenova/paraphrase-multilingual-MiniLM-L12-v2</code> instead of the short name took the whole row and pushed out the rest). The identifier remains in the hover tooltip.</li>
+  <li><strong>The panel check window:</strong> the button is pushed to the right, closing is reported to the panel (otherwise the window opened only once — the panel considered it still open), the text is larger and higher-contrast: grey 11–12 px was not readable in that window.</li>
+</ul>
+
+<h3>Memory and host</h3>
+<ul>
+  <li><strong>Session logs are not read at startup.</strong> Reading the log in full cost hundreds of megabytes of memory on every startup; on live data the host crashed because of it. Turns are taken from the current session, and the log is read only on an explicit history backfill request. The logs on disk are not deleted by this: they remain, and deletion is a separate action with confirmation.</li>
+  <li><strong>Only what the person typed counts as the dialogue language.</strong> A live check showed that the “dialogue language” was determined to be English, because English service text (runtime snapshot, skill catalog, instructions) was taken for human speech. Now anything that lacks the mark of a human turn is not counted at all.</li>
+  <li><strong>The embedder shuts down correctly,</strong> otherwise resources kept hanging after a model reload.</li>
+</ul>
+
+<h3>Data and vectors</h3>
+<ul>
+  <li><strong>Dimension is a hard condition on write, degradation on read.</strong> Previously a dimension mismatch was a warning: the base quietly filled up with vectors that would never be compared with anything. Now the write is rejected deliberately, and reading keeps working via keyword search — and says so with the <code>degraded</code> flag instead of staying silent.</li>
+  <li><strong>The base dimension is taken from the majority of vectors,</strong> not from the first one encountered: a mismatch no longer passes itself off as the “norm”.</li>
+  <li><strong>The schema declaration format version is no longer a dead field:</strong> <code>formatVersion</code> is checked, and a declaration of another version is not applied silently.</li>
+  <li><strong>The migration record is shown in words,</strong> not as a chunk of JSON: a person reads the output, not the structure.</li>
+  <li><strong>A button to clear the palace log</strong> with confirmation and a clear result.</li>
+</ul>
+
+<div class="note"><b>Why this list is in the document</b>
+Because half of these fixes change behaviour that the author considers their own. They must not be “noted”, but either accepted upstream or deliberately rejected. Each fix was made as a separate commit with an explanation in the body, so that it can be reviewed one by one.</div>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c10"><span class="num">10.</span>How this is verified and how it is shipped</h2>
+
+<p>Our checks are not “by eye”. There are six gates, and a shipment counts as done only when all six are green.</p>
+
+<table>
+<tr><th>Gate</th><th>What it checks</th><th>State</th></tr>
+<tr><td>Types (<code>tsc</code>)</td><td>TypeScript types across the whole package</td><td>116 errors — and this is the <em>baseline</em>: all of them are about missing type declarations in the host’s packages; our fixes do not add any</td></tr>
+<tr><td>Texts (<code>check-messages</code>)</td><td>Every message key requested by code is declared in the sets</td><td>488 keys requested by code; en 488 keys / 485 texts, zh 488 / 486, ru 485 texts — no critical discrepancies</td></tr>
+<tr><td>Code rules (<code>check-patterns</code>)</td><td>Forbidden patterns: local copies of language lists, bypassing the package, and the like.</td><td>43 checks, 0 failures</td></tr>
+<tr><td>Hook order (<code>check-hook-order</code>)</td><td>The plugin's hooks are in the declared order, not in random order</td><td>Clean, 5 files checked</td></tr>
+<tr><td>Tests (<code>vitest</code>)</td><td>Behavior: storage, search, recompute, dictionaries, registries, language axes, profile, security</td><td>49 files (48 passed, 1 skipped); 700 tests — 699 passed, 1 skipped</td></tr>
+<tr><td>Build (<code>tsdown</code>)</td><td>Both bundles are built — the server one and the client one</td><td><code>lib/index.js</code> 825 645 B, <code>lib/client.js</code> 329 050 B</td></tr>
+</table>
+
+<h3>What exactly among the new parts is covered by tests</h3>
+<ul>
+  <li><strong>Language registry:</strong> parsing of the file, the built-in set when there is no file, corrupted JSON does not leave the plugin without languages, an empty list means not “no languages” but a corrupted file.</li>
+  <li><strong>Base label:</strong> <code>fr-minilm-l12</code> reads as language <code>fr</code>, <code>zh-Hans-minilm-l12</code> as <code>zh</code>, two different labels give <code>mixed</code>.</li>
+  <li><strong>Axes:</strong> the interface preference provides no basis for recording the palace language; the dialogue voice outranks the interface; the model is chosen by the palace language; changing the palace language moves the base to “another model” but does not rewrite the label or the content; the recompute plan is read-only.</li>
+  <li><strong>Label on open:</strong> an empty base gets a label, and so does a base without a label on the target model; another model and mixed vectors do not, and a label already in place is not rewritten (<code>tests/base-state.spec.ts</code>).</li>
+  <li><strong>Dictionaries:</strong> a file for a language that is not in the hard-coded set is read as an ordinary layer; without a file the message stays English rather than empty; “Create” writes a file with keys, an empty cell removes the edit instead of writing an empty string.</li>
+  <li><strong>Recompute:</strong> on a real SQLite file — which rows enter the plan, that empty text is counted separately, that a batch failure does not take the rest with it.</li>
+  <li><strong>Dimension:</strong> a mismatch rejects the memory and does not lose keyword search.</li>
+</ul>
+
+<h3>How it is shipped</h3>
+<p>Two files are built — the server and client bundles — and placed in the DSH profile (<code>node_modules/@kenz1117/dsh-engram/lib/</code>), next to the dictionaries and registries. The version number is a single line in <code>package.json</code>; right now it is <code>0.9.8-dsv.27</code>. The server half is picked up only after DSH restarts, the client half after the page is refreshed: they are different halves of the shipment, and the panel shows their version divergence as a banner rather than crashing. The live palace lives in <code>C:Usersdsv.dshengram</code>, the models in <code>...engrammodels</code>.</p>
+
+<h3>Verification on live data, not only by tests</h3>
+<p>Before a recompute the bases are snapshotted with <code>VACUUM INTO</code>, and the snapshot remains reproducible evidence: it shows what was there. The first real recompute ran on 20 October: 10 memories were fixed in <code>user.db</code>, zero errors, and after the run all six bases were clean — that is, the label matched the vectors and there were no memories without a vector. The “before” snapshot sits in <code>_ops/fixtures/before-convert-2026-10-19</code> and still reproduces those very 10 broken memories. As of 23.10 <code>user.db</code> again has six memories without a vector (95 active, 6 without a vector): they were left by the observation consolidation of 22.10 — that is, “clean” is not forever, and that is exactly why the state is visible in the card, and the reason is visible as the <code>vectors-missing</code> line in the log.</p>
+
+<div class="warnbox"><b>One installation trap found on a live profile</b>
+The file <code>registry/languages.json</code> entered the shipment later than the other registries, and it was missing from the profile: installation there is done by copying file by file, not from an archive. Without it the plugin does not crash — it takes the built-in set — but language captions arrive as codes instead of names. It is included in the <code>files</code> list of the <code>registry/</code> package, so everything installs correctly from the archive; only the manual copy diverges.</div>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c11"><span class="num">11.</span>Maintenance: base states, repair, and the log</h2>
+
+<p>The maintenance card answers three questions in a row: what is up with the bases, what will happen to them when pressed, and why last time it came out exactly that way. The third question previously went unanswered — and it showed.</p>
+
+<h3>Three words instead of seven states</h3>
+<p>The rule sorts a base into one of seven states (chapter 7), but a person at the card does not need seven: they have one button. So the card reduces the states to three words, and the word is chosen by what the button will do:</p>
+<table>
+<tr><th>Word in the card</th><th>When</th><th>What “Run” does</th></tr>
+<tr><td><code>Base is OK</code></td><td>All bases in state <code>normal</code>, <code>absent</code> or <code>empty</code></td><td>Nothing: there is nothing to press</td></tr>
+<tr><td><code>Base needs repair</code></td><td>Only labels and vector backfill are needed</td><td>A repair: <code>base-label</code>, then <code>base-convert</code></td></tr>
+<tr><td><code>Base needs conversion</code></td><td>At least one base needs a recompute onto another model</td><td>A language switch by the assembled condition, or a recompute by state</td></tr>
+</table>
+<p>Inside the card each base still names its own state — <code>no label</code>, <code>another model</code>, <code>mixed vectors</code>, <code>memories without a vector</code> — otherwise it would be impossible to tell which of the six bases to repair. The summary word, though, is one for all bases: there is one button, and it has to name itself honestly.</p>
+
+<h3>The log: two entries that did not exist before</h3>
+<p>A failed Jev decision has so far lived only in a ring buffer in process memory. The buffer dies with a restart, and a day later “the record passed under clean rules” and “Jev was silent” became indistinguishable in the log. Now every failure writes a <code>jev-fallback</code> line: where it was asked (<code>band</code> or <code>contradiction</code>), which question, which reason and how long it took. The memory text does not get into the log: the log must not become a second store of other people's records, and a log error has no right to break a memory write — that is why it is silenced there.</p>
+<p>The second line is <code>vectors-missing</code>. It appears when the distillation of records (distill) has passed but there was nothing to place a vector with: records without a vector remained in the base. It carries the number of records and the scope. This is exactly the case later seen as “the base requires repair”; before, the cause disappeared and a person saw only the consequence.</p>
+<p>The panel shows both lines in plain language rather than by service names: the operations list holds “Jev decision failed” and “records without vector”, with an explanation in the tooltip.</p>
+
+<h3>Jev check line</h3>
+<p>The “Test connection” button showed its result in a toast, and a toast lives for seconds: a minute later one could say neither where the check went nor how it ended. Now above the form there is a line with the parameters — address, model, timeout and where the key came from (“from the field”, “stored”, “not set”) — and below it the outcome of the last check: time, response duration, ping probability and HTTP code.</p>
+<p>The refusal got a name. Before, any failure looked the same — “not specified” — and a person did not know whether to fix the key, the network, the timeout or the protocol. Now the kind of failure is named: <code>HTTP</code> (the server answered, but with the wrong thing), <code>network</code> (could not reach), <code>timeout</code> (did not make it in time), <code>protocol</code> (an answer came, but there is nothing to parse it with). The full error text sits in the tooltip so the line does not fall apart.</p>
+<p class="small">The measurement is taken from a live connection: the line shows the duration and the probability that the response itself returned, not the last known success, and the HTTP code next to them. The numbers in it change from run to run — that is the sign that it is alive.</p>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c12"><span class="num">12.</span>What remains and what we ask of the author</h2>
+
+<h3>Our work, not yet done</h3>
+<ol>
+  <li><strong>Divergence indicator</strong> between the interface language and the palace language: a person who has switched the interface “just to look” must see that the palace stands on another language — otherwise he will take one for the other. There is no such indicator now; the divergence is visible only in the first-run window and in the language picker.</li>
+  <li><strong>Syncing the translations of the plan</strong> (the English and Chinese versions lag behind the Russian one). This is done once, when the wording settles, so as not to translate twice.</li>
+  <li><strong>Translating the agent instruction</strong> into English and Chinese: for now the text exists only in Russian and is marked as a draft — the content matters more than the language it is written in.</li>
+</ol>
+
+<h3>What was closed on 22–23.10</h3>
+<ul>
+  <li><strong>Working language switcher</strong> (described in chapter 3): the “Palace language” block — the choice, the interlock guard and “Run” in one line; the window length became the setting <code>palaceChangeWindowSec</code> (5–600 seconds, 30 by default), and both halves count by it.</li>
+  <li><strong>Agent instruction</strong>: the text lies in the package (<code>docs/agent-language-guide.ru.md</code>) and is served by the <code>engram_language_guide</code> tool.</li>
+  <li><strong>Label on opening the base</strong> (chapter 4): a new base no longer lives without a label until the first click.</li>
+  <li><strong>Repair without changing the language</strong> (chapters 7 and 11): count up the records without a vector and set the missing labels, without touching either the language or the model.</li>
+  <li><strong>Dictionary reconciliation with the program</strong> (chapter 5): four numbers and two findings; “Create” lays out a file with keys, not an empty blank.</li>
+  <li><strong>The Jev check line and traces in the log</strong> (chapter 11): the refusal got a kind, and the failed decision and the missing vectors got an entry in the operations log.</li>
+</ul>
+
+<h3>Doors open: both pull requests merged</h3>
+<p>#20 (Jev takes the provider and the model from the host) was merged on 21 October, #21 (the embedder as a deployment property, strict dimension check, multilingual default) — on 22 October. That is why they are no longer among the requests to the author: the conversation is now about what to do with our branch next, not about whether to accept the PR.</p>
+
+<h3>What we ask of the author</h3>
+<ol>
+  <li><strong>Accept the form of the schema declaration</strong> (<code>registry/schema.json</code>) and cover it with a test for divergence from the real base. For now we keep the file; keeping it is up to the author.</li>
+  <li><strong>Say which table-selection criterion he will introduce</strong> instead of our <code>role</code>: if he gets his own rule, our declaration must follow it, not argue with it.</li>
+  <li><strong>Confirm or reject the incidental edits</strong> (chapter 9). They change behaviour he considers his own, and they cannot be merged silently.</li>
+  <li><strong>Close the debt on writing when the model fails</strong> — this is his design: with the model unavailable the record is rejected, and this is a deliberate decision, not our unfinished work.</li>
+</ol>
+
+<h3>Questions we have no answer to</h3>
+<ul>
+  <li>Does the instruction promise only language selection or a full onboarding of a new language (dictionaries, binding, base conversion)? Our reading: onboarding a language is exactly what we are doing, and there is no one to get a separate procedure from.</li>
+  <li>Where should the divergence of languages be shown — on the “Today” tab or in maintenance?</li>
+  <li>Is an English language “substitute” needed for the fourth choice, or is a real locale code always sufficient? For now — a real code.</li>
+</ul>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="c13"><span class="num">13.</span>Conformance to the work plan</h2>
+
+<p>The work plan is a separate document, it is ours, and we are the ones who revise it. What follows is a snapshot: what is closed, what is closed with a caveat, what remains.</p>
+
+<table>
+<tr><th>Block</th><th>Content</th><th>State</th></tr>
+<tr><td>A</td><td>Model selection: catalog, bindings, multilingual model, remote embedder</td><td>Closed provisionally (pending the over-complexity analysis)</td></tr>
+<tr><td>B</td><td>Base conversion: label, schema declaration, recompute, states</td><td>The label, the schema, the recompute, the repair and the three states of the card work; loose ends remain in reporting and in what is owed to the author</td></tr>
+<tr><td>C</td><td>Language switching and interlock guards</td><td>Language detection, the picker, the language registry, the axis tests, a working switch and the agent instruction are done; the language-mismatch indicator remains</td></tr>
+<tr><td>D</td><td>Reconciliation with what is implemented: Jev, profile, documentation</td><td>The profile is done as a separate package; Jev is merged (#20, 21.10), multilingual support is merged (#21, 22.10); documentation is this document and the plan</td></tr>
+</table>
+
+<div class="dec"><b>The rule we follow</b>
+The plan is not a constant. It is a snapshot of knowledge at the moment it was written: it is rewritten to follow the decision, not defended against the fact. That is why it marks what is done and what remains, and why no second document “but here is how it really is” is set up.</div>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="appA"><span class="num">A.</span>Commit timeline</h2>
+<p class="small">The lower part is our line from the author's tag <code>v0.9.3</code> (<code>1aa2e82</code>); the upper part is the lift onto <code>v0.9.8</code>. Newest on top.</p>
+<table>
+<tr><th>Commit</th><th>What was done</th></tr>
+<tr><td><code>b3df0d7</code></td><td>What the first pass had dropped: the 0.9.8-dsv.27 marker, the client half of file languages, the Jev failure kind, our assertions, docs/author</td></tr>
+<tr><td><code>70682fe</code></td><td>The language guide was not in the repository — your fix</td></tr>
+<tr><td><code>0694dc5</code></td><td>Packaging (i18n, registry, the guide) and two types — your fix</td></tr>
+<tr><td><code>223c122</code></td><td>Tests for the registries, base states, dictionaries and palace language</td></tr>
+<tr><td><code>a815123</code></td><td>Base maintenance, palace-language change and the dictionary screen</td></tr>
+<tr><td><code>26f8e71</code></td><td>Dictionaries as files, data registries, model chosen by language</td></tr>
+<tr><td><code>33c40af</code></td><td>Maintenance findings are read in the log in Russian</td></tr>
+<tr><td><code>d733ed6</code></td><td>A failure of the Jev decision leaves a trace in the operations log</td></tr>
+<tr><td><code>49d2b81</code></td><td>Jev check line, base label on open and log of missing vectors</td></tr>
+<tr><td><code>fca4f5c</code></td><td>Dictionary skeleton with keys and reconciliation of the program against the file</td></tr>
+<tr><td><code>44ffefc</code></td><td>Three states of bases, repair without changing the language and language blocks in the common row</td></tr>
+<tr><td><code>aba4cbf</code></td><td>The client tolerates a server older than itself — the card does not fall over on a version mismatch</td></tr>
+<tr><td><code>1d94abe</code></td><td>The window timer is set before the early returns, otherwise the panel fails with #310</td></tr>
+<tr><td><code>66e1f55</code></td><td>Bases are computed for the new language immediately, not after a restart</td></tr>
+<tr><td><code>db97ae1</code></td><td>Language switch by an assembled condition (C.11) and an instruction for the agent (C.08)</td></tr>
+<tr><td><code>380ec81</code></td><td>Tool context in the translation prompt and dropping strings without labels</td></tr>
+<tr><td><code>ba53a18</code></td><td>A batch that hits the output limit is split in half and requested again</td></tr>
+<tr><td><code>939840a</code></td><td>Language from the file into both switches; dictionary translation by the working model with a glossary in the request</td></tr>
+<tr><td><code>74c3faf</code></td><td>Tests of the axes “interface ↔ palace language ↔ data” (C.10)</td></tr>
+<tr><td><code>7dd9afa</code></td><td>The check window opens again, the button is on the right, the text is larger and higher-contrast</td></tr>
+<tr><td><code>9cbdccd</code></td><td>The language list comes from the server; “other language” passes the real locale code</td></tr>
+<tr><td><code>c85ba57</code></td><td>“Panel test” button, interlock guard countdown, pink reset balloon</td></tr>
+<tr><td><code>3b7a642</code></td><td>Palace languages are taken from the registry, not from a triple in the code</td></tr>
+<tr><td><code>fcd112d</code></td><td>Profile rules go out as a separate <code>&lt;engram_profile&gt;</code> package</td></tr>
+<tr><td><code>166a7e0</code></td><td>Only what a human typed counts as the dialogue language</td></tr>
+<tr><td><code>e4d0ee1</code></td><td>The rule “base language by labels” has moved to the label format</td></tr>
+<tr><td><code>553eab7</code></td><td>Palace language picker with preselection by locale and three detection cases</td></tr>
+<tr><td><code>2ecd8ee</code></td><td>Do not read session logs at startup, write the language after the fiber starts, close the embedder</td></tr>
+<tr><td><code>c7021fa</code></td><td>Vector recompute from the maintenance card, language selection, default interlock guard</td></tr>
+<tr><td><code>1410313</code></td><td>The full model identifier is removed from the selection row; the interlock guard blocks the button</td></tr>
+<tr><td><code>eae8191</code></td><td>The palace language is detected on first start and written to the configuration</td></tr>
+<tr><td><code>618eb38</code></td><td>Maintenance card: model, locale, button interlock guard</td></tr>
+<tr><td><code>dbd73ea</code></td><td>The author's v0.9.3 in our line (import, Russian texts into the dictionary)</td></tr>
+<tr><td><code>0e1e8f7</code>, <code>c8b644e</code>, <code>d518218</code></td><td>Tests: test types without redundant parameters, a dimension mismatch does not lose keyword search, mock tests of the remote embedder</td></tr>
+<tr><td><code>23152ca</code></td><td>Version 0.9.2-dsv.11</td></tr>
+<tr><td><code>7e77b27</code></td><td>The panel language follows the host, manual selection is an override</td></tr>
+<tr><td><code>5dd5b20</code></td><td>The maintenance card takes its texts from the panel's built-in dictionaries</td></tr>
+<tr><td><code>7d5f0f5</code></td><td>Classification of schema tables by <code>role</code> (user / service)</td></tr>
+<tr><td><code>2e11616</code></td><td>Menu outside the scroll area and robust parsing of the model response</td></tr>
+<tr><td><code>f3f6056</code></td><td>Reanimating the buttons of the dictionary screen: save, cancel, fill with model</td></tr>
+<tr><td><code>c8469c9</code></td><td>The dictionary edit screen opens over the window, not at the click location</td></tr>
+<tr><td><code>df1591d</code></td><td>Dictionary edit screen in maintenance</td></tr>
+<tr><td><code>be7e2ae</code></td><td>Model label into the base and a “Palace bases” card with a single button</td></tr>
+<tr><td><code>933d722</code></td><td><code>dist/</code> in <code>.gitignore</code></td></tr>
+<tr><td><code>9590400</code></td><td>The migration record is shown in words, not as JSON</td></tr>
+<tr><td><code>d7fd40f</code></td><td>The base dimension is taken from the majority of vectors</td></tr>
+<tr><td><code>761bd38</code></td><td>Base label — language and short model name</td></tr>
+<tr><td><code>4354a10</code></td><td>Panel dictionary in a separate file; “Model and dictionaries” card</td></tr>
+<tr><td><code>8c8c751</code></td><td>Short model name for the base record</td></tr>
+<tr><td><code>1e2ce3c</code></td><td>The package default is the service field <code>default</code> in the bindings</td></tr>
+<tr><td><code>97677df</code></td><td>Dimension mismatch: rejection on write, degradation on read</td></tr>
+<tr><td><code>7d235b7</code></td><td>Vector dimension is a hard condition, not a warning</td></tr>
+<tr><td><code>1e46d7d</code></td><td>Registry format version check</td></tr>
+<tr><td><code>8eb0082</code></td><td>Model and bindings registry — shipped data instead of hardcoded parameters</td></tr>
+<tr><td><code>e012e9b</code></td><td>Configurable embedder: local model, pooling, remote OpenAI-compatible endpoint</td></tr>
+<tr><td><code>3295f0d</code>, <code>80367bf</code></td><td>Translation dictionary in a separate file — <code>ru.txt</code> for the author's key set</td></tr>
+</table>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+
+<h2 id="appB"><span class="num">B.</span>Files: what was added and what was changed</h2>
+
+<h3>Data registries (new files)</h3>
+<table>
+<tr><th>File</th><th>What is in it</th></tr>
+<tr><td><code>registry/models.json</code></td><td>Model catalog: identifier, short name, pooling, type, dimension</td></tr>
+<tr><td><code>registry/bindings.json</code></td><td>“language → model” binding, package default</td></tr>
+<tr><td><code>registry/languages.json</code></td><td>Palace languages: code, human-readable name, whether a built-in text set exists</td></tr>
+<tr><td><code>registry/schema.json</code></td><td>Data schema declaration: tables, role, text field, row condition</td></tr>
+<tr><td><code>i18n/ru.txt</code></td><td>Russian translation of server messages (485 texts, 501 lines in the file)</td></tr>
+<tr><td><code>i18n/panel.ru.txt</code></td><td>Russian translation of the panel texts</td></tr>
+</table>
+
+<h3>Code (main)</h3>
+<table>
+<tr><th>Module</th><th>Purpose</th></tr>
+<tr><td><code>src/i18n/language.ts</code></td><td>Language code as a code, not a member of a triple: form, fallback, output language selection</td></tr>
+<tr><td><code>src/i18n/palace-language.ts</code></td><td>Pure rules for palace language detection: signal weights, threshold, three cases</td></tr>
+<tr><td><code>src/language-signals.ts</code></td><td>Reading the signal sources (turns of the current session, locale, preference)</td></tr>
+<tr><td><code>src/registry/languages.ts</code></td><td>Parsing the language registry and the built-in set</td></tr>
+<tr><td><code>src/registry/vector-schema.ts</code></td><td>Parsing the schema declaration: what is declared, what is derived</td></tr>
+<tr><td><code>src/registry/base-state.ts</code></td><td>The rule “facts + expectation → seven states and four actions”, which also decides which label to set on open (<code>labelToStamp</code>)</td></tr>
+<tr><td><code>src/registry/palace-change.ts</code></td><td>Checking the assembled condition: language, window start, its term — one formula for the panel and the server</td></tr>
+<tr><td><code>src/registry/base-census.ts</code></td><td>Base inspection: row count, vector lengths, label</td></tr>
+<tr><td><code>src/registry/convert.ts</code></td><td>Recompute plan and run in batches</td></tr>
+<tr><td><code>src/registry/registry-file.ts</code></td><td>Reading registries with layer overlay and claims instead of exceptions</td></tr>
+<tr><td><code>src/i18n/dictionary-file.ts</code></td><td>Reading dictionaries: shipped default, then the user layer</td></tr>
+<tr><td><code>src/i18n/dictionary-edit.ts</code></td><td>Editing the dictionary from the panel, a template with keys, and reconciliation of the program against the file: only changed entries, an empty cell removes</td></tr>
+<tr><td><code>src/i18n/dictionary-ai.ts</code></td><td>Translating the missing strings with the working model in batches, with the glossary in the request</td></tr>
+<tr><td><code>src/flywheel/distill.ts</code></td><td>Merging memories into observations; counts how many observations are left without a vector</td></tr>
+<tr><td><code>src/write-disposition.ts</code></td><td>The write rule (merge, skip, defer) and the trace of an aborted Jev decision in the log</td></tr>
+<tr><td><code>src/security/sanitize.ts</code></td><td>The <code>&lt;engram_profile&gt;</code> package, protection against markup substitution</td></tr>
+<tr><td><code>src/client/EngramPanel.tsx</code></td><td>Panel: tabs, maintenance card, language picker, Jev check, dictionary screen</td></tr>
+<tr><td><code>src/client/locales/*.ts</code></td><td>Panel texts in three languages</td></tr>
+</table>
+
+<h3>Verification tools (outside the package, <code>_ops</code> folder)</h3>
+<ul>
+  <li><code>convert-embeddings.mjs</code> — recompute by schema declaration, with <code>--dry-run</code> and <code>--dir</code>;</li>
+  <li><code>snapshot-bases.mjs</code> — snapshot of live bases via <code>VACUUM INTO</code>;</li>
+  <li><code>state-preview.mjs</code> — what the maintenance card will show, without starting the plugin;</li>
+  <li><code>census-tables.mjs</code>, <code>count-broken.mjs</code>, <code>dump-vector-schema.mjs</code> — table census, broken vector count, field dump;</li>
+  <li><code>check-svg-overlap.mjs</code> — checks diagram geometry before insertion into the documentation;</li>
+  <li><code>make-language-axes.mjs</code>, <code>make-description-html.mjs</code> — build the diagrams and this document.</li>
+</ul>
+
+<div class="note"><b>What is verified in this document and what is not</b>
+Code and numbers come from the repository and from runs (gates, tests, bundle sizes). The wording of decisions comes from our decision records; they are ours, not the author’s. Live interface checks (button, window, countdown, panel language switch) are done on a running DSH — only the person knows which of these he has already seen and which not; the text does not claim it.</div>
+<p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
+</div>
+</body>
+</html>

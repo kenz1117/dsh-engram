@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Дворец памяти — что сделано: мультиязычность и порядок в базах</title>
+<style>
+:root {
+  --ink: #0f172a; --ink2: #334155; --muted: #64748b; --line: #e2e8f0; --soft: #f8fafc;
+  --brand: #4338ca; --brand2: #6366f1; --accent: #7c3aed;
+  --ok: #10b981; --warn: #f59e0b; --err: #f87171;
+  --mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; padding: 0 0 80px;
+  background: #f4f5f9; color: var(--ink);
+  font-family: 'Segoe UI', 'Noto Sans', Arial, sans-serif;
+  font-size: 16px; line-height: 1.62;
+}
+.page { max-width: 1040px; margin: 0 auto; background: #fff; padding: 56px 64px 72px; box-shadow: 0 12px 40px -24px rgba(15,23,42,.35); }
+header.doc { border-bottom: 3px solid var(--brand); padding-bottom: 22px; margin-bottom: 34px; }
+header.doc .kicker { font-size: 12.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+header.doc h1 { margin: 10px 0 6px; font-size: 34px; line-height: 1.18; letter-spacing: -.01em; }
+header.doc .lead { margin: 0; color: var(--ink2); font-size: 17px; }
+header.doc .meta { margin-top: 14px; color: var(--muted); font-size: 13.5px; }
+h2 { font-size: 25px; line-height: 1.22; margin: 54px 0 16px; padding-top: 8px; border-top: 1px solid var(--line); }
+h2 .num { color: var(--brand2); font-weight: 700; margin-right: 10px; }
+h3 { font-size: 18.5px; margin: 30px 0 10px; color: var(--ink); }
+h4 { font-size: 16px; margin: 22px 0 8px; color: var(--ink2); }
+p { margin: 0 0 12px; }
+ul, ol { margin: 0 0 14px; padding-left: 24px; }
+li { margin: 5px 0; }
+li > ul, li > ol { margin: 6px 0 4px; }
+a { color: var(--brand); }
+code, .mono { font-family: var(--mono); font-size: 13.5px; background: #f1f5f9; border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+pre { background: #0f172a; color: #e2e8f0; padding: 14px 18px; border-radius: 10px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+pre code { background: none; border: 0; padding: 0; color: inherit; }
+table { width: 100%; border-collapse: collapse; margin: 6px 0 20px; font-size: 14.5px; }
+th { text-align: left; font-weight: 600; color: var(--ink2); background: var(--soft); border-bottom: 2px solid var(--line); padding: 9px 12px; }
+td { border-bottom: 1px solid var(--line); padding: 9px 12px; vertical-align: top; }
+td:first-child { white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+.note, .warnbox, .dec { border-radius: 10px; padding: 14px 18px; margin: 16px 0 20px; font-size: 15px; }
+.note { background: #f5f3ff; border-left: 4px solid var(--accent); }
+.warnbox { background: #fffbeb; border-left: 4px solid var(--warn); }
+.dec { background: #ecfdf5; border-left: 4px solid var(--ok); }
+.note b, .warnbox b, .dec b { display: block; margin-bottom: 4px; }
+.fig { margin: 22px 0 26px; padding: 14px 14px 6px; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+.fig svg { display: block; width: 100%; height: auto; }
+.fig figcaption { margin-top: 10px; font-size: 13.5px; color: var(--muted); }
+.totop { margin: 26px 0 0; text-align: right; }
+.btn { display: inline-block; padding: 7px 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--soft); color: var(--ink2); text-decoration: none; font-size: 14px; }
+.btn:hover { border-color: var(--brand2); color: var(--brand); }
+#toc { background: var(--soft); border: 1px solid var(--line); border-radius: 14px; padding: 22px 26px; margin-bottom: 8px; }
+#toc h2 { margin: 0 0 12px; border: 0; padding: 0; font-size: 20px; }
+#toc ol { margin: 0; padding-left: 22px; }
+#toc li { margin: 4px 0; }
+#toc a { text-decoration: none; }
+#toc a:hover { text-decoration: underline; }
+dl.terms { margin: 0; }
+dl.terms dt { font-weight: 600; margin-top: 16px; color: var(--ink); }
+dl.terms dd { margin: 4px 0 0; color: var(--ink2); }
+.small { font-size: 14px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="page">
+<header class="doc">
+  <div class="kicker">dsh-engram · форк dsv180 · ветка pr/upstream-lift</div>
+  <h1>Дворец памяти: что сделано</h1>
+  <p class="lead">Мультиязычность, реестры-данные, обработка баз, предохранители и попутные исправления — в одном описании, с причинами решений и схемами.</p>
+  <div class="meta">Черновик от 23 октября 2026 · версия плагина 0.9.8-dsv.27 · сделано на авторском выпуске v0.9.3 (<span class="mono">1aa2e82</span>), поднято на v0.9.8 (<span class="mono">9ee94b0</span>)</div>
+</header>
+
+<div class="warnbox"><b>Документ написан по версии 0.9.3, подъём сделан</b>
+Всё описанное здесь сделано и проверено на авторском выпуске <b>v0.9.3</b> (коммит <span class="mono">1aa2e82</span>). <b>23 октября 2026 ветка поднята на текущую версию автора — v0.9.8, заявка <a href="https://github.com/kenz1117/dsh-engram/pull/36">#36</a>.</b> Что при подъёме поменялось: Jev собирается по провайдеру и модели DSH (авторская версия этого места новее нашей, и наша не переносилась); чтение тела запроса перешло в его модуль <span class="mono">http-body</span> с пределом байт и ответами 413/400 — это распространилось и на наши маршруты; в коде словарей остались en и zh, русский приходит файлом. Из описанного ниже ничего не откатывалось: подъём менял то, <i>как</i> это сделано, а не <i>что</i> сделано. Два твоих исправления после ревью (<span class="mono">0694dc5</span>, <span class="mono">70682fe</span>) оставлены как есть, четвёртый коммит (<span class="mono">b3df0d7</span>) вернул то, что при подъёме потерялось: маркер нашей сборки, клиентскую половину языков из файлов, вид отказа и HTTP-код в строке проверки Jev.</div>
+
+<div id="toc">
+<h2>Оглавление</h2>
+<p class="small">Сразу за оглавлением — <a href="#terms">Термины и сокращения</a>: к нему возвращаются, когда слово не понятно.</p>
+<ol>
+  <li><a href="#c1">Задача: почему дворец не работал на других языках</a></li>
+  <li><a href="#c2">Ось дворца: как язык определяется на первом запуске</a></li>
+  <li><a href="#c3">Смена языка дворца: одно собранное условие</a></li>
+  <li><a href="#c4">Метка базы и реестр языков: язык как данные</a></li>
+  <li><a href="#c5">Словари: что остаётся в коде, что приходит файлом</a></li>
+  <li><a href="#c6">Модель, привязки и размерность вектора</a></li>
+  <li><a href="#c7">Схема базы: как обработчик понимает, что где лежит</a></li>
+  <li><a href="#c8">Курируемый профиль: почему правила ушли отдельным пакетом</a></li>
+  <li><a href="#c9">Что мы поправили по ходу и почему</a></li>
+  <li><a href="#c10">Как это проверено и как поставлено</a></li>
+  <li><a href="#c11">Обслуживание: состояния баз, починка и журнал</a></li>
+  <li><a href="#c12">Что осталось и что мы просим у автора</a></li>
+  <li><a href="#c13">Соответствие плану работ</a></li>
+</ol>
+<p class="small">Приложения: <a href="#appA">А. Хронология коммитов</a> · <a href="#appB">Б. Файлы: что добавлено и что изменено</a></p>
+</div>
+
+<h2 id="terms"><span class="num">·</span>Термины и сокращения</h2>
+<p>Слова, которые в тексте встречаются часто, а у автора могут значить другое. Читать этот раздел целиком не обязательно — к нему возвращаются, когда термин не понятен.</p>
+<dl class="terms">
+<dt>Дворец памяти (palace)</dt>
+<dd>Хранилище воспоминаний плагина: записи (nodes), убеждения (observations), сущности, профиль. Живёт в файлах SQLite в каталоге данных плагина. «Дворец» в наших текстах — это он, а не интерфейс.</dd>
+
+<dt>Панель (EngramPanel)</dt>
+<dd>Интерфейс плагина внутри DSH: вкладки «Сегодня», «Библиотека», «Коридор», «Журнал», «Обслуживание». Панель — клиентская половина, она рисует и не решает, что писать в базу.</dd>
+
+<dt>Хост (DSH), фибер, плагин</dt>
+<dd>DSH — приложение, внутри которого живёт плагин. Фибер — загруженный экземпляр плагина в процессе хоста. «Перезапуск плагина» значит перезапуск DSH: язык дворца применяется при следующем старте.</dd>
+
+<dt>Язык дворца</dt>
+<dd>Ключ <code>config.language</code>. Определяет: какой моделью считаются векторы, на каком языке плагин пишет служебные тексты и инструкции агенту, на каком языке будут новые записи, какой меткой подписываются базы. Меняется полуавтоматически: по диалогу человека или ответом в окне.</dd>
+
+<dt>Интерфейсный язык</dt>
+<dd>Язык надписей панели и служебных сообщений. Свободно переключается в любой момент и не влияет ни на модель, ни на язык дворца, ни на данные. Две оси путать нельзя — это главная мысль главы 2.</dd>
+
+<dt>Метка базы (model_label)</dt>
+<dd>Строка в таблице <code>meta</code> файла базы вида <code>ru-minilm-l12</code>: код языка, дефис, короткое имя модели. Единственное, что мы пишем в чужую базу. Язык — часть метки до первого дефиса; имя модели языком не является.</dd>
+
+<dt>Реестры (registry/*.json)</dt>
+<dd>Данные поставки вместо констант в коде: <code>models.json</code> — каталог моделей (размерность, пулинг, тип), <code>bindings.json</code> — привязка «язык → модель», <code>languages.json</code> — какие языки дворец знает, <code>schema.json</code> — какие таблицы несут векторы. Пользовательские слои лежат в каталоге данных и главнее поставки.</dd>
+
+<dt>Объявление схемы</dt>
+<dd><code>registry/schema.json</code>. Для каждой таблицы: <code>role</code> (user или service), <code>properties.vector.text</code> — из какого поля читать текст, <code>properties.vector.where</code> — какие строки участвуют. Поле вектора не объявляется: оно выводится как единственное поле типа BLOB.</dd>
+
+<dt>Семь состояний базы</dt>
+<dd><code>absent</code> — файла ещё нет; <code>empty</code> — записей нет; <code>no-label</code> — метки нет; <code>other-model</code> — метка чужая; <code>mixed-dims</code> — векторы разной длины; <code>missing-vectors</code> — часть записей без вектора; <code>normal</code> — всё на месте.</dd>
+
+<dt>Четыре действия</dt>
+<dd><code>none</code> — ничего; <code>write-label</code> — поставить метку, векторы не трогать; <code>convert</code> — пересчитать векторы на выбранную модель; <code>repair</code> — дозаполнить векторы записям, где их нет.</dd>
+
+<dt>Пересчёт (конвертация) векторов</dt>
+<dd>Одна операция на два повода: перевод на другую модель и ремонт. Критерий один — строка области схемы, у которой вектор пуст или его длина не равна ожидаемой. Текст записей не меняется.</dd>
+
+<dt>Эмбеддер, вектор, размерность</dt>
+<dd>Эмбеддер — модель, превращающая текст в вектор (набор чисел). Размерность — сколько чисел в векторе: у <code>bge-small-zh</code> 512, у многоязычной <code>minilm-l12</code> 384. Векторы разных размерностей сравнивать нельзя, поэтому размерность — жёсткое условие, а не предупреждение.</dd>
+
+<dt>Косинус (порог похожести)</dt>
+<dd>Мера близости двух векторов от 0 до 1. Ею решается, считать ли записи дублями (<code>MERGE_COSINE = 0.92</code>), отложить ли слияние (<code>DEFER_COSINE = 0.88</code>), противоречат ли они (<code>CONTRADICTION_COSINE = 0.88</code>) и попадает ли запись в поиск (<code>MIN_COSINE = 0.2</code>).</dd>
+
+<dt>Словарь, вшитый набор, слой пользователя</dt>
+<dd>Словарь — файл «английская строка → перевод». Вшитый набор — переводы в коде (<code>src/i18n/catalog</code>, <code>src/client/locales</code>). Слой пользователя — файл в каталоге данных, главнее поставки и не теряется при переустановке.</dd>
+
+<dt>Курируемый профиль</dt>
+<dd>Блок правил, который человек ведёт сам через инструмент <code>engram_profile_edit</code>. Подставляется в начало сессии раньше автоматически выведенного профиля и главнее его. В тексте сессии приходит отдельным пакетом <code>&lt;engram_profile&gt;</code>.</dd>
+
+<dt>Предохранитель</dt>
+<dd>Чекбокс, который по умолчанию закрывает опасное действие. Снять его — отдельное осознанное действие человека, а не настройка.</dd>
+
+<dt>Собранное условие</dt>
+<dd>Наше название правила, по которому запускается смена языка дворца: смена языка, снятый предохранитель и нажатая кнопка складываются по «И» внутри окна времени. Не собралось — не происходит ничего.</dd>
+
+<dt>Карточка обслуживания</dt>
+<dd>Раздел панели, где видно состояние баз, выбранную модель, языки и словари. Показывает сводное слово о базах («в порядке», «требует ремонта», «требует конвертации») и одну кнопку, которая исполняет то, что из состояния следует.</dd>
+
+<dt>Снимок базы</dt>
+<dd>Копия базы, сделанная командой <code>VACUUM INTO</code>. В отличие от копирования файла она согласована: не ловит базу в момент записи.</dd>
+
+<dt>Гейт (проверка)</dt>
+<dd>Обязательная проверка перед поставкой: типы, согласованность текстов, тесты, правила кода. «Гейт зелёный» значит «проверка пройдена».</dd>
+
+<dt>PR, апстрим, ветка</dt>
+<dd>Апстрим — репозиторий автора (<code>kenz1117/dsh-engram</code>), наша база — его тег <code>v0.9.3</code>. Наша работа живёт в ветке <code>work/dsv</code>; два pull request уже слиты: #20 (Jev) — 21 октября, #21 (эмбеддер и мультиязычность) — 22 октября.</dd>
+
+<dt>Jev (System One)</dt>
+<dd>Внешняя проверка записей у автора. Наша часть — интерфейс и подстановка значений, не проверка провайдера.</dd>
+
+<dt>FTS (полнотекстовый поиск)</dt>
+<dd>Служебные таблицы SQLite для поиска по словам (<code>nodes_fts</code> и её тени). Векторов не несут, в обработку баз не идут — в объявлении схемы помечены как <code>role: service</code>.</dd>
+
+<dt>Локаль</dt>
+<dd>Язык операционной системы. Берётся как есть («fr», «ru»), без сведения к трём нашим языкам: иначе французу предложили бы английский под видом его языка.</dd>
+
+<dt>Баллон (тост)</dt>
+<dd>Всплывающее сообщение панели. У панели свой механизм и свои виды: <code>info</code>, <code>success</code>, <code>error</code>, <code>warning</code> и <code>reset</code> — пастельно-розовый для события, которое случилось само и ничего не сломало.</dd>
+</dl>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c1"><span class="num">1.</span>Задача: почему дворец не работал на других языках</h2>
+
+<p>Дворец памяти у автора рассчитан на два языка: китайский и английский. Тексты интерфейса и служебные сообщения лежат в коде, модель эмбеддингов — китайская (<code>bge-small-zh</code>, 512 чисел на вектор), а понятие «язык» в конфигурации было по сути одним словом: строкой <code>auto | zh | en | ru</code>, зашитой в TypeScript в четырёх местах. Из этого выходили три беды, каждая из которых видна на живых данных.</p>
+
+<h3>Беда первая: язык нельзя сменить, не сломав базы</h3>
+<p>Модель определяет длину вектора. Поменять модель — значит получить базы, где часть векторов одной длины, часть другой. Поиск по таким данным либо ломается, либо тихо теряет половину записей. При этом в базе не было записано, <em>чем</em> она считалась: единственным признаком была длина вектора, а она про язык не говорит ничего.</p>
+
+<h3>Беда вторая: язык нельзя добавить, не пересобрав плагин</h3>
+<p>Тройка <code>zh | en | ru</code> жила в коде: в проверке конфигурации, в разборе метки базы, в списке выбора панели и в наборе языков серверной половины. Четвёртый язык требовал правки TypeScript в каждом из четырёх мест и нового выпуска. Для инструмента, который люди ставят себе сами, это неприемлемо: язык — это данные, а не код.</p>
+
+<h3>Беда третья: две разные вещи назывались одним словом «язык»</h3>
+<p>Язык надписей панели переключается свободно, в любой момент, и не должен ничего менять в памяти. Язык дворца держит модель, инструкции агенту и язык новых записей. Пока оба назывались «язык», любое решение о них принималось наугад. Мы развели их на две оси — это первое, что нужно понять про всю остальную работу.</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 480" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="480" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">Две оси языка: интерфейс и дворец</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">Это разные вещи, и путать их нельзя: одна меняет только текст, другая — поведение памяти</text>
+<rect x="40" y="92" width="920" height="150" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">ОСЬ ИНТЕРФЕЙСА · свободный переключатель</text>
+<rect x="60" y="124" width="260" height="100" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="190" y="162.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Язык панели</text>
+<text x="190" y="179.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">auto или вручную; следует за языком</text>
+<text x="190" y="194.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">DSH</text>
+<rect x="360" y="124" width="260" height="100" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="490" y="162.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Словари надписей</text>
+<text x="490" y="179.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">zh / en / ru в коде, остальные —</text>
+<text x="490" y="194.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">файлом</text>
+<rect x="660" y="124" width="280" height="100" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="800" y="170" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">Меняется только текст</text>
+<text x="800" y="187" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">ни модель, ни метки, ни записи</text>
+<path d="M 320 174 L 358 174" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 620 174 L 658 174" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="40" y="258" width="920" height="160" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="286" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">ОСЬ ДВОРЦА · выключатель, которым управляет дворец</text>
+<rect x="60" y="292" width="260" height="108" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="190" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">config.language</text>
+<text x="190" y="351.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">полуавтоматически: по диалогам или</text>
+<text x="190" y="366.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">ответом в окне</text>
+<rect x="360" y="292" width="260" height="108" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="490" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Что он держит</text>
+<text x="490" y="351.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">модель, инструкции, язык новых</text>
+<text x="490" y="366.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">записей, метку баз</text>
+<rect x="660" y="292" width="280" height="108" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="800" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">Меняет поведение дворца</text>
+<text x="800" y="351.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">поэтому смена языка идёт вместе с</text>
+<text x="800" y="366.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">пересчётом баз</text>
+<path d="M 320 346 L 358 346" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 620 346 L 658 346" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 120 224 L 120 290" fill="none" stroke="#f59e0b" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#arwA)"/>
+<text x="128" y="262" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#b45309" text-anchor="start" font-weight="600">не влияет</text>
+<text x="40" y="452" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#475569" text-anchor="start">Поэтому выбор языка интерфейса «посмотреть» не переводит дворец, а смена языка дворца не трогает уже записанное — меняется то, чем дворец будет писать дальше.</text>
+</svg><figcaption>Рис. 1. Две оси языка. Верхняя меняет только текст, нижняя — поведение памяти. Поэтому выбор языка «посмотреть» не переводит дворец, а смена языка дворца не трогает уже записанное.</figcaption></figure>
+
+<div class="dec"><b>Как мы сформулировали задачу</b>
+Сделать так, чтобы язык дворца был <em>явным</em> состоянием (его видно и им можно управлять), а не следствием того, какая модель случайно стоит; чтобы новый язык добавлялся данными — файлом словаря и строкой в реестре привязок; и чтобы переход на другой язык всегда сопровождался пересчётом векторов, а не оставлял дворец в состоянии «половина на одном, половина на другом».</div>
+
+<h3>Что из этого уже работает</h3>
+<ul>
+  <li>Язык дворца определяется на первом запуске и записывается в конфигурацию; окно с четырьмя выборами работает.</li>
+  <li>Метка базы <code>&lt;язык&gt;-&lt;модель&gt;</code> ставится в <code>meta</code> и читается обратно; по ней видно, чья база. С 22.10 метка ставится сама при открытии базы — но только там, где это ничего не портит (глава 4).</li>
+  <li>Реестры <code>models.json</code>, <code>bindings.json</code>, <code>languages.json</code>, <code>schema.json</code> — данные; язык и модель добавляются файлом.</li>
+  <li>Пересчёт векторов из карточки обслуживания работает и проверен на живых базах. Отдельно работает починка: досчитать записи без вектора, не меняя ни язык, ни модель (глава 11).</li>
+  <li>Русский язык живёт файлом <code>i18n/ru.txt</code> (485 текстов, 501 строка файла), английский и китайский остались в коде автора.</li>
+  <li>Словарь сверяется с программой четырьмя числами — ключей в программе, строк в файле, без перевода, без ключа (глава 5).</li>
+</ul>
+<p>Что ещё не доделано — в главе 11, и там же сказано, что из этого наша работа, а что ждёт автора.</p>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c2"><span class="num">2.</span>Ось дворца: как язык определяется на первом запуске</h2>
+
+<p>Язык дворца — не настройка «на посмотреть». Он держит слишком много, чтобы ставиться молча, поэтому решается один раз и по понятному правилу: <em>если человек уже говорил с агентом на каком-то языке — это и есть язык дворца; если говорить было не на чем — спрашиваем</em>.</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="700" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">Первый запуск: как дворец выбирает язык</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">Одна развилка в начале и три исхода. Окно спрашивает только там, где решать нечем</text>
+<rect x="340" y="104" width="320" height="56" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="500" y="128" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">config.language задан?</text>
+<text x="500" y="145" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">конкретный код языка</text>
+<text x="352" y="96" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#4f46e5" text-anchor="start">нет — решаем сами</text>
+<path d="M 500 160 L 500 186" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="340" y="186" width="320" height="62" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="500" y="213" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Читаем реплики человека</text>
+<text x="500" y="230" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">только текущей сессии; журналы не читаются</text>
+<path d="M 500 248 L 500 274" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="340" y="274" width="320" height="64" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="500" y="302" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">Язык диалога определён?</text>
+<text x="500" y="319" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">не меньше 40 букв, доля ≥ 0,6</text>
+<path d="M 340 306 L 200 306 L 200 372" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="208" y="298" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#047857" text-anchor="start">да, базы совпали</text>
+<path d="M 500 338 L 500 372" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="508" y="360" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#b45309" text-anchor="start">реплик нет</text>
+<path d="M 660 306 L 800 306 L 800 372" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="700" y="298" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#b45309" text-anchor="start">базы на другом языке</text>
+<rect x="40" y="372" width="300" height="190" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">АВТО — дворец решает сам</text>
+<rect x="60" y="404" width="258" height="66" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="189" y="433" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">Пишет язык диалога в конфигурацию</text>
+<text x="189" y="450" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">только при опоре на голос человека</text>
+<rect x="60" y="484" width="258" height="60" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="189" y="501.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Панель сообщает, на что</text>
+<text x="189" y="518.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">настроился</text>
+<text x="189" y="535.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">«применится после перезапуска»</text>
+<rect x="340" y="372" width="320" height="250" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="360" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">ВОПРОС — опоры нет</text>
+<rect x="360" y="404" width="280" height="72" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="500" y="428.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">Окно в корне панели</text>
+<text x="500" y="445.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">ZH / EN / RU / Другой язык; предустановка</text>
+<text x="500" y="460.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">— локаль Windows</text>
+<rect x="360" y="490" width="280" height="92" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="500" y="517" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Выбор пишется кодом языка</text>
+<text x="500" y="534" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">ZH, EN, RU — как есть; «другой язык» —</text>
+<text x="500" y="549" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">настоящий код локали (fr), а не</text>
+<text x="500" y="564" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">английский заменитель</text>
+<rect x="680" y="372" width="280" height="250" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="700" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">РАСХОЖДЕНИЕ</text>
+<rect x="700" y="404" width="240" height="72" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="820" y="436" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">Окно: диалоги на X, базы на Y</text>
+<text x="820" y="453" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">предустановка — язык диалогов</text>
+<rect x="700" y="490" width="240" height="92" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="820" y="524.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">То же окно выбора</text>
+<text x="820" y="541.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">одна установка не может жить на</text>
+<text x="820" y="556.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">двух языках</text>
+<path d="M 200 562 L 200 640 L 500 640" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 500 582 L 500 640" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 820 622 L 820 640 L 500 640" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="340" y="640" width="320" height="46" rx="10" fill="#4338ca" stroke="#4338ca" stroke-width="2"/>
+<text x="500" y="666.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#ffffff" text-anchor="middle">Перезапуск плагина — язык действует</text>
+<text x="40" y="690" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#991b1b" text-anchor="start">Ни на одном шаге записи и векторы не переводятся: язык — это выключатель, а не конвертация</text>
+</svg><figcaption>Рис. 2. Первый запуск. Развилка одна: задан ли язык в конфигурации. Если нет — дворец смотрит на речь человека и на метки баз, а окно появляется только там, где решать нечем или где сигналы разошлись.</figcaption></figure>
+
+<h3>Что именно считается голосом человека</h3>
+<p>Реплики берутся только из <em>текущей</em> сессии и только те, где <code>source.kind === 'user'</code>. Это важнее, чем кажется: в те же события приходят английские служебные тексты — снимок рантайма, каталог навыков, инструкции агента, вставки других плагинов. На живой проверке дворец один раз именно на них и ошибся: «язык диалога» оказался английским, потому что служебный текст был принят за речь. После правки всё незнакомое не считается вовсе: ошибиться в сторону «спросить» безопаснее, чем назначить чужой язык.</p>
+
+<p>Журналы сессий на старте не читаются. Это не осторожность, а лечение: журнал читается целиком, и на живых данных это стоило сотни мегабайт памяти на каждом старте хоста — один раз хост из-за этого и упал. Реплики текущей сессии и так лежат в памяти процесса.</p>
+
+<h3>Порог: когда язык считается определённым</h3>
+<p>Нужно не меньше 40 букв в выборке и доля доминирующего языка не меньше 0,6. На «привет» и «ok» язык не определяется — иначе дворец переключался бы от одной случайной фразы. Разделение идёт по письменности: кириллица — русский, иероглифы — китайский, латиница — английский. Смешанная реплика вроде «ok, спасибо» голоса не даёт вовсе.</p>
+
+<h3>Три случая, которые видит панель</h3>
+<table>
+<tr><th>Случай</th><th>Когда</th><th>Что делает дворец</th></tr>
+<tr><td><code>auto</code></td><td>Речь человека распознана, базы на том же языке или их ещё нет</td><td>Записывает язык диалога сам, панель сообщает, на что настроился</td></tr>
+<tr><td><code>ask</code></td><td>Реплик не было или их слишком мало</td><td>Спрашивает в окне; предустановка — локаль Windows</td></tr>
+<tr><td><code>mismatch</code></td><td>Диалоги на одном языке, метки баз на другом (или базы подписаны разными языками)</td><td>Показывает расхождение и ведёт в то же окно выбора</td></tr>
+</table>
+
+<h3>Почему локаль берётся как есть</h3>
+<p>Локаль машины не сводится к трём нашим языкам. Французу предлагается «другой язык», а не английский под видом его собственного — потому что подставить чужой язык это не помощь, а обман, который выяснится через неделю. Если локаль прочитать не удалось, «другой язык» не отправляется: человеку говорится, что код не определился, и предлагается выбрать один из языков дворца.</p>
+
+<div class="note"><b>Запись языка — отдельный тик после старта</b>
+Правка конфигурации на стартующем фибере пошла бы обычным путём (перемонтирование посреди применения настроек), поэтому запись откладывается на следующий тик и идёт «живым» путём: значение меняется на ходу, плагин не перезагружается. Записывается только решение с опорой на диалог; локаль и preference интерфейса для этого слишком слабы.</div>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c3"><span class="num">3.</span>Смена языка дворца: одно собранное условие</h2>
+
+<p>Смена языка дворца — не «ещё одна настройка рядом». Она меняет то, чем дворец будет писать дальше, и потому идёт вместе с пересчётом баз — одним действием, а не двумя соседними. И запустить её можно только осознанно: три условия складываются по «И».</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="560" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">Смена языка дворца: одно собранное условие, а не три отдельные кнопки</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">Пока условие не собрано целиком, в конфигурацию не пишется ничего</text>
+<rect x="40" y="120" width="300" height="70" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="190" y="151" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">1. Выбран другой язык дворца</text>
+<text x="190" y="168" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">человек, не автоматика</text>
+<rect x="40" y="214" width="300" height="70" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="190" y="245" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">2. Снят предохранитель</text>
+<text x="190" y="262" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">чекбокс в той же форме</text>
+<rect x="40" y="308" width="300" height="70" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="190" y="339" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">3. Нажата «Выполнить»</text>
+<text x="190" y="356" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">только это отправляет запрос</text>
+<path d="M 340 155 L 400 240" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 340 249 L 400 249" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 340 343 L 400 258" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="400" y="196" width="220" height="106" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="510" y="237.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">И: все три условия</text>
+<text x="510" y="254.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">уходят на сервер одним запросом</text>
+<text x="510" y="269.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">и проверяются вместе</text>
+<path d="M 620 249 L 676 249" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="676" y="196" width="300" height="106" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="826" y="237.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">Пересчёт баз запущен</text>
+<text x="826" y="254.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">смена языка и перевод векторов — одно</text>
+<text x="826" y="269.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">действие, а не два соседних</text>
+<rect x="40" y="420" width="936" height="58" rx="10" fill="#fef2f2" stroke="#f87171" stroke-width="1.5"/>
+<text x="508" y="445" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#991b1b" text-anchor="middle">Окно 30 секунд — настройка palaceChangeWindowSec, а не константа</text>
+<text x="508" y="462" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b91c1c" text-anchor="middle">отсчёт начинается с ПЕРВОГО из трёх событий и живёт в самой форме: это согласие человека, а не фоновая задача</text>
+<rect x="40" y="490" width="936" height="52" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="508" y="512" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Окно истекло — выбор слетает к языку, на котором стоят базы, предохранитель встаёт обратно</text>
+<text x="508" y="529" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">откатывать нечего: до «Выполнить» ничего не записано, форма просто забывает недособранный выбор</text>
+</svg><figcaption>Рис. 3. Собранное условие. Язык выбран, предохранитель снят, кнопка нажата — и только тогда уходит один запрос, который сервер проверяет целиком. Окно истекло — выбор слетает, записанного нет.</figcaption></figure>
+
+<h3>Почему три условия, а не одна кнопка</h3>
+<p>Формулировка заказчика была прямой: «запустить конвертацию юзер может только осознанно: выбрать другой язык, снять чекбокс, нажать кнопку — всё в режиме И, и все действия в течение минуты. Минута прошла — всё сбросилось к тому, что было». Это защита не от ошибки в коде, а от случайного движения рукой: язык дворца нельзя сменить «на посмотреть» и забыть.</p>
+
+<h3>Окно — тридцать секунд, и это настройка</h3>
+<p>Длина окна живёт в настройках плагина (<code>palaceChangeWindowSec</code>), а не константой в коде: менять её нужно без пересборки. Отсчёт начинается с <em>первого</em> из трёх событий — смены языка или снятия предохранителя, что случилось раньше. Окно живёт в самой форме, а не на сервере: это согласие человека, а не фоновая задача. Две вкладки получают по своей форме, и собрать условие в одной из действий другой нельзя — так и нужно.</p>
+
+<div class="warnbox"><b>До нажатия «Выполнить» в конфигурацию не пишется ничего</b>
+Поэтому «окно прошло» значит «форма забыла недособранный выбор», а не «откатили записанное». Откатывать нечего. Выбор возвращается к языку, на котором стоят базы (он берётся из метки), предохранитель встаёт обратно сам.</div>
+
+<h3>Один запрос, а не три</h3>
+<p>На сервер уходит один запрос со всеми тремя условиями, и он же их проверяет. Иначе разнесённые по времени вызовы могли бы сложиться в разрешение задним числом: «язык сменил вчера, галочку снял сегодня, кнопку нажал завтра» — и получилось бы действие, которого человек не собирал.</p>
+
+<h3>Как это сделано</h3>
+<p>Проверка условия — одна чистая функция (<code>src/registry/palace-change.ts</code>), и по ней считают обе половины: панель решает, что показывать, сервер — принимать ли запрос. Проверяются три вещи: язык — существующий код и не тот же самый; начало окна — настоящее время, не из будущего; окно не истекло. Отказ называет причину словами («окно истекло», «выбран тот же язык»), а не кодом ошибки.</p>
+<p>«Выполнить» шлёт один запрос <code>POST palace-change</code>, и он же доводит дело до конца: записывает язык в конфигурацию, переписывает метки баз на новый язык, пересчитывает векторы. Отдельных «сначала язык, потом базы» нет намеренно — промежуточное состояние «язык новый, базы старые» человек увидел бы и не понял.</p>
+<p>Кнопка осталась и для работ без смены языка: когда выбранный язык совпадает с текущим, окно не требуется, а кнопка ставит метку или досчитывает векторы. Иначе починить базу с записями без вектора можно было бы только «сменить язык и вернуть назад».</p>
+
+<h3>Что уже можно проверить</h3>
+<p>Механика предохранителя и отсчёта проверяется кнопкой «Тест панели» в карточке обслуживания: то же окно открывается в режиме проверки, конфигурацию не трогает, а на истечении окна показывает розовый баллон «предохранитель встал обратно, выбор сброшен». Розовый, а не красный: ничего не сломалось, событие случилось само.</p>
+
+<div class="note"><b>Что из этого стоит в панели сегодня</b>
+Переключатель языка дворца появился 22.10 и описан в разделе «Что закрыто 22–23.10» (глава 12): в карточке обслуживания это блок «Язык дворца» — выбор, предохранитель и «Выполнить» в одной строке. Та же кнопка работает и без смены языка: когда выбранный язык совпадает с текущим, окно не требуется, и она ставит метку или досчитывает векторы. Чего до сих пор нет — отдельного индикатора расхождения интерфейсного языка и языка дворца: человек, переключивший интерфейс «посмотреть», не видит, что дворец стоит на другом языке.</div>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c4"><span class="num">4.</span>Метка базы и реестр языков: язык как данные</h2>
+
+<p>Чтобы дворец знал, на каком языке стоит база, в неё пишется одна строка — метка в таблице <code>meta</code>:</p>
+<pre><code>key = model_label
+value = ru-minilm-l12</code></pre>
+<p>Метка — единственное, что мы пишем в чужую базу. Ни размерности, ни времени, ни версии: размерность следует из каталога по имени модели, а копия дала бы второй источник правды, который рано или поздно разойдётся с первым.</p>
+
+<h3>Кто и когда ставит метку</h3>
+<p>Метку не спрашивают у человека при каждом удобном случае, но и не ставят «на всякий случай». Правило одно — <code>labelToStamp</code> в <code>src/registry/base-state.ts</code>, и оно работает при открытии базы, до всякой кнопки:</p>
+<ul>
+  <li><strong>База пустая</strong> — метка ставится сразу: писать в неё будем той самой моделью, спорить не о чем.</li>
+  <li><strong>База без метки, но данные уже на целевой модели</strong> — метка ставится: это подпись, а не перевод, векторы не трогаются.</li>
+  <li><strong>База без метки, а данные на чужой модели или в пересортице</strong> — метки нет: там нужен пересчёт, и подпись соврала бы. Такая база остаётся видимой как «метки нет» до действия человека.</li>
+  <li><strong>Метка уже стоит</strong> — её не трогают: даже если она про чужую модель, это факт о данных, а не повод переписать.</li>
+  <li><strong>Базу не удалось прочитать</strong> (битый файл, занята писателем) — подписи нет: пустая на вид база может оказаться чужой, просто нечитаемой в этот момент. Ошибка чтения или записи открытию не мешает — база просто останется без метки, и об этом будет сказано в журнале.</li>
+</ul>
+<p>Правило то же, что у кнопки: второго источника правды о метке нет. Разница только в том, что кнопка идёт по всем базам сразу и умеет пересчитывать, а подпись при открытии — нет.</p>
+
+<h3>Как читается язык из метки</h3>
+<p>Язык — это часть метки до <em>первого</em> дефиса. Режем именно по первому, потому что дефисы есть и в имени модели (<code>minilm-l12</code>), и в подтеге языка: <code>zh-Hans-minilm-l12</code> даёт <code>zh</code>, а не «нет метки». Имя модели языком не считается никогда — это правило пришлось ввести отдельно, потому что соблазн «угадать язык по модели» велик и всегда неверен.</p>
+
+<h3>Код языка перестал быть закрытым списком</h3>
+<p>Раньше допустимые значения жили строкой в коде. Теперь они — файл <code>registry/languages.json</code>. У файла есть слой пользователя (<code>&lt;dbDir&gt;/registry/languages.json</code>): новый язык объявляется строкой рядом с данными, без правки пакета — строка заменяет одноимённую из поставки, а не требует повторять весь список. Тем же путём язык попадает в оба переключателя: сервер отдаёт словарь панели отдельным маршрутом, клиент объявляет язык у хоста и регистрирует тексты.</p>
+<pre><code>{ "formatVersion": 1,
+  "languages": [
+    { "code": "zh", "label": "中文",    "builtin": true  },
+    { "code": "en", "label": "English", "builtin": true  },
+    { "code": "ru", "label": "Русский", "builtin": false }
+  ] }</code></pre>
+<ul>
+  <li><code>label</code> — как язык называется человеку в списке выбора (раньше панель показывала <code>ZH</code>, теперь <code>中文</code>).</li>
+  <li><code>builtin</code> — есть ли у плагина вшитый набор текстов. Вшитых два: <code>zh</code> (авторский) и <code>en</code> (образец полноты). Остальные приходят файлом.</li>
+</ul>
+<p>Признак <code>builtin</code> нужен не для красоты: без него нельзя отличить «язык есть, но переводов ещё нет» от «языка нет вовсе». Список языков панель получает с сервера тем же ответом, что и состояние баз: своя копия тройки в сборке клиента удалена, иначе язык, добавленный файлом, появлялся бы на сервере, но не в списке выбора.</p>
+
+<div class="dec"><b>Четвёртый выбор передаёт настоящий код</b>
+«Другой язык» больше не превращается в английский. Дворцу записывается код локали как есть — например <code>fr</code>. Дворец с таким языком работает: служебные тексты берёт английские (вшитого набора для <code>fr</code> нет), записи понимает, а когда появится файл <code>&lt;dbDir&gt;/i18n/fr.txt</code> — заговорит по-французски. Подставить вместо этого <code>en</code> значило бы выдать чужой язык за «ваш».</div>
+
+<h3>Что это даёт автору</h3>
+<p>Новый язык добавляется тремя данными: строка в <code>languages.json</code>, файл словаря и строка в <code>bindings.json</code> (какой моделью считать этот язык). Ни одной правки TypeScript, ни одной пересборки. Именно поэтому список языков — файл, а не константа: иначе «поддержать ещё один язык» означало бы «выпустить новую версию плагина».</p>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c5"><span class="num">5.</span>Словари: что остаётся в коде, что приходит файлом</h2>
+
+<p>Переводы интерфейса и служебных сообщений живут в двух местах, и это не дублирование, а разные назначения. В коде — то, что должно быть всегда и без файлов: два набора, английский (образец полноты и источник ключей) и китайский (авторские формулировки). Файлом — всё остальное, включая русский.</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 620" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="620" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">Словари: что остаётся в коде автора, что приходит файлом</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">Английский и китайский — вшитые наборы. Русский и любой следующий язык — файл, без правки TypeScript</text>
+<rect x="40" y="92" width="440" height="236" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">В СБОРКЕ (поставка, код)</text>
+<rect x="60" y="124" width="400" height="58" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+<text x="260" y="141.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#4c1d95" text-anchor="middle">src/i18n/catalog/*.ts — серверные сообщения</text>
+<text x="260" y="158.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">en — образец полноты и источник ключей, zh — авторские</text>
+<text x="260" y="173.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">формулировки</text>
+<rect x="60" y="194" width="400" height="58" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+<text x="260" y="211.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#4c1d95" text-anchor="middle">src/client/locales/*.ts — тексты панели</text>
+<text x="260" y="228.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">en, zh, ru: подписи интерфейса, переключаются вместе с языком</text>
+<text x="260" y="243.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">DSH</text>
+<rect x="60" y="264" width="400" height="50" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="260" y="285" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Правка здесь требует пересборки и выпуска</text>
+<text x="260" y="302" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">поэтому всё, что должно правиться без неё, живёт файлом</text>
+<rect x="520" y="92" width="440" height="236" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="540" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">ФАЙЛОМ (данные, dbDir)</text>
+<rect x="540" y="124" width="400" height="58" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="740" y="149" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">i18n/ru.txt — 485 текстов</text>
+<text x="740" y="166" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">поставляемый перевод серверных сообщений</text>
+<rect x="540" y="194" width="400" height="58" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="740" y="219" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">&lt;dbDir&gt;/i18n/ru.txt — слой пользователя</text>
+<text x="740" y="236" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">главнее поставки; переживает переустановку</text>
+<rect x="540" y="264" width="400" height="50" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="740" y="285" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">&lt;dbDir&gt;/i18n/panel.ru.txt</text>
+<text x="740" y="302" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">то же для панели: другой файл, тот же формат</text>
+<path d="M 260 328 L 260 360" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 740 328 L 740 360" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="140" y="360" width="240" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="260" y="383" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Серверная половина</text>
+<text x="260" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">message(language, key)</text>
+<rect x="620" y="360" width="240" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="740" y="383" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Панель</text>
+<text x="740" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">t(key)</text>
+<rect x="140" y="444" width="720" height="66" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="500" y="473" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">Порядок отката: словарь файла → вшитый набор → английский текст</text>
+<text x="500" y="490" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">нет файла — тексты не пустые: остаётся английская строка, поэтому язык можно добавить и до перевода</text>
+<rect x="140" y="530" width="720" height="62" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="500" y="557" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">Новый язык добавляется данными, а не кодом</text>
+<text x="500" y="574" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">файл &lt;dbDir&gt;/i18n/fr.txt + строки в registry/bindings.json; панель узнаёт о нём из registry/languages.json</text>
+</svg><figcaption>Рис. 4. Два источника текстов. Вшитые наборы остаются у автора в коде; русский и любой следующий язык приходят файлом в каталог данных, и файл главнее поставки.</figcaption></figure>
+
+<h3>Ключ словаря — английская строка</h3>
+<p>Словарь не по именам ключей, а по английскому тексту: слева английская строка, справа перевод, разделитель — табуляция. Это позволяет править переводы без знания кода и не ломается, когда ключ переименован. Плата — английская формулировка становится частью контракта: если поменять текст в коде, перевод перестанет находиться. Поэтому тексты правятся редко, и это осознанный выбор в пользу «правится без пересборки».</p>
+
+<h3>Два набора, два файла</h3>
+<table>
+<tr><th>Набор</th><th>Файл поставки</th><th>Слой пользователя</th></tr>
+<tr><td>Серверные сообщения (тексты инструментов, промптов, предупреждений)</td><td><code>i18n/&lt;язык&gt;.txt</code></td><td><code>&lt;dbDir&gt;/i18n/&lt;язык&gt;.txt</code></td></tr>
+<tr><td>Тексты панели</td><td><code>i18n/panel.&lt;язык&gt;.txt</code></td><td><code>&lt;dbDir&gt;/i18n/panel.&lt;язык&gt;.txt</code></td></tr>
+</table>
+<p>Наборы не смешиваются: одинаковые английские строки в них значат разное, поэтому «Модель и словари» в панели и в сообщениях — два разных перевода. Формат, слои и правила разбора у наборов общие.</p>
+
+<h3>Порядок отката</h3>
+<p>Словарь файла → вшитый набор → английский текст. Отсутствие файла — не ошибка и не пустая подпись: остаётся английская строка. Именно поэтому новый язык можно объявить до того, как для него готов перевод: дворец работает, а тексты постепенно переводятся.</p>
+
+<h3>Правка переводов из панели</h3>
+<p>В карточке обслуживания есть экран словаря: таблица «английская строка — перевод», сохранение в пользовательский слой (поставка принадлежит выпуску, её не правим) и кнопка <b>«Перевести»</b>. Она отправляет рабочей модели ровно те клетки, где перевода нет, и не переписывает готовое; пришедшие переводы ложатся в черновик панели, а файл меняет «Сохранить». Пустая клетка снимает правку, а не пишет пустую строку; сохраняется только изменённое, чтобы правка одной клетки не стирала остальные.</p>
+
+<h3>Сверка словаря с программой</h3>
+<p>Экран словаря отвечает не только «что здесь написано», но и «сходится ли это с программой». Над таблицей стоят четыре числа, которые считаются при каждом открытии, а не по кнопке:</p>
+<table>
+<tr><th>Число</th><th>Что значит</th></tr>
+<tr><td><code>ключей в программе</code></td><td>Сколько строк объявляет сам код — эталон, с которым сверяемся</td></tr>
+<tr><td><code>строк в словаре</code></td><td>Сколько строк в файле человека, включая заготовки без перевода</td></tr>
+<tr><td><code>без перевода</code></td><td>Ключам программы нечего показать: текста нет ни в правке, ни в поставке — они уйдут английскими</td></tr>
+<tr><td><code>без ключа</code></td><td>Строки файла, чьей левой части нет в программе: ключ переименован или удалён, а перевод остался</td></tr>
+</table>
+<p>Числа считаются независимо, и совпадение первых двух ничего не доказывает: ключи могли разойтись один к одному. Поэтому рядом стоят находки, и каждая кликабельна — «без перевода» и «без ключа» фильтруют таблицу. Строку без ключа нельзя просто выбросить: она не теряется при сохранении, иначе первая же правка стёрла бы перевод, которого программе пока не за что зацепиться.</p>
+<p>Второе, что из этого вышло: кнопка «Создать» больше не пишет пустую заготовку. Она выкладывает файл со всеми ключами программы и пустыми правыми частями — заготовка сразу видна целиком, и «без перевода» на ней честно равно числу ключей. Файл при этом остаётся валидным: пустая правая часть — это заготовка, а не поломка.</p>
+
+<h3>Что уходит модели, чтобы терминология не разъезжалась</h3>
+<p>Запрос — не список строк, а объект с двумя ключами: <code>strings</code> (что переводить) и <code>glossary</code> (уже принятые пары этого же словаря). Словарь терминов собирается из переведённых строк набора — короткие подписи первыми — и пополняется по ходу прохода, поэтому одно понятие не получает разные слова в соседних партиях. Инструкция требует прямо: слово из <code>glossary</code> не переписывается, на каждое понятие один точный термин на весь ответ, без двусмысленных слов, дословных калек и синонимов к принятому; и это подписи, а не предложения.</p>
+
+<h3>Почему партия именно такого размера</h3>
+<p>У рабочей модели рассуждение идёт в те же токены вывода, что и ответ. Замер на живой модели (французский, набор панели) показал, где заканчивается полнота:</p>
+<table>
+<tr><th>Партия</th><th>Токенов вывода</th><th>Время</th><th>Переведено</th><th>Те же слова при повторе</th></tr>
+<tr><td>10</td><td>696</td><td>3.8 с</td><td>10 из 10</td><td>10 из 10</td></tr>
+<tr><td>20</td><td>2 619</td><td>20.5 с</td><td>20 из 20</td><td>19 из 20</td></tr>
+<tr><td>30</td><td>3 244</td><td>13.3 с</td><td>30 из 30</td><td>27 из 30</td></tr>
+<tr><td>40</td><td>4 415</td><td>28.0 с</td><td>40 из 40</td><td>32 из 40</td></tr>
+<tr><td>60</td><td>5 807</td><td>30.7 с</td><td>59 из 60</td><td>50 из 59</td></tr>
+</table>
+<p>При прежнем пределе вывода в 4096 токенов партия из сорока терминов обрывалась на середине, и из ответа спасалась только часть пар — отсюда и жалоба «заполнил половину». Отсюда настройки: партия 30 строк, предел вывода 16 384 токена (запас на гуляющую длину рассуждения), предел длины партии 2400 символов и ожидание 180 секунд.</p>
+
+<h3>Французский: весь путь целиком, без конвертации баз</h3>
+<p>Проверено на живом каталоге данных: язык <code>fr</code> объявлен в реестре, созданы пустые <code>i18n/fr.txt</code> и <code>i18n/panel.fr.txt</code>, заполнены рабочей моделью через тот же код, что и кнопка, и объявлены хосту при запуске — язык попал в оба переключателя, дворца и интерфейса. Пересчёт векторов при этом не запускался: язык можно ввести, не трогая базы.</p>
+<p>Итог того прогона: <b>468 строк из 481</b> в словаре сообщений и <b>478 из 493</b> в словаре панели. Остаток разобран, а не списан на «модель не смогла». Тринадцать строк набора сообщений — заготовки из одних подстановок («{reason} {count}», «, », «—»): переводить в них нечего, и теперь они вообще не уходят в запрос. Остальные двенадцать — слова, которые во французском пишутся так же, как в английском (<code>Provenance</code>, <code>messages</code>, <code>base</code>, <code>Pause</code>, <code>Concepts</code>, <code>contradiction</code>, <code>Adjacent</code>, <code>consolidation</code>, <code>Jev</code>): перевод совпал бы с источником, а совпадение по правилу значит «перевода нет» — и это верно, француз видит ровно то же слово.</p>
+<p>Состояние на 23.10 (живой каталог данных): в <code>fr.txt</code> 460 пар и ни одной пустой правой части, в <code>panel.fr.txt</code> — 480. Набор ключей с тех пор вырос до 488, поэтому у французского словаря снова есть строки «без перевода» — это штатное состояние, а не поломка: новые ключи приходят английскими, пока их не переведут той же кнопкой. Именно для таких случаев и появилась сверка словаря с программой (см. выше).</p>
+<p>Терминология получилась не калькой: <i>Room</i> → <i>Salle</i>, <i>Corridor</i> → <i>Couloir</i>, <i>Placard</i> → <i>Cartel</i> (музейная подпись, а не «placard» — шкаф), <i>Memory Palace</i> → <i>Palais de mémoire</i>, <i>Tour</i> → <i>Visite</i>.</p>
+<p>Две правки по итогам прогона. Первая: партия, из которой не принято ни одной пары (модель съела весь потолок рассуждением), делится пополам и спрашивается снова — иначе заполнение останавливалось с ошибкой «модель достигла предела» — человек видел недоделанный словарь. Вторая: в инструкцию добавлен смысл самого инструмента (дворец — хранилище памяти, комната — категория, коридор — связи, табличка — заголовок записи, повторение — интервалы), потому что короткие подписи вроде <code>Pause</code> или <code>Capture</code> модель отказывалась переводить как двусмысленные.</p>
+
+<div class="note"><b>Почему русский не в коде</b>
+Русский — наш первый опыт «языка данными», и он прошёл целиком: 485 текстов файлом, правка без пересборки, слои поставки и пользователя, проверка согласованности с набором ключей. Второй опыт — французский: пустой словарь, перевод моделью, язык в обоих переключателях, ни одной правки кода под язык. Это уже не гипотеза, а проверенный путь.</div>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c6"><span class="num">6.</span>Модель, привязки и размерность вектора</h2>
+
+<p>Модель выбирается не «в настройках», а по языку дворца. Правило одно: привязка <code>язык → модель</code> в <code>bindings.json</code>, иначе умолчание <code>*</code>. Отдельная настройка может переопределить выбор, но это осознанное исключение, а не обычный путь.</p>
+
+<pre><code>// registry/models.json — что модель умеет
+{ "id": "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+  "label": "minilm-l12",          // короткое имя: попадает в метку базы
+  "pooling": "mean", "dtype": "q8", "dimensions": 384 }
+
+// registry/bindings.json — какой моделью считать язык
+{ "bindings": { "zh": "Xenova/bge-small-zh-v1.5", "*": "Xenova/paraphrase-multilingual-MiniLM-L12-v2" },
+  "default": "en" }</code></pre>
+
+<h3>Что здесь важно</h3>
+<ul>
+  <li><strong>Размерность — из каталога, а не из кода.</strong> У <code>bge-small-zh</code> 512 чисел, у многоязычной <code>minilm-l12</code> 384. Пересчёт берёт ожидаемую длину оттуда; константы в конвертере больше нет.</li>
+  <li><strong>Язык модели не признак.</strong> Китайская модель вовсе не значит «база на китайском»: язык берётся из метки, а модель — из привязки. Одна и та же многоязычная модель может обслуживать русский, английский и французский, и метки у баз будут разные.</li>
+  <li><strong>Размерность — жёсткое условие на записи, мягкое на чтении.</strong> Записать вектор чужой длины нельзя: он не сравнится с остальными. Читать базу с чужой длиной можно — поиск деградирует до поиска по словам, но не молчит и не теряет записи.</li>
+  <li><strong>Умолчание пакета</strong> (<code>default</code>) принимается только если выпуск действительно везёт для него тексты. Объявленный, но пустой язык хуже английского.</li>
+  <li><strong>Удалённая модель — отдельный выбор.</strong> Если в настройках выбран OpenAI-совместимый конец, локальная строка не выбирается вовсе, а размерность узнаётся по первому вектору: у такой модели её негде объявить. Метка базы при этом собирается так же — из языка и имени, — иначе базу было бы не с чем сверять.</li>
+</ul>
+
+<h3>Пороги, которые видны в поведении</h3>
+<table>
+<tr><th>Порог</th><th>Значение</th><th>Что решает</th></tr>
+<tr><td><code>MIN_COSINE</code></td><td>0,2</td><td>Ниже — запись не попадает в семантический поиск</td></tr>
+<tr><td><code>MERGE_COSINE</code></td><td>0,92</td><td>Выше — записи считаются одним и тем же</td></tr>
+<tr><td><code>DEFER_COSINE</code></td><td>0,88</td><td>Выше — слияние откладывается до повторной проверки</td></tr>
+<tr><td><code>CONTRADICTION_COSINE</code></td><td>0,88</td><td>Ниже при общей теме — записи противоречат друг другу</td></tr>
+<tr><td><code>DIALOGUE_MIN_LETTERS</code></td><td>40</td><td>Меньше букв — язык диалога не определяется</td></tr>
+<tr><td><code>DIALOGUE_SHARE</code></td><td>0,6</td><td>Меньше доли — язык диалога не определяется</td></tr>
+</table>
+<p class="small">Пороги похожести — авторские, мы их не меняли. Здесь они перечислены потому, что без них непонятно, почему «пересчитать векторы» вообще требуется: сравнение через косинус работает только внутри одной модели.</p>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c7"><span class="num">7.</span>Схема базы: как обработчик понимает, что где лежит</h2>
+
+<p>Перечень таблиц с векторами не должен жить в коде. Иначе таблица, добавленная автором, молча выпадает из всех наших операций: пересчёта, ремонта, проверки состояния. Поэтому он объявлен данными — файлом <code>registry/schema.json</code> — и читается теми же правилами, что каталог моделей: поставка обязательна, слой пользователя в каталоге данных её перекрывает.</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 800" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1040" height="800" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">Схема базы: что читает обработчик и как из этого получается действие</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">Перечень таблиц — данные, а не код. Обработчик берёт объявление, осматривает базу и решает, что с ней делать</text>
+<rect x="360" y="104" width="340" height="66" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+<text x="530" y="133" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#4c1d95" text-anchor="middle">registry/schema.json</text>
+<text x="530" y="150" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">поставка; слой &lt;dbDir&gt;/registry/schema.json главнее</text>
+<rect x="360" y="196" width="340" height="72" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="530" y="220.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">Разбор объявления</text>
+<text x="530" y="237.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">role, properties.vector.text,</text>
+<text x="530" y="252.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">properties.vector.where</text>
+<rect x="360" y="294" width="340" height="62" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="530" y="321" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">VectorTableSpec[]</text>
+<text x="530" y="338" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">nodes и observations — «вот здесь лежат векторы»</text>
+<rect x="360" y="382" width="340" height="76" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="530" y="416" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Осмотр базы: только чтение</text>
+<text x="530" y="433" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">PRAGMA table_info, число строк, длины векторов</text>
+<rect x="360" y="484" width="340" height="84" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="530" y="522" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">judgeBase → 7 состояний → 4 действия</text>
+<text x="530" y="539" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">правило читает факты и ожидание, базу не меняет</text>
+<rect x="360" y="594" width="340" height="62" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="530" y="621" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">Кнопка исполняет действие</text>
+<text x="530" y="638" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">write-label / convert / repair / ничего</text>
+<path d="M 530 170 L 530 194" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 268 L 530 292" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 356 L 530 380" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 458 L 530 482" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 568 L 530 592" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="40" y="92" width="290" height="400" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">ЧТО ЗАПИСАНО В ОБЪЯВЛЕНИИ</text>
+<rect x="60" y="124" width="250" height="70" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="147.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">role: user | service</text>
+<text x="185" y="164.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">service (FTS-тени) пропускается, не</text>
+<text x="185" y="179.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">анализируется</text>
+<rect x="60" y="208" width="250" height="70" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="239" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">text — поле с текстом</text>
+<text x="185" y="256" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">из него читается строка для модели</text>
+<rect x="60" y="292" width="250" height="74" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="317.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">where — условие строк</text>
+<text x="185" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">nodes: status = «active»;</text>
+<text x="185" y="349.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">observations: все</text>
+<rect x="60" y="380" width="250" height="74" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="405.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">поле вектора не объявляется</text>
+<text x="185" y="422.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">выводится: единственное поле BLOB в</text>
+<text x="185" y="437.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">строке</text>
+<path d="M 310 250 L 358 250" fill="none" stroke="#8b5cf6" stroke-width="1.6" marker-end="url(#arwA)"/>
+<text x="312" y="242" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#6d28d9" text-anchor="start">данные</text>
+<rect x="40" y="522" width="290" height="84" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="552.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Файлы дворца: &lt;dbDir&gt;/*.db</text>
+<text x="185" y="569.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">user.db, shared.db, project-&lt;hash&gt;.db — по</text>
+<text x="185" y="584.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">файлу на область</text>
+<path d="M 330 546 L 358 460" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="268" y="596" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="10.5" fill="#64748b" text-anchor="start">читается тем же объявлением</text>
+<rect x="740" y="466" width="270" height="210" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="760" y="494" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">ЕСЛИ ДЕЙСТВИЕ — ПЕРЕСЧЁТ</text>
+<rect x="760" y="490" width="230" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="875" y="513" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">План: кто нуждается</text>
+<text x="875" y="530" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">вектор пуст или длина не та</text>
+<rect x="760" y="552" width="230" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="875" y="567.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Партии по 16 текстов</text>
+<text x="875" y="584.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">предел модели не решает судьбу</text>
+<text x="875" y="599.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">базы</text>
+<rect x="760" y="614" width="230" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="875" y="637" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Запись — хранилищем</text>
+<text x="875" y="654" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">соединение у базы одно</text>
+<path d="M 700 625 L 738 625" fill="none" stroke="#10b981" stroke-width="1.6" marker-end="url(#arwT)"/>
+<rect x="740" y="92" width="270" height="350" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="760" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">СОСТОЯНИЯ, КОТОРЫЕ ВИДНО</text>
+<text x="762" y="132" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· absent — базы ещё нет</text>
+<text x="762" y="162" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· empty — записей нет</text>
+<text x="762" y="192" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· no-label — метки нет</text>
+<text x="762" y="222" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· other-model — метка чужая</text>
+<text x="762" y="252" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· mixed-dims — векторы разной длины</text>
+<text x="762" y="282" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· missing-vectors — записи без вектора</text>
+<text x="762" y="312" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· normal — всё на месте</text>
+<text x="762" y="366" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#7c3aed" text-anchor="start">Четыре действия: none, write-label,</text>
+<text x="762" y="384" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#7c3aed" text-anchor="start">convert, repair. Состояние → действие —</text>
+<text x="762" y="402" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#7c3aed" text-anchor="start">одно правило, а не разметка панели.</text>
+<path d="M 738 526 L 702 526" fill="none" stroke="#6366f1" stroke-width="1.6"/>
+<rect x="40" y="700" width="960" height="74" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="520" y="725.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">Расширение без нашего кода</text>
+<text x="520" y="742.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">автор добавил таблицу с вектором — в объявлении появляется одна строка, и проверка состояния, метка и пересчёт начинают её видеть; править TypeScript и</text>
+<text x="520" y="757.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">пересобирать плагин не нужно</text>
+</svg><figcaption>Рис. 5. Путь от объявления схемы до действия над базой. Обработчик читает только объявление, а не знает таблиц по именам; правило превращает факты о базе в одно из семи состояний и одно из четырёх действий.</figcaption></figure>
+
+<h3>Что объявляется, а что выводится</h3>
+<ul>
+  <li><strong>Объявляется:</strong> <code>role</code> таблицы (<code>user</code> или <code>service</code>), поле с текстом для модели (<code>properties.vector.text</code>) и условие участия строк (<code>properties.vector.where</code>).</li>
+  <li><strong>Выводится:</strong> поле вектора — это единственное поле типа BLOB в строке таблицы. Если BLOB-полей два, объявление отвергается с претензией: непонятно, куда писать.</li>
+  <li><strong>Не объявляется вовсе:</strong> размерность. Она следует из каталога моделей по метке, а не из файла схемы.</li>
+</ul>
+
+<pre><code>{ "formatVersion": 1, "schemaVersion": 13,
+  "tables": {
+    "nodes":        { "role": "user",
+                      "properties": { "vector": { "text": "content", "where": "status = 'active'" } },
+                      "fields": { "id": "TEXT", "content": "TEXT", "embedding": "BLOB", "...": "..." } },
+    "observations": { "role": "user",
+                      "properties": { "vector": { "text": "belief", "where": null } } },
+    "nodes_fts":    { "role": "service" }
+  } }</code></pre>
+
+<p>Служебные таблицы перечислены как наглядный пример того, что обходчик пропускает помеченное без анализа содержимого: FTS-тени не несут пользовательских векторов, и попытка их обработать была бы ошибкой. У <code>observations</code> условие <code>null</code> значит «участвуют все строки»: убеждения не архивируются так, как записи.</p>
+
+<h3>Семь состояний и четыре действия</h3>
+<table>
+<tr><th>Состояние</th><th>Что видно</th><th>Действие</th></tr>
+<tr><td><code>absent</code></td><td>Файла базы ещё нет (его создаёт код автора)</td><td><code>none</code></td></tr>
+<tr><td><code>empty</code></td><td>Файл есть, записей в области схемы нет</td><td><code>none</code></td></tr>
+<tr><td><code>no-label</code></td><td>Метки нет; модель угадывается по длине векторов</td><td><code>write-label</code> или <code>convert</code></td></tr>
+<tr><td><code>other-model</code></td><td>Метка есть, но модель не та, которой будем писать</td><td><code>convert</code></td></tr>
+<tr><td><code>mixed-dims</code></td><td>Длина векторов не совпадает с меткой</td><td><code>convert</code></td></tr>
+<tr><td><code>missing-vectors</code></td><td>Часть записей без вектора</td><td><code>repair</code></td></tr>
+<tr><td><code>normal</code></td><td>Метка совпадает, все векторы той длины</td><td><code>none</code></td></tr>
+</table>
+<p>Порядок проверок важен и зафиксирован: пересортицу нельзя объявлять раньше, чем выяснится, чья это база — иначе чужая модель выглядела бы как испорченные векторы. Правило чистое: оно получает факты о базе и ожидание, а возвращает состояние и действие. Поэтому оно проверяется тестом без диска и без SQLite, а панель его только называет словами.</p>
+
+<h3>Как идёт пересчёт</h3>
+<ol>
+  <li><strong>План.</strong> Отдельное соединение в режиме «только чтение» обходит таблицы из объявления и выбирает строки области, у которых вектор пуст или его длина не равна ожидаемой.</li>
+  <li><strong>Партии.</strong> Тексты уходят в модель партиями по 16: предел вывода модели не должен решать судьбу всей базы.</li>
+  <li><strong>Запись.</strong> Векторы пишет хранилище — у базы одно соединение, и оно живёт там. Конвертер только читает и считает.</li>
+  <li><strong>Метка.</strong> После успешного пересчёта метка базы переписывается на новый язык и модель. Метка и векторы меняются одной операцией, а не двумя.</li>
+</ol>
+<p>Пустой текст — не сбой, а факт о содержимом: строке не из чего строить вектор. Такие строки называются отдельным числом, а не молча пропускаются и не сваливаются в общий счёт ошибок.</p>
+
+<h3>Починка: досчитать векторы и подписать, не меняя язык</h3>
+<p>Состояние <code>missing-vectors</code> — это записи, у которых вектор пуст, а метка при этом может быть верной. Гонять пересчёт всей базы ради шести строк не нужно и вредно: остальные векторы уже правильные. Поэтому у этого состояния своё действие — <code>repair</code>, и кнопка исполняет его двумя запросами подряд: <code>base-label</code> ставит недостающие метки, <code>base-convert</code> досчитывает то, чему вектора не хватает.</p>
+<p>Практический смысл: база с записями без вектора перестаёт называться «требует ремонта» после одного нажатия, и для этого не надо менять ни язык дворца, ни модель. Плата за такую починку — ровно один пересчёт недостающего, а не всего файла.</p>
+
+<h3>Границы: что мы сознательно не строим</h3>
+<ul>
+  <li><strong>Восстановительной машинерии нет.</strong> Перевод — однократное действие человека; откат к прежнему состоянию не предусмотрен. Нужен только чекпоинт, чтобы прерванный пересчёт можно было продолжить: частично пересчитанная база — это состояние <code>mixed-dims</code>, и повторный запуск доводит дело до конца.</li>
+  <li><strong>Пересчёт идёт прямо в живую базу,</strong> без временной копии: база небольшая, а копия удваивала бы место и время. Резервный путь — экспорт базы, который у автора уже есть.</li>
+  <li><strong>Неконвертируемое выносится отдельно.</strong> Строка, которую не удалось пересчитать, не теряется и не блокирует остальные: она попадает в отчёт отдельным списком с причиной.</li>
+</ul>
+
+<div class="warnbox"><b>Чего пересчёт не делает</b>
+Не меняет текст записей, не создаёт и не удаляет таблицы, не трогает служебные таблицы. План — чтение: если до нажатия «Выполнить» дело не дошло, в базе остаются те же строки, тексты, векторы и метка. Это проверено тестом, а не обещано.</div>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c8"><span class="num">8.</span>Курируемый профиль: почему правила ушли отдельным пакетом</h2>
+
+<p>У дворца есть два вида знания о человеке: выведенный профиль (то, что система вывела сама) и курируемый блок — правила, которые человек написал сам через <code>engram_profile_edit</code>. Второй главнее первого, и в этом была ловушка.</p>
+
+<h3>Что было не так</h3>
+<p>Курируемый блок вставлялся в начало сессии вперемешку с выведенным профилем и историческими воспоминаниями, в общем тексте памяти. Агент читал рядом «правила, которые ведёт человек» и «воспоминания, которые могут быть неверны», и различить их было нечем, кроме формулировок. Вторая половина проблемы — сам блок памяти: в него попадают записи, которые человек не писал, и они выглядели так же, как правила.</p>
+
+<h3>Что сделали</h3>
+<p>Правила уходят отдельным пакетом <code>&lt;engram_profile&gt;</code> со своей шапкой-указанием: это инструкции человека, их надо исполнять и считать главными — в отличие от воспоминаний ниже, которые лишь материал. Отдельный тег нужен затем, чтобы защита от подмены могла отличить размеченный пакет от текста, который лишь выглядит как разметка.</p>
+
+<div class="note"><b>Две попытки, и первая была отменена</b>
+Сначала хотели «дешёвую правку»: дописать шапку внутри существующего блока памяти. Отменили и сделали дорогую, но правильную: шапка внутри общего текста не отделяет правила от воспоминаний, а лишь добавляет ещё одну формулировку, которую можно перепутать с содержимым. Отдельный пакет — отдельное место, отдельный тег, отдельная проверка.</div>
+
+<h3>Что это даёт</h3>
+<ul>
+  <li>Правила человека видно отдельно от выводов системы — и человеку, и агенту, и проверке безопасности.</li>
+  <li>Блок не «разбавляется»: то, что не написано человеком, в него не попадает.</li>
+  <li>Правка, откат и история версий живут в одном месте, с оптимистической блокировкой: правка не затирает чужую правку молча.</li>
+</ul>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c9"><span class="num">9.</span>Что мы поправили по ходу и почему</h2>
+
+<p>Работа шла не в стороне от кода автора, а сквозь него: пока делали мультиязычность, всплывали дефекты, которые мешали жить. Ниже — то, что исправлено попутно. Это не «заодно переписали»: каждый пункт однажды помешал, и без него следующий шаг было не сделать.</p>
+
+<h3>Интерфейс</h3>
+<ul>
+  <li><strong>Меню панели больше не уезжает.</strong> Меню и вкладки были частью прокручиваемого содержимого, поэтому страница «проезжала» под ним, а при длинном списке меню исчезало из виду. Теперь меню приклеено к верху и не участвует в прокрутке содержимого. Заодно по той же причине переделаны слои: полноэкранный экран правки словаря открывался «в месте нажатия» и на длинной карточке оказывался за нижней кромкой — со стороны это выглядело как «нажал и ничего не произошло». Теперь слои живут вне прокручиваемой области.</li>
+  <li><strong>Кнопки экрана словаря ожили.</strong> Сохранение, отмена и заполнение моделью были разметкой без обработчиков: экран открывался, а дальше ничего не происходило. Сейчас сохраняется только изменённое, пустая клетка снимает правку, а заполнение пишет черновик, не файл.</li>
+  <li><strong>Язык панели следует за хостом.</strong> Раньше панель держала свой выбор и могла говорить на одном языке, когда хост переключён на другой. Теперь источник — настройка DSH, а ручной выбор языка панели остаётся осознанным переопределением.</li>
+  <li><strong>Тексты карточки обслуживания идут из вшитых словарей панели.</strong> Карточка читала серверный языковой файл, поэтому её подписи не переключались вместе с интерфейсом и могли оказаться на языке, которого человек не ждёт.</li>
+  <li><strong>Полный идентификатор модели убран из строки выбора</strong> (<code>Xenova/paraphrase-multilingual-MiniLM-L12-v2</code> вместо короткого имени занимал всю строку и вытеснял остальное). Идентификатор остался в подсказке при наведении.</li>
+  <li><strong>Окно проверки панели:</strong> кнопка прижата вправо, закрытие сообщается панели (иначе окно открывалось только один раз — панель считала его всё ещё открытым), текст крупнее и контрастнее: серые 11–12 px в этом окне не читались.</li>
+</ul>
+
+<h3>Память и хост</h3>
+<ul>
+  <li><strong>Журналы сессий не читаются на старте.</strong> Чтение журнала целиком стоило сотни мегабайт памяти на каждом старте; на живых данных хост из-за этого падал. Реплики берутся из текущей сессии, журнал читается только по явному запросу исторического заполнения. Сами журналы на диске при этом никто не удаляет: они остаются, и удаление — отдельное действие с подтверждением.</li>
+  <li><strong>Языком диалога считается только набранное человеком.</strong> Живая проверка показала: «язык диалога» определился как английский, потому что за речь человека был принят английский служебный текст (снимок рантайма, каталог навыков, инструкции). Теперь всё, у чего нет признака реплики человека, не считается вовсе.</li>
+  <li><strong>Эмбеддер закрывается корректно,</strong> иначе после перезагрузки модели оставались висеть ресурсы.</li>
+</ul>
+
+<h3>Данные и векторы</h3>
+<ul>
+  <li><strong>Размерность — жёсткое условие на записи, деградация на чтении.</strong> Раньше несовпадение размерности было предупреждением: база тихо наполнялась векторами, которые ни с чем не сравнятся. Теперь запись отвергается осознанно, а чтение продолжает работать поиском по словам — и говорит об этом флагом <code>degraded</code>, а не молчит.</li>
+  <li><strong>Размерность базы берётся у большинства векторов,</strong> а не у первого попавшегося: пересортица больше не выдаёт себя за «норму».</li>
+  <li><strong>Версия формата объявления перестала быть мёртвым полем:</strong> <code>formatVersion</code> сверяется, и объявление другой версии не применяется молча.</li>
+  <li><strong>Запись о миграции показывается словами,</strong> а не куском JSON: человек читает вывод, а не структуру.</li>
+  <li><strong>Кнопка очистки журнала дворца</strong> с подтверждением и понятным итогом.</li>
+</ul>
+
+<div class="note"><b>Зачем этот список в документе</b>
+Потому что половина этих правок меняет поведение, которое автор считает своим. Их надо не «принять к сведению», а либо принять в апстрим, либо отклонить осознанно. Каждая правка сделана отдельным коммитом с объяснением в теле, чтобы её можно было разобрать по одной.</div>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c10"><span class="num">10.</span>Как это проверено и как поставлено</h2>
+
+<p>Проверки у нас не «на глаз». Есть шесть гейтов, и поставка считается состоявшейся, только когда все шесть зелёные.</p>
+
+<table>
+<tr><th>Гейт</th><th>Что проверяет</th><th>Состояние</th></tr>
+<tr><td>Типы (<code>tsc</code>)</td><td>Типы TypeScript по всему пакету</td><td>116 ошибок — и это <em>база</em>: все они про отсутствующие объявления типов у пакетов хоста, наши правки их не добавляют</td></tr>
+<tr><td>Тексты (<code>check-messages</code>)</td><td>Каждый ключ сообщения, запрошенный кодом, объявлен в наборах</td><td>Запрошено кодом 488 ключей; en 488 ключей / 485 текстов, zh 488 / 486, ru 485 текстов — критичных расхождений нет</td></tr>
+<tr><td>Правила кода (<code>check-patterns</code>)</td><td>Запрещённые образцы: локальные копии языковых списков, обход пакета и т. п.</td><td>43 проверки, 0 провалов</td></tr>
+<tr><td>Порядок хуков (<code>check-hook-order</code>)</td><td>Хуки плагина стоят в объявленном порядке, а не в случайном</td><td>Чисто, проверено 5 файлов</td></tr>
+<tr><td>Тесты (<code>vitest</code>)</td><td>Поведение: хранилище, поиск, пересчёт, словари, реестры, оси языка, профиль, безопасность</td><td>49 файлов (48 прошли, 1 пропущен); 700 тестов — 699 прошли, 1 пропущен</td></tr>
+<tr><td>Сборка (<code>tsdown</code>)</td><td>Собираются оба бандла — серверный и клиентский</td><td><code>lib/index.js</code> 825 645 B, <code>lib/client.js</code> 329 050 B</td></tr>
+</table>
+
+<h3>Что именно покрыто тестами из нового</h3>
+<ul>
+  <li><strong>Реестр языков:</strong> разбор файла, встроенный набор без файла, испорченный JSON не оставляет плагин без языков, пустой список — не «языков нет», а испорченный файл.</li>
+  <li><strong>Метка базы:</strong> <code>fr-minilm-l12</code> читается как язык <code>fr</code>, <code>zh-Hans-minilm-l12</code> — как <code>zh</code>, две разные метки дают <code>mixed</code>.</li>
+  <li><strong>Оси:</strong> preference интерфейса не даёт опоры для записи языка дворца; голос диалога главнее интерфейса; модель выбирается по языку дворца; смена языка дворца переводит базу в «чужую модель», но метку и содержимое не переписывает; план пересчёта — чтение.</li>
+  <li><strong>Метка при открытии:</strong> пустая база получает метку, база без метки на целевой модели — тоже, чужая модель и пересортица — нет, уже стоящая метка не переписывается (<code>tests/base-state.spec.ts</code>).</li>
+  <li><strong>Словари:</strong> файл языка, которого нет во вшитом наборе, читается как обычный слой; без файла сообщение остаётся английским, а не пустым; «Создать» пишет файл с ключами, пустая клетка снимает правку, а не пишет пустую строку.</li>
+  <li><strong>Пересчёт:</strong> на настоящем файле SQLite — какие строки попадают в план, что пустой текст считается отдельно, что сбой партии не уносит остальные.</li>
+  <li><strong>Размерность:</strong> несовпадение отвергает запись и не теряет поиск по словам.</li>
+</ul>
+
+<h3>Как поставлено</h3>
+<p>Собираются два файла — серверный и клиентский бандлы — и кладутся в профиль DSH (<code>node_modules/@kenz1117/dsh-engram/lib/</code>), рядом с словарями и реестрами. Номер версии — одна строка в <code>package.json</code>; сейчас это <code>0.9.8-dsv.27</code>. Серверная половина подхватывается только после перезапуска DSH, клиентская — после обновления страницы: это разные половины поставки, и расхождение их версий панель показывает баннером, а не падает. Живой дворец лежит в <code>C:Usersdsv.dshengram</code>, модели — в <code>...engrammodels</code>.</p>
+
+<h3>Проверка на живых данных, а не только тестами</h3>
+<p>Перед пересчётом базы снимаются командой <code>VACUUM INTO</code>, и снимок остаётся воспроизводимым доказательством: на нём видно, что было. Первый реальный пересчёт прошёл 20 октября: в <code>user.db</code> исправлено 10 записей, ошибок ноль, после прогона все шесть баз были чисты — то есть метка совпадала с векторами и записей без вектора не было. Снимок «до» лежит в <code>_ops/fixtures/before-convert-2026-10-19</code> и до сих пор воспроизводит те самые 10 битых записей. На 23.10 в <code>user.db</code> снова шесть записей без вектора (95 активных, 6 без вектора): их оставило сведение убеждений 22.10 — то есть «чисто» не навсегда, и именно поэтому состояние видно в карточке, а причина — строкой <code>vectors-missing</code> в журнале.</p>
+
+<div class="warnbox"><b>Одна установочная ловушка, найденная на живом профиле</b>
+Файл <code>registry/languages.json</code> попал в поставку позже остальных реестров, и в профиле его не оказалось: установка там делается копированием по файлам, а не из архива. Без него плагин не падает — берёт встроенный набор, — но подписи языков приходят кодами вместо названий. В список <code>files</code> пакета <code>registry/</code> входит, так что из архива всё встаёт правильно; расходится только ручная копия.</div>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c11"><span class="num">11.</span>Обслуживание: состояния баз, починка и журнал</h2>
+
+<p>Карточка обслуживания отвечает на три вопроса подряд: что с базами, что с ними будет по нажатию и почему в прошлый раз вышло именно так. Третий вопрос раньше оставался без ответа — и это было заметно.</p>
+
+<h3>Три слова вместо семи состояний</h3>
+<p>Правило разбирает базу в одно из семи состояний (глава 7), но человеку в карточке не нужно семь: у него одна кнопка. Поэтому карточка сводит состояния к трём словам, и слово выбирается по тому, что кнопка сделает:</p>
+<table>
+<tr><th>Слово в карточке</th><th>Когда</th><th>Что делает «Выполнить»</th></tr>
+<tr><td><code>База в порядке</code></td><td>Все базы в состоянии <code>normal</code>, <code>absent</code> или <code>empty</code></td><td>Ничего: нажимать нечего</td></tr>
+<tr><td><code>База требует ремонта</code></td><td>Нужны только метки и досчёт векторов</td><td>Починку: <code>base-label</code>, затем <code>base-convert</code></td></tr>
+<tr><td><code>База требует конвертации</code></td><td>Хотя бы одной базе нужен пересчёт на другую модель</td><td>Смену языка собранным условием либо пересчёт по состоянию</td></tr>
+</table>
+<p>Внутри карточки у каждой базы по-прежнему названо её собственное состояние — <code>метки нет</code>, <code>другая модель</code>, <code>пересортица векторов</code>, <code>записи без вектора</code>, — иначе было бы не понять, какую из шести баз чинить. Сводное слово при этом одно на все базы: кнопка одна, и она обязана называть себя честно.</p>
+
+<h3>Журнал: две записи, которых раньше не было</h3>
+<p>Сорванное решение Jev до сих пор жило только в кольцевом буфере в памяти процесса. Буфер умирает вместе с перезапуском, и спустя день «запись прошла по чистым правилам» и «Jev молчал» в журнале становились неразличимы. Теперь на каждый срыв пишется строка <code>jev-fallback</code>: где спрашивали (<code>band</code> или <code>contradiction</code>), какой вопрос, какая причина и сколько это заняло. Текст памяти в журнал не попадает: журнал не должен становиться вторым хранилищем чужих записей, а ошибка журнала не имеет права ломать запись памяти — поэтому она там и глушится.</p>
+<p>Вторая строка — <code>vectors-missing</code>. Она появляется, когда сведение записей (distill) прошло, а вектор поставить было нечем: в базе остались записи без вектора. В ней число записей и область. Это тот самый случай, который потом виден как «база требует ремонта»; раньше причина пропадала, и человек видел только следствие.</p>
+<p>Обе строки панель читает по-русски, а не служебными именами: в списке операций стоят «решение Jev сорвалось» и «записи без вектора» с расшифровкой в подсказке.</p>
+
+<h3>Строка проверки Jev</h3>
+<p>Кнопка «Проверить соединение» показывала результат тостом, а тост живёт секунды: через минуту нельзя было сказать ни куда шла проверка, ни чем она кончилась. Теперь над формой стоит строка с параметрами — адрес, модель, тайм-аут и откуда взят ключ («из поля», «сохранённый», «не задан»), — а под ней итог последней проверки: время, длительность ответа, вероятность ping и код HTTP.</p>
+<p>У отказа появилось слово. Раньше любая неудача выглядела одинаково — «не уточнено», и человек не знал, чинить ключ, сеть, тайм-аут или протокол. Теперь вид отказа называется: <code>HTTP</code> (сервер ответил, но не тем), <code>сеть</code> (не достучались), <code>тайм-аут</code> (не успели), <code>протокол</code> (ответ пришёл, но разобрать его нечем). Полный текст ошибки лежит в подсказке, чтобы строка не разъезжалась.</p>
+<p class="small">Замер берётся с живого соединения: строка показывает длительность и вероятность, которые вернул сам ответ, а не последний известный успех, и код HTTP рядом с ними. Числа в ней меняются от прогона к прогону — это и есть признак, что она живая.</p>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c12"><span class="num">12.</span>Что осталось и что мы просим у автора</h2>
+
+<h3>Наша работа, ещё не сделанная</h3>
+<ol>
+  <li><strong>Индикатор расхождения</strong> интерфейсного языка и языка дворца: человек, переключивший интерфейс «посмотреть», должен видеть, что дворец стоит на другом языке — иначе он примет одно за другое. Сейчас такого индикатора нет; расхождение видно только в окне первого запуска и в выборе языка.</li>
+  <li><strong>Синхронизация переводов плана</strong> (английская и китайская версии отстают от русской). Делается один раз, когда формулировки устоятся, чтобы не переводить дважды.</li>
+  <li><strong>Перевод инструкции для агента</strong> на английский и китайский: сейчас текст есть только по-русски и помечен как черновик — содержание важнее языка, на котором он написан.</li>
+</ol>
+
+<h3>Что закрыто 22–23.10</h3>
+<ul>
+  <li><strong>Рабочий переключатель языка</strong> (описан в главе 3): блок «Язык дворца» — выбор, предохранитель и «Выполнить» в одной строке; длина окна стала настройкой <code>palaceChangeWindowSec</code> (5–600 секунд, по умолчанию 30), и по ней считают обе половины.</li>
+  <li><strong>Инструкция для агента</strong>: текст лежит в пакете (<code>docs/agent-language-guide.ru.md</code>) и отдаётся инструментом <code>engram_language_guide</code>.</li>
+  <li><strong>Метка при открытии базы</strong> (глава 4): новая база больше не живёт без метки до первого нажатия.</li>
+  <li><strong>Починка без смены языка</strong> (главы 7 и 11): досчитать записи без вектора и поставить недостающие метки, не трогая ни язык, ни модель.</li>
+  <li><strong>Сверка словаря с программой</strong> (глава 5): четыре числа и две находки; «Создать» выкладывает файл с ключами, а не пустую заготовку.</li>
+  <li><strong>Строка проверки Jev и следы в журнале</strong> (глава 11): у отказа появился вид, у сорванного решения и у пропавших векторов — запись в журнале операций.</li>
+</ul>
+
+<h3>Двери открыты: оба pull request слиты</h3>
+<p>#20 (Jev берёт провайдера и модель у хоста) слит 21 октября, #21 (эмбеддер как свойство развёртывания, строгая проверка размерности, многоязычное умолчание) — 22 октября. Поэтому в просьбах к автору их больше нет: разговор идёт уже о том, что делать с нашей веткой дальше, а не о том, принимать ли PR.</p>
+
+<h3>Что просим у автора</h3>
+<ol>
+  <li><strong>Принять форму объявления схемы</strong> (<code>registry/schema.json</code>) и закрыть её тестом на расхождение с настоящей базой. Файл пока ведём мы; ведение — автору.</li>
+  <li><strong>Сказать, какой признак отбора таблиц он введёт</strong> вместо нашего <code>role</code>: если у него появится своё правило, наше объявление должно ему следовать, а не спорить.</li>
+  <li><strong>Подтвердить или отклонить попутные правки</strong> (глава 9). Они меняют поведение, которое он считает своим, и молча их вливать нельзя.</li>
+  <li><strong>Закрыть долг по записи при сбое модели</strong> — это его конструкция: при недоступной модели запись отвергается, и это осознанное решение, а не наша недоделка.</li>
+</ol>
+
+<h3>Вопросы, на которые у нас нет ответа</h3>
+<ul>
+  <li>Обещает ли инструкция только выбор языка или полноценное внедрение нового языка (словари, привязка, перевод баз)? Наше чтение: внедрение языка — это и есть то, чем мы занимаемся, отдельной процедуры получать не у кого.</li>
+  <li>Где показывать расхождение языков — на вкладке «Сегодня» или в обслуживании?</li>
+  <li>Нужен ли английский «заменитель» языка для четвёртого выбора, или настоящий код локали достаточен всегда? Сейчас — настоящий код.</li>
+</ul>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="c13"><span class="num">13.</span>Соответствие плану работ</h2>
+
+<p>План работ — отдельный документ, он наш, и мы его же и правим. Здесь — снимок: что закрыто, что закрыто с оговоркой, что осталось.</p>
+
+<table>
+<tr><th>Блок</th><th>Содержание</th><th>Состояние</th></tr>
+<tr><td>А</td><td>Выбор модели: каталог, привязки, многоязычная модель, удалённый эмбеддер</td><td>Закрыт предварительно (до анализа на переусложнение)</td></tr>
+<tr><td>Б</td><td>Перевод базы: метка, объявление схемы, пересчёт, состояния</td><td>Метка, схема, пересчёт, починка и три состояния карточки работают; остались хвосты по отчётности и по долгу автора</td></tr>
+<tr><td>В</td><td>Переключение языка и предохранители</td><td>Определение языка, окно выбора, реестр языков, тесты осей, рабочий переключатель и инструкция агенту — сделано; остался индикатор расхождения языков</td></tr>
+<tr><td>Г</td><td>Сверка с реализованным: Jev, профиль, документация</td><td>Профиль отдельным пакетом сделан; Jev слит (#20, 21.10), мультиязычность слита (#21, 22.10); документация — этот документ и план</td></tr>
+</table>
+
+<div class="dec"><b>Правило, которым мы пользуемся</b>
+План — не константа. Это снимок знания на момент, когда его писали: он переписывается вслед за решением, а не защищается от факта. Поэтому в нём отмечается, что сделано и что осталось, и не заводится второй документ «а вот как на самом деле».</div>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="appA"><span class="num">А.</span>Хронология коммитов</h2>
+<p class="small">Нижняя часть — наша линия от авторского тега <code>v0.9.3</code> (<code>1aa2e82</code>); верхняя — подъём на <code>v0.9.8</code>. Новые сверху.</p>
+<table>
+<tr><th>Коммит</th><th>Что сделано</th></tr>
+<tr><td><code>b3df0d7</code></td><td>Что потерял первый проход: маркер 0.9.8-dsv.27, клиентская половина языков, вид отказа Jev, наши проверки, docs/author</td></tr>
+<tr><td><code>70682fe</code></td><td>Руководство по языку не попадало в репозиторий — твоё исправление</td></tr>
+<tr><td><code>0694dc5</code></td><td>Упаковка (i18n, registry, руководство) и два типа — твоё исправление</td></tr>
+<tr><td><code>223c122</code></td><td>Проверки реестров, состояний баз, словарей и языка дворца</td></tr>
+<tr><td><code>a815123</code></td><td>Обслуживание баз, смена языка дворца и словарь из панели</td></tr>
+<tr><td><code>26f8e71</code></td><td>Словари файлами, реестры-данные и выбор модели по языку</td></tr>
+<tr><td><code>33c40af</code></td><td>Находки обслуживания читаются в журнале по-русски</td></tr>
+<tr><td><code>d733ed6</code></td><td>Срыв решения Jev оставляет след в журнале операций</td></tr>
+<tr><td><code>49d2b81</code></td><td>Строка проверки Jev, метка базы при открытии и журнал пропавших векторов</td></tr>
+<tr><td><code>fca4f5c</code></td><td>Заготовка словаря с ключами и сверка программы с файлом</td></tr>
+<tr><td><code>44ffefc</code></td><td>Три состояния баз, починка без смены языка и блоки языка в общем ряду</td></tr>
+<tr><td><code>aba4cbf</code></td><td>Клиент терпит сервер старше себя — карточка не падает при расхождении версий</td></tr>
+<tr><td><code>1d94abe</code></td><td>Таймер окна стоит до ранних выходов, иначе панель падает с #310</td></tr>
+<tr><td><code>66e1f55</code></td><td>Базы считаются под новый язык сразу, а не после перезапуска</td></tr>
+<tr><td><code>db97ae1</code></td><td>Смена языка собранным условием (В.11) и инструкция для агента (В.08)</td></tr>
+<tr><td><code>380ec81</code></td><td>Контекст инструмента в промпте перевода и отказ от строк без подписей</td></tr>
+<tr><td><code>ba53a18</code></td><td>Партия, упёршаяся в предел вывода, делится пополам и спрашивается снова</td></tr>
+<tr><td><code>939840a</code></td><td>Язык из файла в оба переключателя; перевод словаря рабочей моделью со словарём терминов в запросе</td></tr>
+<tr><td><code>74c3faf</code></td><td>Тесты осей «интерфейс ↔ язык дворца ↔ данные» (В.10)</td></tr>
+<tr><td><code>7dd9afa</code></td><td>Окно проверки открывается повторно, кнопка справа, текст крупнее и контрастнее</td></tr>
+<tr><td><code>9cbdccd</code></td><td>Список языков идёт с сервера; «другой язык» передаёт настоящий код локали</td></tr>
+<tr><td><code>c85ba57</code></td><td>Кнопка «Тест панели», отсчёт предохранителя, розовый баллон сброса</td></tr>
+<tr><td><code>3b7a642</code></td><td>Языки дворца берутся из реестра, а не из тройки в коде</td></tr>
+<tr><td><code>fcd112d</code></td><td>Правила профиля уходят отдельным пакетом <code>&lt;engram_profile&gt;</code></td></tr>
+<tr><td><code>166a7e0</code></td><td>Языком диалога считается только набранное человеком</td></tr>
+<tr><td><code>e4d0ee1</code></td><td>Правило «язык баз по меткам» переехало к формату метки</td></tr>
+<tr><td><code>553eab7</code></td><td>Окно выбора языка дворца с предустановкой по локали и три случая определения</td></tr>
+<tr><td><code>2ecd8ee</code></td><td>Не читать журналы сессий на старте, писать язык после запуска фибера, закрывать эмбеддер</td></tr>
+<tr><td><code>c7021fa</code></td><td>Пересчёт векторов из карточки обслуживания, выбор языка, предохранитель по умолчанию</td></tr>
+<tr><td><code>1410313</code></td><td>Полный идентификатор модели убран из строки выбора; предохранитель блокирует кнопку</td></tr>
+<tr><td><code>eae8191</code></td><td>Язык дворца определяется на первом старте и записывается в конфигурацию</td></tr>
+<tr><td><code>618eb38</code></td><td>Карточка обслуживания: модель, локаль, предохранитель кнопки</td></tr>
+<tr><td><code>dbd73ea</code></td><td>Авторская v0.9.3 в нашей линии (импорт, русские тексты в словарь)</td></tr>
+<tr><td><code>0e1e8f7</code>, <code>c8b644e</code>, <code>d518218</code></td><td>Тесты: типы теста без лишних параметров, мисматч размерности не теряет поиск по словам, mock-тесты удалённого эмбеддера</td></tr>
+<tr><td><code>23152ca</code></td><td>Версия 0.9.2-dsv.11</td></tr>
+<tr><td><code>7e77b27</code></td><td>Язык панели следует за хостом, ручной выбор — переопределение</td></tr>
+<tr><td><code>5dd5b20</code></td><td>Карточка обслуживания берёт тексты из вшитых словарей панели</td></tr>
+<tr><td><code>7d5f0f5</code></td><td>Классификация таблиц схемы по <code>role</code> (user / service)</td></tr>
+<tr><td><code>2e11616</code></td><td>Меню вне прокрутки и устойчивый разбор ответа модели</td></tr>
+<tr><td><code>f3f6056</code></td><td>Оживление кнопок экрана словаря: сохранить, отменить, заполнить моделью</td></tr>
+<tr><td><code>c8469c9</code></td><td>Экран правки словаря открывается поверх окна, а не в месте нажатия</td></tr>
+<tr><td><code>df1591d</code></td><td>Экран правки словаря в обслуживании</td></tr>
+<tr><td><code>be7e2ae</code></td><td>Метка модели в базу и карточка «Базы дворца» с одной кнопкой</td></tr>
+<tr><td><code>933d722</code></td><td><code>dist/</code> в <code>.gitignore</code></td></tr>
+<tr><td><code>9590400</code></td><td>Запись о миграции показывается словами, а не JSON</td></tr>
+<tr><td><code>d7fd40f</code></td><td>Размерность базы берётся у большинства векторов</td></tr>
+<tr><td><code>761bd38</code></td><td>Метка базы — язык и короткое имя модели</td></tr>
+<tr><td><code>4354a10</code></td><td>Словарь панели отдельным файлом; карточка «Модель и словари»</td></tr>
+<tr><td><code>8c8c751</code></td><td>Короткое имя модели для записи о базе</td></tr>
+<tr><td><code>1e2ce3c</code></td><td>Умолчание пакета — служебное поле <code>default</code> в привязках</td></tr>
+<tr><td><code>97677df</code></td><td>Несовпадение размерности: отказ на записи, деградация на чтении</td></tr>
+<tr><td><code>7d235b7</code></td><td>Размерность вектора — жёсткое условие, а не предупреждение</td></tr>
+<tr><td><code>1e46d7d</code></td><td>Сверка версии формата реестра</td></tr>
+<tr><td><code>8eb0082</code></td><td>Реестр моделей и привязок — данные поставки вместо вшитых параметров</td></tr>
+<tr><td><code>e012e9b</code></td><td>Эмбеддер настраиваемый: локальная модель, пулинг, удалённый OpenAI-совместимый конец</td></tr>
+<tr><td><code>3295f0d</code>, <code>80367bf</code></td><td>Словарь переводов отдельным файлом — <code>ru.txt</code> под набор ключей автора</td></tr>
+</table>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+
+<h2 id="appB"><span class="num">Б.</span>Файлы: что добавлено и что изменено</h2>
+
+<h3>Реестры-данные (новые файлы)</h3>
+<table>
+<tr><th>Файл</th><th>Что в нём</th></tr>
+<tr><td><code>registry/models.json</code></td><td>Каталог моделей: идентификатор, короткое имя, пулинг, тип, размерность</td></tr>
+<tr><td><code>registry/bindings.json</code></td><td>Привязка «язык → модель», умолчание пакета</td></tr>
+<tr><td><code>registry/languages.json</code></td><td>Языки дворца: код, название для человека, есть ли вшитый набор текстов</td></tr>
+<tr><td><code>registry/schema.json</code></td><td>Объявление схемы данных: таблицы, роль, поле текста, условие строк</td></tr>
+<tr><td><code>i18n/ru.txt</code></td><td>Русский перевод серверных сообщений (485 текстов, 501 строка файла)</td></tr>
+<tr><td><code>i18n/panel.ru.txt</code></td><td>Русский перевод текстов панели</td></tr>
+</table>
+
+<h3>Код (основное)</h3>
+<table>
+<tr><th>Модуль</th><th>Назначение</th></tr>
+<tr><td><code>src/i18n/language.ts</code></td><td>Код языка как код, а не член тройки: форма, откат, выбор языка вывода</td></tr>
+<tr><td><code>src/i18n/palace-language.ts</code></td><td>Чистые правила определения языка дворца: веса сигналов, порог, три случая</td></tr>
+<tr><td><code>src/language-signals.ts</code></td><td>Чтение источников сигналов (реплики текущей сессии, локаль, preference)</td></tr>
+<tr><td><code>src/registry/languages.ts</code></td><td>Разбор реестра языков и встроенный набор</td></tr>
+<tr><td><code>src/registry/vector-schema.ts</code></td><td>Разбор объявления схемы: что объявляется, что выводится</td></tr>
+<tr><td><code>src/registry/base-state.ts</code></td><td>Правило «факты + ожидание → семь состояний и четыре действия», оно же решает, какую метку поставить при открытии (<code>labelToStamp</code>)</td></tr>
+<tr><td><code>src/registry/palace-change.ts</code></td><td>Проверка собранного условия: язык, начало окна, его срок — одна формула на панель и сервер</td></tr>
+<tr><td><code>src/registry/base-census.ts</code></td><td>Осмотр базы: число строк, длины векторов, метка</td></tr>
+<tr><td><code>src/registry/convert.ts</code></td><td>План пересчёта и прогон партиями</td></tr>
+<tr><td><code>src/registry/registry-file.ts</code></td><td>Чтение реестров с наложением слоёв и претензиями вместо исключений</td></tr>
+<tr><td><code>src/i18n/dictionary-file.ts</code></td><td>Чтение словарей: поставка, затем слой пользователя</td></tr>
+<tr><td><code>src/i18n/dictionary-edit.ts</code></td><td>Правка словаря из панели, заготовка с ключами и сверка программы с файлом: только изменённое, пустая клетка снимает</td></tr>
+<tr><td><code>src/i18n/dictionary-ai.ts</code></td><td>Перевод недостающих строк рабочей моделью партиями, со словарём терминов в запросе</td></tr>
+<tr><td><code>src/flywheel/distill.ts</code></td><td>Сведение записей в убеждения; считает, сколько убеждений осталось без вектора</td></tr>
+<tr><td><code>src/write-disposition.ts</code></td><td>Правило записи (слить, пропустить, отложить) и след сорванного решения Jev в журнале</td></tr>
+<tr><td><code>src/security/sanitize.ts</code></td><td>Пакет <code>&lt;engram_profile&gt;</code>, защита от подмены разметки</td></tr>
+<tr><td><code>src/client/EngramPanel.tsx</code></td><td>Панель: вкладки, карточка обслуживания, окно выбора языка, проверка Jev, экран словаря</td></tr>
+<tr><td><code>src/client/locales/*.ts</code></td><td>Тексты панели на трёх языках</td></tr>
+</table>
+
+<h3>Инструменты проверки (вне пакета, папка <code>_ops</code>)</h3>
+<ul>
+  <li><code>convert-embeddings.mjs</code> — пересчёт по объявлению схемы, с <code>--dry-run</code> и <code>--dir</code>;</li>
+  <li><code>snapshot-bases.mjs</code> — снимок живых баз через <code>VACUUM INTO</code>;</li>
+  <li><code>state-preview.mjs</code> — что покажет карточка обслуживания, без запуска плагина;</li>
+  <li><code>census-tables.mjs</code>, <code>count-broken.mjs</code>, <code>dump-vector-schema.mjs</code> — перепись таблиц, подсчёт битых векторов, выгрузка полей;</li>
+  <li><code>check-svg-overlap.mjs</code> — проверка геометрии схем перед вставкой в документацию;</li>
+  <li><code>make-language-axes.mjs</code>, <code>make-description-html.mjs</code> — сборка схем и этого документа.</li>
+</ul>
+
+<div class="note"><b>Что в этом документе проверено, а что нет</b>
+Код и числа — из репозитория и прогонов (гейты, тесты, размеры бандлов). Формулировки решений — из наших записей решений, они наши, а не авторские. Живая проверка интерфейса (кнопка, окно, отсчёт, переключение языка панели) делается на запущенном DSH — что из этого уже видел человек, а что нет, знает только он; в тексте это не утверждается.</div>
+<p class="totop"><a class="btn" href="#toc">↑ К оглавлению</a></p>
+</div>
+</body>
+</html>

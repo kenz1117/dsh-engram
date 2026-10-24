@@ -67,6 +67,12 @@ export const zh = {
   'misc.jevEndpointMustBeHttp': 'invalid: jev.endpoint 必须是 http(s) URL',
   'misc.jevModelMustNotBeEmpty': 'invalid: jev.model 不能为空',
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒',
+  // tools/create.ts — инструкция по языку (В.08)
+  'tool.languageGuideDescription': '如何把新语言引入记忆宫殿：返回说明文本（文件 docs/agent-language-guide.ru.md，目前只有俄文草稿）。用户的语言不在 zh/en 之内时使用：先读说明，再与用户一起完成登记语言、词典和切换。',
+  'tool.languageGuideMissing': '[dsh-engram] 找不到语言说明文件 {file}：{error}',
+  // i18n/dictionary-file.ts
+  'misc.warnDictionaryProblems': '[dsh-engram] 译文词典：有 {count} 行问题已跳过，这些文本仍为英文：{sample}',
+  'misc.warnRegistryProblems': '[dsh-engram] 模型登记表：有 {count} 行问题已跳过：{sample}',
 } as const
 
 /** Английский набор — образец полноты. */
@@ -124,61 +130,12 @@ export const en = {
   'misc.jevEndpointMustBeHttp': 'invalid: jev.endpoint must be an http(s) URL',
   'misc.jevModelMustNotBeEmpty': 'invalid: jev.model must not be empty',
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs must be an integer number of milliseconds between 1000 and 60000',
-} as const
-
-/** Русский набор. */
-export const ru = {
-  // routes.ts
-  'misc.entityNotFound': 'сущность {id} не найдена',
-  'misc.recordNotFound': 'запись {id} не найдена',
-  'misc.exportHeading': '# Экспорт dsh-engram ({scope})',
-  'misc.exportRecordLine': '- [{status}/{kind}] {content} (id={id}, importance {importance})',
-  'misc.exportEdgesHeading': '## Связи',
-  'misc.importInvalidPayload': 'структура файла импорта некорректна: {error}',
-  'misc.bodyTooLarge': 'тело запроса слишком большое: превышен предел {limit}.',
-  'misc.bodyMalformed': 'тело запроса — не корректный JSON: {error}',
-  'misc.bodyNotObject': 'тело запроса должно быть JSON-объектом.',
-  'misc.importBodyTooLarge': 'файл импорта слишком большой: превышен предел {limit}. Разделите экспорт и повторите либо используйте инструмент engram_import с путём к файлу.',
-  'misc.importBodyMalformed': 'тело запроса импорта — не корректный JSON: {error}',
-  'misc.importBodyNotObject': 'тело запроса импорта должно быть JSON-объектом.',
-  'misc.backfillCannotStart': 'не удалось запустить заполнение',
-  'misc.archivePathOutsideDbDir': 'archivePath должен находиться внутри dbDir',
-  'misc.restoreFailed': 'восстановление не удалось: {message}',
-  // mirror/markdown.ts
-  'misc.mirrorTitle': '# Дворец памяти · {palace}',
-  'misc.mirrorPalacePersonal': 'Личный дворец',
-  'misc.mirrorPalaceProject': 'Дворец проекта',
-  'misc.mirrorSummary': '> Экспорт {at} · всего **{total}** записей (открыто {active}) · коридоров {edges}',
-  'misc.mirrorRoomsHeading': '## Обзор комнат',
-  'misc.mirrorRoomLine': '- **{room}** · {count} записей (открыто {active} · выставка {archived} · закрыто {forgotten})',
-  'misc.mirrorRecordsHeading': '## Список записей',
-  'misc.mirrorCorridorsHeading': '## Коридоры (связи)',
-  'misc.mirrorNoCorridors': '(коридоров пока нет)',
-  'misc.mirrorUntitled': 'Табличка памяти',
-  'misc.mirrorCorridorSection': '## Коридоры',
-  'misc.mirrorNoEdges': '(эта запись пока не связана ни с одним коридором)',
-  'misc.mirrorEdgeLine': '- {direction} `{id}` ({type})',
-  // refurb.ts
-  'misc.refurbDemoteReason': 'важность {importance} < {threshold} и нет обращений {days} дн.; рекомендуется понизить до archived.',
-  'misc.refurbMergeReason': 'первые 20 символов совпадают с {count} записями; рекомендуется объединить их дистилляцией.',
-  'misc.refurbReviewReason': 'важность {importance}, но запись ни разу не посещали — возможно, она затерялась в коридоре; рекомендуется повторить.',
-  'misc.refurbSplitReason': 'длина содержимого {length} > 400; рекомендуется разделить на несколько независимых записей.',
-  'misc.refurbNoPlacardReason': '{slot}табличка не установлена: дисциплина дворца требует, чтобы каждый маркер был уникальным, различимым и с датой; добавьте её параметром placard инструмента engram_update.',
-  'misc.refurbLowPlacardReason': '{slot}оценка таблички {score} < 0.5 (нарушает дисциплину уникальности/различимости/даты); перепишите табличку.',
-  // imagery/score.ts
-  // 2026-10-11, A-16: полное пояснение — в китайском блоке выше; наружный параметр называется placard.
-  'misc.placardImprovementHint': 'табличка не соответствует дисциплине дворца (уникальность · различимость · дата): прикрепите параметром placard инструмента engram_update табличку из 4-30 символов с датой, первые 6 символов которой не совпадают с другими табличками той же комнаты.',
-  // jev/runtime.ts
-  'misc.jevEnabledMustBeBoolean': 'invalid: jev.enabled должно быть логическим значением',
-  'misc.jevProviderMustBeString': 'invalid: jev.provider должно быть строкой',
-  'misc.jevProviderMustBeSelected': 'Jev: сначала выберите провайдера и модель',
-  'misc.jevHostLlmUnavailable': 'Jev: сервис моделей хоста недоступен, список провайдеров получить нельзя',
-  'misc.jevProviderNotConfigured': 'Jev: провайдер «{provider}» не настроен в DSH',
-  'misc.jevProviderHasNoBaseUrl': 'Jev: у провайдера «{provider}» в настройках DSH нет baseURL',
-  'misc.jevProviderKeyMissing': 'Jev: у провайдера «{provider}» нет ключа (ссылка «{ref}» пуста)',
-  'misc.jevProviderUnresolved': 'Jev: провайдер не назван — ни панелью, ни настройками плагина, ни маршрутом сессии',
-  'misc.jevModelNotPicked': 'Jev: у провайдера «{provider}» в настройках DSH нет JEV-модели — укажите модель вручную',
-  'misc.jevEndpointMustBeHttp': 'invalid: jev.endpoint должно быть URL со схемой http(s)',
-  'misc.jevModelMustNotBeEmpty': 'invalid: jev.model не может быть пустым',
-  'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs должно быть целым числом миллисекунд от 1000 до 60000',
+  // i18n/dictionary-file.ts
+  'misc.warnDictionaryProblems': '[dsh-engram] The translation dictionary skipped {count} problem line(s); those texts stay English: {sample}',
+  // src/registry/registry-file.ts
+  'misc.warnRegistryProblems': '[dsh-engram] The model registry skipped {count} problem line(s): {sample}',
+  // tools/create.ts — language guide (В.08)
+  'tool.languageGuideDescription': 'How to bring a new language into the memory palace: returns the instruction text (docs/agent-language-guide.ru.md, currently a Russian draft). Use it when the user\'s language is not zh/en: read it, then walk the user through registering the language, the dictionaries and the switch.',
+  'tool.languageGuideMissing': '[dsh-engram] language guide file is missing: {file} — {error}',
+  // src/registry/registry-file.ts
 } as const

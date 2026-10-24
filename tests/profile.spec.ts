@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { renderProfile, renderProfileDetailed, renderProfileWithCurated, CURATED_HEADER } from '../src/index.ts'
+import { renderProfile, renderProfileDetailed, renderProfileParts, CURATED_HEADER } from '../src/index.ts'
 import { estimateTokens } from '../src/token.ts'
 
 const HEADER = 'User memory profile (dsh-engram, cross-session) — Grand Hall (always present):'
@@ -133,43 +133,52 @@ describe('renderProfileDetailed 溢出明细', () => {
   })
 })
 
-describe('renderProfileWithCurated（curated 优先）', () => {
-  it('curated 段位于派生画像之前；无 block 时等同 renderProfileDetailed', () => {
+describe('renderProfileParts（профиль и память врозь）', () => {
+  it('профиль уходит своей частью, а не внутрь памяти', () => {
     const curatedText = '用户偏好简体中文；拒绝 Emoji。'
-    const withCurated = renderProfileWithCurated(
+    const parts = renderProfileParts(
       { content: curatedText },
       [record('id-1', 'fact', '在开发记忆插件')],
       1024,
       'en',
     )
-    // curated 标题行在最前，正文次之，派生画像的 Grand Hall header 在后。
-    expect(withCurated.text.startsWith(CURATED_HEADER)).toBe(true)
-    expect(withCurated.text.indexOf(curatedText)).toBeLessThan(withCurated.text.indexOf(HEADER))
-    expect(withCurated.text).toContain('- [fact] 在开发记忆插件')
-    // block 缺省时与 renderProfileDetailed 完全一致。
-    const plain = renderProfileDetailed([record('id-1', 'fact', '在开发记忆插件')], 1024, 'en')
-    expect(renderProfileWithCurated(undefined, [record('id-1', 'fact', '在开发记忆插件')], 1024, 'en')).toEqual(plain)
+    // Профиль — отдельная часть: свой заголовок и свой текст, памяти в нём нет.
+    expect(parts.curated).toBeDefined()
+    expect(parts.curated!.startsWith(CURATED_HEADER)).toBe(true)
+    expect(parts.curated).toContain(curatedText)
+    expect(parts.curated).not.toContain('- [fact] 在开发记忆插件')
+    // Память — своя часть: заголовок Большого зала и строки, правил в ней нет.
+    expect(parts.derived.text.startsWith(HEADER)).toBe(true)
+    expect(parts.derived.text).toContain('- [fact] 在开发记忆插件')
+    expect(parts.derived.text).not.toContain(curatedText)
   })
 
-  it('curated 先占预算：剩余预算给派生条目，装不下的照常溢出', () => {
+  it('без блока профиля профильной части нет — память равна renderProfileDetailed', () => {
+    const plain = renderProfileDetailed([record('id-1', 'fact', '在开发记忆插件')], 1024, 'en')
+    const parts = renderProfileParts(undefined, [record('id-1', 'fact', '在开发记忆插件')], 1024, 'en')
+    expect(parts.curated).toBeUndefined()
+    expect(parts.derived).toEqual(plain)
+  })
+
+  it('профиль занимает общий бюджет первым: что не влезло в память — в overflow', () => {
     const curatedText = '短画像'
     const curatedCost = est(`${CURATED_HEADER}\n${curatedText}`)
     const itemLine = '- [fact] 条目一'
     // 总预算 = curated 段 + 派生段固定行 + 恰好一条整行：应全部装下。
     const budget = curatedCost + OVERHEAD + est(itemLine)
-    const fits = renderProfileWithCurated({ content: curatedText }, [record('id-1', 'fact', '条目一')], budget, 'en')
-    expect(fits.overflow).toEqual([])
-    expect(fits.text).toContain(itemLine)
-    // 再扣 1 token：派生条目整行装不下 → 进 overflow（curated 段仍完整注入）。
-    const tight = renderProfileWithCurated({ content: curatedText }, [record('id-1', 'fact', '条目一')], budget - 1, 'en')
-    expect(tight.text).toContain(curatedText)
-    expect(tight.overflow.map(item => item.id)).toEqual(['id-1'])
+    const fits = renderProfileParts({ content: curatedText }, [record('id-1', 'fact', '条目一')], budget, 'en')
+    expect(fits.derived.overflow).toEqual([])
+    expect(fits.derived.text).toContain(itemLine)
+    // Ещё на 1 token меньше: строка памяти не влезает и уходит в overflow, профиль цел.
+    const tight = renderProfileParts({ content: curatedText }, [record('id-1', 'fact', '条目一')], budget - 1, 'en')
+    expect(tight.curated).toContain(curatedText)
+    expect(tight.derived.overflow.map(item => item.id)).toEqual(['id-1'])
   })
 
-  it('curated 超长时仍完整注入，派生段只余固定行', () => {
+  it('слишком длинный профиль всё равно вставляется целиком', () => {
     const huge = '长'.repeat(2000)
-    const result = renderProfileWithCurated({ content: huge }, [record('id-1', 'fact', '条目一')], 300, 'en')
-    expect(result.text).toContain(huge)
-    expect(result.overflow.map(item => item.id)).toEqual(['id-1'])
+    const parts = renderProfileParts({ content: huge }, [record('id-1', 'fact', '条目一')], 300, 'en')
+    expect(parts.curated).toContain(huge)
+    expect(parts.derived.overflow.map(item => item.id)).toEqual(['id-1'])
   })
 })

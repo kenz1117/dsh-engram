@@ -498,10 +498,10 @@ describe('engram tools', () => {
     expect(result.text).toContain('记忆甲内容')
   })
 
-  it('工具集恰为 22 个且名字正确', () => {
+  it('工具集恰为 23 个且名字正确', () => {
     expect([...tools.keys()].sort()).toEqual([
       'engram_assess', 'engram_audit_forgotten', 'engram_distill', 'engram_episode_timeline', 'engram_examine',
-      'engram_export', 'engram_facts', 'engram_forget', 'engram_import', 'engram_ingest_history', 'engram_neighbors',
+      'engram_export', 'engram_facts', 'engram_forget', 'engram_import', 'engram_ingest_history', 'engram_language_guide', 'engram_neighbors',
       'engram_profile_edit', 'engram_reflect', 'engram_report', 'engram_review', 'engram_review_queue', 'engram_save',
       'engram_search', 'engram_stats', 'engram_timeline', 'engram_tour', 'engram_update',
     ])

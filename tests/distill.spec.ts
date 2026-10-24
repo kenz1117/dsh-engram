@@ -32,6 +32,7 @@ describe('distillMemories', () => {
       signal: new AbortController().signal,
     })
     expect(outcome.distilled).toBe(0)
+    expect(outcome.vectorsWithout).toBe(0)
   })
 
   it('有效簇合并：新条目 active、旧条目 archived、supersedes 链成立', async () => {
@@ -50,6 +51,10 @@ describe('distillMemories', () => {
     })
     expect(outcome.distilled).toBe(1)
     expect(outcome.superseded).toBe(2)
+    // Эмбеддера не было — продукт записан без вектора, и дистилляция об этом говорит
+    // прямо, а не оставляет человеку гадать, почему база требует ремонта (случай 22.10).
+    expect(outcome.vectorsWithout).toBe(1)
+    expect(outcome.vectorsAttached).toBe(0)
     expect((await store.get(a.id))?.status).toBe('archived')
     expect((await store.get(b.id))?.status).toBe('archived')
     const merged = await store.topActive('user', 10)
@@ -58,6 +63,30 @@ describe('distillMemories', () => {
     expect(merged[0]!.kind).toBe('skill')
     // 置信度继承簇内均值 (0.6 + 0.4) / 2
     expect(merged[0]!.confidence).toBeCloseTo(0.5, 5)
+  })
+
+  it('эмбеддер есть — продукт уходит с вектором, и счёт это подтверждает', async () => {
+    const a = await store.write({ scope: 'user', kind: 'fact', content: 'память пишется в sqlite', confidence: 0.6 })
+    const b = await store.write({ scope: 'user', kind: 'fact', content: 'векторы считает эмбеддер', confidence: 0.6 })
+    const outcome = await distillMemories({
+      store,
+      // Четыре измерения — своя длина, а не 384: важна не модель, а факт вектора.
+      embedder: {
+        model: 'test-4',
+        embed: async texts => texts.map(() => new Float32Array([0.5, 0.5, 0.5, 0.5])),
+        close: async () => undefined,
+      },
+      scope: 'user',
+      call: async () => JSON.stringify([
+        { content: 'память и векторы живут вместе', kind: 'skill', importance: 0.7, supersedes: [String(a.id), String(b.id)] },
+      ]),
+      logRequest: () => undefined,
+      route: ROUTE,
+      signal: new AbortController().signal,
+    })
+    expect(outcome.distilled).toBe(1)
+    expect(outcome.vectorsAttached).toBe(1)
+    expect(outcome.vectorsWithout).toBe(0)
   })
 
   it('supersedes 引用输入集之外的 id 时跳过该组', async () => {

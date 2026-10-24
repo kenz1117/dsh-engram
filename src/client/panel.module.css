@@ -44,14 +44,25 @@
 
 /* ---------- 根容器 ---------- */
 /* 不设 overflow:hidden：sticky 浮层依赖最近滚动容器是宿主弹窗的滚动区；面板自身的裁剪交给水印伪元素 inset:0 内敛实现。 */
-.panel { max-width: 1240px; margin: 0 auto; animation: panelIn var(--dur-slow) var(--ease-out) both; position: relative; isolation: isolate; min-height: 0; box-sizing: border-box; }
-/* 自身接管纵向滚动：宿主主列可能是 grid 子项（不滚动），这里声明 overflow-y 保证长列表/日志/回填
-   页可独立滚动。内边距只在这一层给（面板内容层不再叠加，避免双重留白）。sticky 浮层定位到本层。
-   v0.8.7 安全区：border-box（否则 100%+padding 溢出容器右缘，文字被裁）+ 四周留足 24-32px。 */
-.panelRoot { width: 100%; height: 100%; box-sizing: border-box; overflow-y: auto; overflow-x: hidden; padding: var(--space-5) var(--space-6) var(--space-7); }
-/* 吸顶区（v0.8.13,#15）：Header + Tab 栏在长内容滚动时钉在顶部。
-   z-index 40（drawerLayer 是 41，比它低一级）；背景不透明遮 content 从下方穿过。 */
-.panelSticky { position: sticky; top: 0; z-index: 40; background: var(--dsw-alias-bg-base); padding-bottom: var(--space-1); }
+/* Раскладка панели — две зоны, как на полноэкранных экранах (словарь): шапка с меню
+   не прокручивается вообще, прокручивается только тело вкладки (`.panelBody`).
+   Раньше здесь был один общий скроллер с sticky-шапкой внутри: полотно уезжало под
+   меню, и над ним оставалась щель, через которую просвечивал заголовок карточки.
+   sticky такое не лечит — он всегда оставляет родительский отступ прокручиваемым. */
+.panel { max-width: 1240px; width: 100%; margin: 0 auto; animation: panelIn var(--dur-slow) var(--ease-out) both; position: relative; isolation: isolate; min-height: 0; box-sizing: border-box; display: flex; flex-direction: column; flex: 1 1 auto; }
+/* .panelRoot — только рамка зон, без прокрутки и без отступов: отступы у шапки и у тела,
+   иначе прокручиваемое полотно видно в полосе отступа над меню.
+   v0.8.7 安全区：border-box（否则 100%+padding 溢出容器右缘，文字被裁）。
+   Если хост не ограничивает высоту, height:100% схлопывается в auto, тогда box равен
+   содержимому и overflow:hidden ничего не режет — раскладка просто листается хостом. */
+.panelRoot { width: 100%; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }
+/* Шапка: меню (Header) + полоса вкладок. Не прокручивается и не сжимается — она первая
+   в колонке, поэтому над ней физически не может оказаться содержимое. Горизонтальный
+   отступ страницы живёт здесь; z-index 40 < drawerLayer 41. */
+.panelSticky { position: relative; z-index: 40; flex: 0 0 auto; background: var(--dsw-alias-bg-base); padding: var(--space-5) var(--space-6) var(--space-1); }
+/* Тело вкладки — единственная прокручиваемая область панели. min-height:0 обязателен:
+   без него flex-элемент не даёт себя сжать и прокрутка не появляется. */
+.panelBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: var(--space-4) var(--space-6) var(--space-7); }
 /* 对角双光斑水印：右上琥珀 + 左下玫瑰。伪元素 inset:0 铺满面板，渐变中心用 at 定位到边缘之外——
    光斑视觉在面板外，但绘制面不溢出（旧版负偏移需要 overflow:hidden，会吞掉 sticky 浮层的滚动参照）。
    isolation 建立 stacking context，z-index:-1 让水印垫在流内容之下、panel 背景之上。
@@ -123,11 +134,11 @@
 /* ---------- Tab 内容容器 ---------- */
 .tabPanel { animation: fadeSoft var(--dur-base) var(--ease-spring) both; }
 
-/* ---------- Drawer（参观/修缮：sticky 视口浮层）。
-   .drawerLayer 粘性定位于宿主弹窗滚动区的可见顶部（height:0 不占布局、不随内容长度漂移），
-   浮层 absolute 锚在 layer 内——面板再长、用户滚到哪里，浮层都出现在当前视野顶部，页面零滚动。
-   前置条件：.panel 不设 overflow:hidden（否则最近滚动容器变成面板自身，sticky 失效）。 ---------- */
-.drawerLayer { position: sticky; top: 0; height: 0; z-index: 41; }
+/* ---------- Drawer（参观/修缮：浮层 поверх панели）。
+   .drawerLayer больше не sticky: шапка панели теперь не прокручивается, и «видимая
+   верхушка» всегда совпадает с началом панели. Слой обнулён по высоте и не двигает
+   раскладку,浮层 absolute 锚在 layer 内 —— 面板再长、用户滚到哪里，浮层都出现在同一处。 ---------- */
+.drawerLayer { position: relative; height: 0; z-index: 41; }
 .drawerScrim { position: absolute; inset: 0; background: color-mix(in srgb, var(--dsw-alias-label-primary) 18%, transparent); z-index: 40; animation: scrimIn var(--dur-base) var(--ease-spring) both; }
 @keyframes scrimIn { from { opacity: 0; } to { opacity: 1; } }
 .drawer { position: absolute; top: 12px; left: 24px; right: 24px; margin: 0 auto; max-width: 560px; max-height: min(560px, calc(100vh - 200px)); background: var(--dsw-alias-bg-base, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-card); box-shadow: 0 24px 56px -20px color-mix(in srgb, var(--dsw-alias-label-primary) 38%, transparent); display: flex; flex-direction: column; overflow: hidden; animation: drawerIn var(--dur-base) var(--ease-spring) both; }
@@ -607,6 +618,10 @@ select.input { padding-right: 28px; appearance: none; }
 .jevForm { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 260px)); gap: var(--space-3); }
 .jevField { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
 .jevMuted { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); line-height: 1.5; }
+/* Строка состояния связи: параметры проверки и её последний замер.
+   Цифры моноширинные по разрядам, чтобы «1 200 мс» не дёргало соседние слова. */
+.jevCheck { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); line-height: 1.5; font-variant-numeric: tabular-nums; }
+.jevCheckBad { color: var(--dsw-alias-state-error-primary); }
 .jevActions { display: flex; gap: var(--space-2); flex-wrap: wrap; padding-top: var(--space-4); border-top: 1px solid var(--dsw-alias-border-l1); }
 /* 近期裁决观测列表：行式布局，判定徽标按语义着色（回落=警示色、并入/确认矛盾=成功色）。 */
 .jevObs { display: flex; flex-direction: column; gap: var(--space-2); padding-top: var(--space-4); border-top: 1px solid var(--dsw-alias-border-l1); }
@@ -628,6 +643,9 @@ select.input { padding-right: 28px; appearance: none; }
 .toastSuccess { border-left: 3px solid color-mix(in srgb, var(--dsw-alias-state-success-primary, #2da44e) 80%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2da44e) 6%, var(--dsw-alias-bg-layer-1)); }
 .toastError { border-left: 3px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 80%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 6%, var(--dsw-alias-bg-layer-1)); }
 .toastWarning { border-left: 3px solid color-mix(in srgb, #d4a017 80%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, #d4a017 6%, var(--dsw-alias-bg-layer-1)); }
+/* «Сброс»: пастельно-розовый. Красный был бы неверен — ничего не сломалось,
+   просто время вышло. Розовый читается как событие, а не как ошибка. */
+.toastReset { border-left: 3px solid color-mix(in srgb, #e59ab8 85%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, #f3c6d9 12%, var(--dsw-alias-bg-layer-1)); }
 @keyframes toastIn {
   from { opacity: 0; transform: translateX(8px) scale(0.98); }
   to   { opacity: 1; transform: none; }
@@ -637,10 +655,14 @@ select.input { padding-right: 28px; appearance: none; }
 /* 区域之间的距离由父容器的 gap 统一给出（.mainCol / .sideCol / .corridorLayout），
    这里不再叠 margin-bottom——否则会出现「上方贴死、下方过松」的不对称间距。 */
 .section { min-width: 0; }
-.sectionHead { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-3); }
+.sectionHead { position: relative; display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-3); }
 .sectionTitle { margin: 0; font-size: var(--fs-ctrl); font-weight: 600; color: var(--dsw-alias-label-primary); }
 .sectionHint { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); line-height: 1.4; }
-.sectionAction { margin-left: auto; align-self: center; }
+/* Действие блока — справа от заголовка, но вне потока: кнопка выше строки текста, и в
+   потоке она поднимает всю шапку, а с ней и зазор до карточки — тогда одинаковые блоки
+   расходятся по высоте. Здесь шапка сохраняет рост строки, а кнопка встаёт на её уровень
+   с отступом в один шаг, чтобы не касаться карточки блока выше. */
+.sectionAction { position: absolute; right: 0; top: var(--space-1); height: 22px; font-size: var(--fs-micro); }
 
 /* ---------- 今日速览（v0.8.5 比例收敛：主指标 32px + 健康环 64px，与宿主面板同级） ---------- */
 .hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-5); align-items: center; padding: var(--space-1) 0; }
@@ -743,6 +765,42 @@ select.input { padding-right: 28px; appearance: none; }
 .logOp { font-weight: 500; color: var(--dsw-alias-label-primary); }
 .logScope { color: var(--dsw-alias-label-tertiary); }
 .logDetail { color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 宫殿自己的日志：路径、体积和清理按钮。宿主会话日志不在这里出现。 */
+.logStorage { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--space-3); padding: var(--space-2) var(--space-3); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--radius-control); background: var(--dsw-alias-bg-layer-1); }
+.logStorageMain { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.logStoragePath { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-family: var(--dsw-font-mono, ui-monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.logStorageSize { font-size: var(--fs-body); color: var(--dsw-alias-label-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.logStorageMain .button { margin-left: auto; }
+.logStorageParts { display: flex; gap: var(--space-3); flex-wrap: wrap; }
+.logStoragePart { font-size: var(--fs-micro); color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+.logStorageHint { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+.logStorageNotice { font-size: var(--fs-micro); color: var(--dsw-alias-state-success-primary); }
+/* Первый старт: окно выбора языка дворца (внутри .drawer, см. .importLayer). */
+.palaceChoiceList { display: flex; flex-direction: column; gap: 6px; margin: var(--space-3) 0; }
+.palaceChoice { display: flex; align-items: center; gap: var(--space-2); padding: 8px var(--space-3); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-control); cursor: pointer; transition: border-color var(--dur-fast) var(--ease-spring), background var(--dur-fast) var(--ease-spring); }
+.palaceChoice:hover { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, var(--dsw-alias-border-l2)); }
+.palaceChoiceOn { border-color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 6%, var(--dsw-alias-bg-layer-1)); }
+.palaceChoice input { accent-color: var(--dsw-alias-brand-primary); margin: 0; }
+.palaceChoiceName { font-size: var(--fs-body); color: var(--dsw-alias-label-primary); }
+.palaceChoiceNote { margin-left: auto; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+.palaceAskHint { margin: 0 0 var(--space-2); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); line-height: 1.45; }
+/* Пояснение первого запуска на трёх языках: части идут одна под другой, и разделяет их
+   двойной межстрочный интервал — строка здесь 1.55 на кегле 14px, значит 3.1em.
+   Промежуток задан сеткой, а не отступами абзацев: у абзацев своя роль (примечание,
+   подсказка), и их собственный отступ занят другим смыслом. */
+.palaceAskText { display: grid; gap: 3.1em; font-size: 14px; line-height: 1.55; margin: 0 0 var(--space-3); }
+.palaceAskText > p { margin: 0; }
+/* Окно первого старта читают, чтобы понять формулировки, а не пробегают глазами:
+   пояснения и подписи крупнее (14px вместо 11–12) и полным контрастом. Мелкий серый
+   текст на светлой подложке в этом окне не читался. */
+.palaceAskBody .regNote,
+.palaceAskBody .palaceAskHint,
+.palaceAskBody .palaceChoiceName,
+.palaceAskBody .regGroupTitle { font-size: 14px; color: var(--dsw-alias-label-primary); line-height: 1.55; }
+.palaceAskBody .palaceChoiceNote { font-size: var(--fs-body); color: var(--dsw-alias-label-secondary); }
+.palaceAskBody .palaceChoice { padding: 10px var(--space-3); }
+/* Сообщение «дворец настроился сам»: окно не нужно, но человек должен видеть, на что. */
+.palaceNote { position: fixed; left: 24px; bottom: 24px; z-index: 55; max-width: min(420px, calc(100vw - 48px)); padding: var(--space-3) var(--space-4); border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 35%, var(--dsw-alias-border-l2)); border-radius: var(--radius-control); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); line-height: 1.5; box-shadow: 0 12px 32px -18px rgba(0, 0, 0, .55); }
 
 /* ---------- 画像 curated block（当前内容 + 版本历史 + 行级 diff，只读审计卡） ---------- */
 .profileCard { display: flex; flex-direction: column; gap: var(--space-3); }
@@ -798,3 +856,141 @@ select.input { padding-right: 28px; appearance: none; }
 @media (max-width: 720px) {
   .metricValue { font-size: 22px; }
 }
+
+/* Обслуживание: «Модель и словари» — только чтение, поэтому таблицы без рамок
+   и без кнопок: строка выбранной модели выделяется фоном, остальное — текстом. */
+.regGroup { display: flex; flex-direction: column; gap: 6px; margin-top: var(--space-4); }
+.regGroupTitle { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); letter-spacing: 0.04em; text-transform: uppercase; }
+.regTable { width: 100%; border-collapse: collapse; font-size: var(--fs-body); }
+.regTable th { text-align: left; font-weight: 500; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); padding: 0 var(--space-3) 4px 0; }
+.regTable td { padding: 3px var(--space-3) 3px 0; color: var(--dsw-alias-label-primary); border-top: 1px solid var(--dsw-alias-border-l1); vertical-align: top; }
+.regTable tr.on td { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, transparent); }
+.regMono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-micro); color: var(--dsw-alias-label-secondary); word-break: break-all; }
+.regKV { display: flex; flex-wrap: wrap; gap: 2px var(--space-4); align-items: baseline; margin: var(--space-3) 0 0; }
+.regKV dt { color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); }
+.regKV dd { margin: 0; color: var(--dsw-alias-label-primary); }
+/* Пояснение к значению — в той же строке, что и само значение, а не отдельной строкой
+   под ним: «Язык диалогов с агентом: RU · на этом языке вы ведёте диалоги». */
+.regHint { margin-left: var(--space-3); color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); }
+/* Обслуживание: выбор языка дворца стоит в строке модели, поэтому ниже общего .input. */
+.regLang { width: auto; height: 22px; padding: 0 4px; margin: 0 2px; font-size: var(--fs-micro); }
+.regNote { margin: 4px 0 0; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.5; }
+.regNote b { color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+.regBad { margin: 4px 0 0; padding-left: 18px; color: var(--dsw-alias-state-error-primary); font-size: var(--fs-micro); line-height: 1.5; }
+/* Обслуживание: ряд с кнопкой действия — описание стоит справа от неё: кнопка
+   читается вместе с описанием как одна фраза «Выполнить → что именно будет сделано». */
+.regActions { display: flex; align-items: center; gap: 0; margin-top: var(--space-3); }
+/* Отступ от кнопки равен её высоте (28px): описание стоит «на одном дыхании» с кнопкой. */
+.regActionNote { margin-left: 28px; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.4; }
+/* Обслуживание: предохранитель стоит у кнопки, в той же строке перед ней — он охраняет
+   нажатие, а не чтение. Отмеченное состояние подкрашено: закрытый замок виден сразу. */
+/* Язык дворца: слева направо — язык словом, язык баз буквами, состояние баз, и правым
+   краем куда менять. Первые четыре поля только читают, действует один выбор. */
+.palaceChangeRow { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-2); }
+/* Заведение словаря — правым краем той же строки: margin-left: auto отодвигает группу
+   от левой, поэтому строка читается как две задачи, а не как один длинный ряд. */
+.rowEnd { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
+/* Поле выбора языка с поиском: та же мера, что у выбора слева, но шире — в него пишут.
+   Стрелка своя, а не родная от `<datalist>`: список у поля свой (см. .dictLangList). */
+.dictLangInput { width: 140px; height: 22px; padding: 0 18px 0 6px; margin: 0 2px; font-size: var(--fs-micro); }
+.dictLangField { position: relative; display: inline-flex; align-items: center; }
+.dictLangField::after { content: '▾'; position: absolute; right: 8px; font-size: 9px; line-height: 1; color: var(--dsw-alias-label-tertiary); pointer-events: none; }
+/* Список языков: слой поверх страницы, а не внутри панели — иначе прокрутка панели
+   обрезала бы его. Высоту задаёт поле в момент открытия: свободное место по стороне.
+   Полоса прокрутки своя и постоянная: у «тонкой» системной полосы ползунок появляется
+   только под курсором, и список выглядел бы необрезаемым, хотя в нём сорок шесть строк. */
+.dictLangList { position: fixed; z-index: 60; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; padding: 4px; background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; box-shadow: 0 12px 32px -12px color-mix(in srgb, var(--dsw-alias-label-primary) 34%, transparent); }
+.dictLangList::-webkit-scrollbar { width: 10px; }
+.dictLangList::-webkit-scrollbar-track { background: transparent; }
+.dictLangList::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 6px; background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 50%, transparent); background-clip: content-box; }
+.dictLangList::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--dsw-alias-label-secondary) 65%, transparent); background-clip: content-box; }
+.dictLangOption { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: var(--fs-micro); line-height: 1.5; text-align: left; cursor: pointer; }
+.dictLangOption[data-active='true'] { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, var(--dsw-alias-bg-layer-1)); }
+.dictLangOptionCode { margin-left: auto; color: var(--dsw-alias-label-tertiary); font-family: var(--dsw-font-mono, ui-monospace); font-size: 10px; text-transform: uppercase; }
+.dictLangEmpty { margin: 0; padding: 6px 8px; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.5; }
+.regGuard { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-3); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); cursor: pointer; }
+.regGuard input { accent-color: var(--dsw-alias-brand-primary); cursor: pointer; }
+.regGuard:has(input:checked) { color: var(--dsw-alias-label-primary); }
+.regGuard:has(input:checked) span { font-weight: 500; }
+/* Обслуживание: заголовок группы с кнопкой справа («Словарь >» открывает правку). */
+.regGroupHead { display: flex; align-items: center; gap: var(--space-3); }
+.dictOpen { margin-left: auto; }
+
+/* ---------- «Язык Плагина» и «Язык Дворца памяти» ----------
+   Оба блока — обычные section панели: свой sectionHead и своя panelCard, как у
+   «Догрузки» и «Jev». Отдельной группы у них нет намеренно: вложенность давала
+   заголовкам другой отступ сверху и другой зазор до рамки, чем у соседей по вкладке. */
+/* Значение в строке состояния: тем же размером, что и у прочих значений панели
+   (выбор языка, буквенный индекс). Без этого слово «Русский» наследовало размер
+   текста рамки и было вдвое крупнее своей же подписи. */
+.regValue { font-size: var(--fs-micro); color: var(--dsw-alias-label-primary); }
+/* Верхний ряд блока «Язык Дворца памяти»: подписи и индикаторы слева, выбор языка
+   прижат вправо. */
+.regLangPush { margin-left: auto; }
+/* Пустая строка между таблицами моделей и баз: без неё две таблицы читаются как одна.
+   Мера — как у промежутка между блоками, а не как у строки таблицы: 16 px рядом с
+   плотными строками глаз считает той же таблицей, и разделение не видно. */
+.tableGap { height: var(--space-5); }
+/* Состояние баз — цветом и весом, по одному на каждое из трёх слов.
+   В порядке — зелёный: это не тревога, а ответ «делать нечего».
+   Ремонт — красный обычный: беда есть, но она правится на месте.
+   Конвертация — красный жирный: за ней стоит смена языка, а не только правка строк. */
+.baseStateGood, .baseStateBad, .baseStateAlarm { font-size: var(--fs-micro); }
+.baseStateGood { color: var(--dsw-alias-state-success-primary, #2e7d32); }
+.baseStateBad { color: var(--dsw-alias-state-error-primary); font-weight: 500; }
+.baseStateAlarm { color: var(--dsw-alias-state-error-primary); font-weight: 700; }
+/* Подпись перед выбором языка: «Текущий язык:» — обычный текст, не заголовок. */
+.regLabel { color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); }
+/* Непереведённые строки: «заполнено» меньше, чем «всего строк». Красим число, а не
+   строку: красная строка читается как поломка, а число — как недостача. */
+.regFilledShort { color: var(--dsw-alias-state-error-primary); font-weight: 700; font-variant-numeric: tabular-nums; }
+.regIncomplete { margin: 6px 0 0; color: var(--dsw-alias-label-primary); font-weight: 700; font-size: var(--fs-micro); line-height: 1.5; }
+/* Ряд под таблицей баз: предохранитель, кнопка и что именно будет сделано — в одну
+   строку, слева направо. */
+.baseRunRow { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-3); }
+.baseRunRow .regGuard { margin-top: 0; }
+.baseRunNote { color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.4; }
+/* Оговорка «язык и модель не меняются» — своей строкой и от левого края: она не
+   продолжает пояснение за кнопкой, а называет условие задачи. flex-basis: 100%
+   переносит её на следующую строку ряда, где она и встаёт влево. */
+.baseRunScope { flex-basis: 100%; }
+/* Перехват последней починки: что вызвано и что ответило. Моноширинным — здесь важен
+   не текст, а факт: имена маршрутов и числа не должны разъезжаться по ширине. */
+.baseRunTrace { margin: var(--space-2) 0 0; color: var(--dsw-alias-label-secondary); font-family: var(--dsw-font-mono, ui-monospace); font-size: var(--fs-micro); line-height: 1.5; word-break: break-word; }
+
+/* ---------- Оверлеи панели: экран поверх всего окна плагина ----------
+   .overlayHost — пустой якорь портала (высоты не занимает). Сам экран позиционируется fixed,
+   поэтому место якоря в потоке значения не имеет. Так сделано после грабель: экран был
+   sticky-слоем в конце длинной карточки обслуживания, а sticky подтягивает элемент к верху
+   области видимости только когда тот ушёл выше него, — при прокрутке экран так и оставался
+   за нижней кромкой, и нажатие кнопки выглядело как «ничего не произошло». fixed убирает
+   зависимость от прокрутки и от места нажатия: экран перекрывает окно, а не колонку в 1240px.
+   z-index 50 — выше .panelSticky (40) и .drawerLayer (41). */
+.overlayHost { height: 0; }
+.dictScreen { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--dsw-alias-bg-base); animation: scrimIn var(--dur-base) var(--ease-spring) both; }
+.dictMenu { display: flex; align-items: center; gap: var(--space-3); flex: 0 0 auto; padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.dictTitle { margin: 0 auto 0 0; font-size: 15px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+.dictMenuRight { display: flex; align-items: center; gap: var(--space-2); }
+.dictBack { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-control); background: transparent; color: var(--dsw-alias-label-primary); font-size: 15px; line-height: 1; cursor: pointer; transition: background var(--dur-fast) var(--ease-spring); }
+.dictBack:hover { background: var(--dsw-alias-bg-layer-1); }
+.dictBar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; flex: 0 0 auto; padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.dictSet, .dictSetOn { height: 24px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-body); line-height: 1; cursor: pointer; }
+.dictSetOn { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, var(--dsw-alias-border-l2)); color: var(--dsw-alias-label-primary); font-weight: 600; }
+.dictFilter { flex: 0 1 260px; height: 24px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-primary); font-size: var(--fs-body); }
+.dictFilter:focus { outline: none; border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, var(--dsw-alias-border-l2)); }
+.dictStatus { margin-left: auto; display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+/* Сверка программы с файлом: числа слева, находки — кнопками, потому что находка
+   обязана быть нажимаемой: нажатие показывает те самые строки в таблице. */
+.dictCheck { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; flex: 0 0 auto; padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+.dictChip, .dictChipOn { height: 20px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1; cursor: pointer; }
+.dictChip:hover:not(:disabled) { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-label-tertiary); }
+.dictChip:disabled { opacity: .5; cursor: default; }
+.dictChipOn { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, var(--dsw-alias-border-l2)); color: var(--dsw-alias-label-primary); font-weight: 600; }
+.dictBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: var(--space-2) var(--space-4) var(--space-6); }
+.dictRow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4); align-items: center; padding: 2px 0; border-bottom: 1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 70%, transparent); }
+.dictRow:hover { background: color-mix(in srgb, var(--dsw-alias-label-primary) 3%, transparent); }
+.dictLeft { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-micro); color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.dictInput { width: 100%; box-sizing: border-box; height: 26px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--dsw-alias-label-primary); font-size: var(--fs-body); }
+.dictInput:hover { border-color: var(--dsw-alias-border-l2); }
+.dictInput:focus { outline: none; border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, var(--dsw-alias-border-l2)); background: var(--dsw-alias-bg-layer-1); }
+.dictRowEdited .dictInput { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, transparent); }

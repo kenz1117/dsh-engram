@@ -1,0 +1,57 @@
+// Словарь панели dsh-engram: русский.
+// Слева — ровно та строка, что стоит в коде (src/client/locales/en.ts), справа — перевод.
+// Формат тот же, что у словаря сообщений (i18n/ru.txt): <слева><TAB><справа>.
+// Этот файл главнее вшитых в сборку текстов: нет строки — берётся вшитый перевод.
+// Пользовательский слой: <каталог данных>/i18n/panel.ru.txt перекрывает этот файл.
+//
+// Первая строка заголовка намеренно отличается от вшитого текста: так видно,
+// что карточка говорит из файла, а не из сборки.
+
+Model and dictionaries	Модель и словари (словарь панели)
+What this palace counts with, and which dictionary files were read	Чем считается содержимое дворца и из каких файлов прочитаны словари
+Embedding model:	Модель эмбеддингов:
+remote endpoint (the catalog is not used)	удалённый конец (каталог не используется)
+Model catalog	Каталог моделей
+Language → model	Язык → модель
+Dictionary files	Файлы словарей
+panel	панель
+messages	сообщения
+read from	прочитано из
+lines accepted	принято строк
+complaints	претензии
+none	нет
+Loading…	Читаю…
+Could not read the registry	Не удалось прочитать реестр
+label	метка
+model id	идентификатор модели
+dims	размерность
+pooling · weights	сведение · веса
+model locale	выбранная локаль модели
+palace language	язык Дворца памяти
+Palace bases	Базы дворца
+What each base stands on, and what the button will do	На чём стоит каждая база и что сделает кнопка
+base	база
+state	состояние
+records	записей
+no vector	без вектора
+wrong length	чужой длины
+vector length	длина вектора
+no base yet	базы ещё нет
+empty	пустая
+in order	в порядке
+no label	метки нет
+another model	другая модель
+mixed vectors	пересортица векторов
+records without a vector	записи без вектора
+not checked	не проверено
+Run	Выполнить
+Writing…	Пишу…
+Temporary guard against base conversion	Временный предохранитель от конвертации баз
+The base is in order. Nothing to do.	База в порядке, действие не требуется.
+The base label {label} will be written.	Будет записана метка базы {label}.
+The vectors will be recomputed — not wired up yet (stage 2 of block B).	Будет выполнен пересчёт векторов — пока не подключён (этап 2 блока Б).
+The records without a vector will be filled in — not wired up yet (stage 2 of block B).	Будут дозаполнены векторы записей без вектора — пока не подключено (этап 2 блока Б).
+Label written: {label}	Метка записана: {label}
+Could not write the base label	Не удалось записать метку базы
+bases do not exist yet: {n} — the author's code creates them	баз ещё нет: {n} — их создаёт код автора
+The schema declaration did not load: base states are unknown.	Объявление схемы не прочитано: состояние баз неизвестно.

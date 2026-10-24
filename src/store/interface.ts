@@ -34,6 +34,19 @@ export interface RouteStop {
   readonly id: MemoryId
 }
 
+/**
+ * Строка, которой переписывается вектор.
+ *
+ * Таблица и поле вектора — из объявления схемы, а не из кода: у `nodes` это
+ * `embedding`, у `observations` своё имя, и знать его здесь незачем.
+ */
+export interface VectorTarget {
+  readonly table: string
+  readonly vector: string
+  readonly id: string
+  readonly embedding: Float32Array
+}
+
 /** 存储接口。所有方法在库不可用时抛 EngramError。 */
 export interface EngramStore {
   /** 追加一条 active 记忆，content 非空。 */
@@ -145,6 +158,18 @@ export interface EngramStore {
    * 只更新已存在行；返回实际更新条数。
    */
   attachEmbeddings(entries: readonly { readonly id: MemoryId; readonly embedding: Float32Array }[]): Promise<number>
+  /**
+   * Переписать векторы в таблицах объявления схемы (`registry/schema.json`): перевод
+   * базы на другую модель и ремонт записей без вектора — одна и та же операция, потому
+   * что обе меняют ровно поле вектора у названных строк.
+   *
+   * Имена таблицы и поля приходят из объявления, а не из кода: добавит автор таблицу —
+   * она попадёт сюда без правки этого метода. Пишется тем же соединением, что и всё
+   * остальное: у базы один писатель в процессе.
+   * @param targets - строки с готовыми векторами; id не проверяется на существование.
+   * @returns сколько строк действительно обновлено.
+   */
+  rewriteVectors(targets: readonly VectorTarget[]): Promise<number>
   /** 衰减：满足条件的 active 条目转 archived，返回归档数量。 */
   decay(options: DecayOptions): Promise<number>
   /** 矛盾候选：与给定向量余弦 ≥ 0.88 的同库 active 条目（调用方裁决后用 linkEdge 建边）。 */
@@ -210,12 +235,33 @@ export interface EngramStore {
   nearestObservation(embedding: Float32Array): Promise<{ record: ObservationRecord; similarity: number } | undefined>
   /** 写入一条结构化审计记录（辅助 LLM 请求等，不进会话日志——下游插件禁止写未知事件类型）。 */
   audit(op: string, targetId: string, detail: string | null): Promise<void>
+  /**
+   * 写 `meta` 键（upsert）。同一键只有一个当前值，重复写即覆盖。
+   * 用于「这库站在哪个模型上」这类基底事实——它们不属于记忆，不该进 op_log；
+   * 读由只读核查（registry/base-census.ts）直连完成，不经仓储，避免为看一眼就打开并迁移别人的库。
+   */
+  writeMeta(key: string, value: string): Promise<void>
   /** 幂等键查重：op_log 中是否已存在指定 op+detail 的记录。 */
   hasAudit(op: string, detail: string): Promise<boolean>
   /** 列出指定 op 的全部 detail（按写入顺序；pending 队列枚举用）。 */
   listAuditDetails(op: string): Promise<string[]>
   /** 清除指定 op+detail 的全部记录（pending 队列出队）。 */
   clearAudit(op: string, detail: string): Promise<void>
+  /**
+   * Журнал дворца: сколько строк в op_log и сколько занимает их текст.
+   *
+   * Журнал наш собственный (таблица в базе дворца, а не файл журнала хост-сессии),
+   * поэтому панель показывает его путь и размер, и у него есть кнопка очистки.
+   */
+  logSize(): Promise<{ rows: number; bytes: number }>
+  /**
+   * Очистить журнал: удалить все строки op_log, кроме перечисленных опов.
+   *
+   * Перечисленные — не журнал, а состояние (ключи повторной загрузки и очереди): их
+   * удаление заставило бы загрузчик заново перерабатывать уже обработанные ходы.
+   * После удаления база по возможности сжимается — иначе файл остался бы прежнего размера.
+   */
+  clearLog(keepOps: readonly string[]): Promise<{ deleted: number; vacuumed: boolean }>
   /** 物理清除本库全部数据（节点、边、FTS、操作日志）。 */
   purge(): Promise<void>
   /** 关闭数据库句柄。 */

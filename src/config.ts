@@ -7,8 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
-import { ENGRAM_MODEL_ID } from './embedder/local.ts'
-import { isEngramLanguage, resolveLanguage, type EngramLanguage, type LanguageSetting } from './i18n/language.ts'
+import { isLanguageCode, resolveLanguage, type EngramLanguage, type LanguageSetting } from './i18n/language.ts'
 import { legacyJevFields, noteLegacyJevFields } from './jev/stale.ts'
 
 /** 旧库迁移策略：默认自动迁移，可选择保留待人工确认。 */
@@ -36,9 +35,9 @@ export type EmbedderPooling = 'mean' | 'cls'
 export interface EmbedderConfig {
   /** 后端；默认 local——旧版本的行为原样保留。 */
   kind?: EmbedderKind
-  /** local：transformers.js 模型标识；默认 Xenova/bge-small-zh-v1.5。 */
+  /** local：模型标识 — явное переопределение поверх привязок языка；по умолчанию модель берётся из реестра. */
   localModel?: string
-  /** local：池化方式；默认 mean。 */
+  /** local：способ сведения токенов — явное переопределение поверх каталога моделей. */
   localPooling?: EmbedderPooling
   /** remote：模型标识，原样传给服务端（例如 text-embedding-3-small）。 */
   model?: string
@@ -120,6 +119,17 @@ export interface EngramConfig {
   autoSlot?: boolean
   /** 新记忆是否进入 SM-2 间隔重复调度（初始 1 天后到期）；默认 true。false 时复习队列恒空、decay 行为同旧版。 */
   reviewScheduling?: boolean
+  /**
+   * Окно смены языка дворца, в секундах: сколько даётся на собранное условие — выбрать
+   * язык, снять предохранитель, нажать «Выполнить». Отсчёт идёт с первого из трёх
+   * событий; окно истекло — выбор возвращается к языку баз, предохранитель встаёт.
+   *
+   * Настройка, а не константа в коде: пользователь просил менять её без пересборки
+   * («минута это много, 30 сек» — и это его решение, а не наше). Значение читает и
+   * панель (отсчёт и подпись), и сервер (проверка собранного условия при запросе).
+   * По умолчанию 30.
+   */
+  palaceChangeWindowSec?: number
   /** 历史回填默认规则：时间窗天数，0 = 不限；默认 7。 */
   historyBackfillDays?: number
   /** 历史回填默认规则：单个会话最多摄取轮数；默认 20。 */
@@ -137,11 +147,12 @@ export interface EngramConfig {
   /** 嵌入器：本地离线模型或远程 OpenAI 兼容端点；默认 local。 */
   embedder?: EmbedderConfig
   /**
-   * Язык текстов, которые плагин формирует сам: имена комнат, сообщения инструментов.
-   * «auto» (по умолчанию) — язык системы. Интерфейс панели настраивается отдельно,
-   * средствами DSH: плагин отдаёт хосту словари, а выбор делает хост.
+   * Язык дворца: на нём плагин говорит сам — имена комнат, сообщения инструментов,
+   * системные инструкции модели. «auto» — решения ещё нет: язык берётся из системы.
+   * В рантайме поле приходит живой ссылкой (volatile) и меняется без перемонтирования;
+   * интерфейс панели настраивается отдельно, средствами DSH.
    */
-  language?: LanguageSetting
+  language?: LanguageSetting | { get(): LanguageSetting }
   /**
    * Слова-метки секретов, добавленные пользователем. Дополняют наборы языкового пакета
    * и действуют **всегда**, независимо от языка: пользователь добавляет их как раз потому,
@@ -183,8 +194,10 @@ export interface ResolvedJevConfig {
 /** 解析后的嵌入器子配置（默认值已落地）。 */
 export interface ResolvedEmbedderConfig {
   readonly kind: EmbedderKind
-  readonly localModel: string
-  readonly localPooling: EmbedderPooling
+  /** Явное переопределение модели из настроек; undefined — взять из реестра по языку. */
+  readonly localModel: string | undefined
+  /** Явное переопределение сведения токенов; undefined — взять из каталога моделей. */
+  readonly localPooling: EmbedderPooling | undefined
   /** 远程端点；kind=local 时为 undefined。 */
   readonly remote: {
     readonly model: string
@@ -220,6 +233,11 @@ export interface ResolvedEngramConfig {
   readonly queryRewrite: boolean
   readonly autoSlot: boolean
   readonly reviewScheduling: boolean
+  /**
+   * Окно собранного условия смены языка дворца, в секундах. Читают оба: панель считает
+   * по нему отсчёт, сервер — принимает ли он запрос смены языка (окно истекло — отказ).
+   */
+  readonly palaceChangeWindowSec: number
   /** 历史回填默认规则（历史会话 → 记忆宫殿的一次性/按需回填）。 */
   readonly historyBackfill: ResolvedHistoryRules
   /** Jev System One 裁决子配置（默认关闭）。 */
@@ -228,6 +246,12 @@ export interface ResolvedEngramConfig {
   readonly embedder: ResolvedEmbedderConfig
   /** Язык вывода серверной половины (после разворачивания «auto» в язык системы). */
   readonly language: EngramLanguage
+  /**
+   * Что стояло в настройке до разворачивания: `auto`, конкретный язык или ничего.
+   * Нужен, чтобы отличить «язык дворца уже определён» от «ещё не определён»:
+   * `auto` — это не язык дворца, а отсутствие решения.
+   */
+  readonly languageSetting: LanguageSetting | undefined
   /** Слова пользователя для вычистки секретов (действуют поверх языковых наборов). */
   readonly redactWords: readonly string[]
 }
@@ -238,7 +262,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'ingest', 'reflect', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
   'injectTokenBudget', 'injectItemBudgetStart', 'injectItemBudgetDecay', 'injectItemBudgetFloor',
   'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
-  'autoSlot', 'reviewScheduling', 'assessReminder',
+  'autoSlot', 'reviewScheduling', 'assessReminder', 'palaceChangeWindowSec',
   'historyBackfillDays', 'historyBackfillMaxTurnsPerSession', 'historyBackfillMaxTotalTurns',
   'historyBackfillIncludeSubagents', 'historyBackfillIncludeSeeded', 'historyBackfillIncludeNoCwd',
   'jev', 'embedder', 'language', 'redactWords',
@@ -275,6 +299,7 @@ export const Config: z<EngramConfig> = z.object({
   queryRewrite: z.boolean(),
   autoSlot: z.boolean(),
   reviewScheduling: z.boolean(),
+  palaceChangeWindowSec: z.number().step(1).min(5).max(600),
   assessReminder: z.boolean(),
   historyBackfillDays: z.number().step(1).min(0).max(3650),
   historyBackfillMaxTurnsPerSession: z.number().step(1).min(1).max(500),
@@ -303,9 +328,26 @@ export const Config: z<EngramConfig> = z.object({
     batchSize: z.number().step(1).min(1).max(256),
     timeoutMs: z.number().step(1).min(1000).max(600000),
   }) as unknown as z<EmbedderConfig>,
-  language: z.string() as unknown as z<LanguageSetting>,
+  // volatile: язык дворца меняется на ходу, без перемонтирования плагина
+  // (загрузчик коммитит новое значение в живую ссылку и шлёт loader/volatile-update).
+  language: z.string().volatile() as unknown as z<LanguageSetting | { get(): LanguageSetting }>,
   redactWords: z.array(z.string()),
 })
+
+/**
+ * Прочитать значение `language` из любого вида, в котором оно приходит:
+ * загрузчик отдаёт volatile-поле ссылкой (`{ get() }`), а тесты и обычный конфиг — строкой.
+ * @param value - ссылка на volatile-поле, строка или ничего.
+ * @returns Настройка языка в том виде, в каком её записал пользователь.
+ */
+export function readLanguageSetting(
+  value: LanguageSetting | { get(): LanguageSetting } | undefined,
+): LanguageSetting | undefined {
+  if (value === undefined) return undefined
+  if (typeof value === 'string') return value
+  const live = (value as { get?: () => LanguageSetting }).get
+  return typeof live === 'function' ? value.get() : undefined
+}
 
 /**
  * 显式 resolve 步骤：默认值只在唯一的此处落地，非法值 loud 失败。
@@ -326,8 +368,9 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   if (config.reflect !== undefined && !REFLECT_MODES.has(config.reflect)) {
     throw new Error(`dsh-engram: reflect must be one of off|suggest|auto, got "${String(config.reflect)}"`)
   }
-  if (config.language !== undefined && config.language !== 'auto' && !isEngramLanguage(config.language)) {
-    throw new Error(`dsh-engram: language must be one of auto|zh|en|ru, got "${String(config.language)}"`)
+  const languageSetting = readLanguageSetting(config.language)
+  if (languageSetting !== undefined && languageSetting !== 'auto' && !isLanguageCode(languageSetting)) {
+    throw new Error(`dsh-engram: language must be "auto" or a language code (zh, en, ru, fr, …), got "${String(languageSetting)}"`)
   }
   if (config.profileTopN !== undefined && (!Number.isInteger(config.profileTopN) || config.profileTopN < 1 || config.profileTopN > 64)) {
     throw new Error('dsh-engram: profileTopN must be an integer in [1, 64]')
@@ -363,6 +406,10 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   }
   if (config.assessReminder !== undefined && typeof config.assessReminder !== 'boolean') {
     throw new Error('dsh-engram: assessReminder must be a boolean')
+  }
+  if (config.palaceChangeWindowSec !== undefined
+    && (!Number.isInteger(config.palaceChangeWindowSec) || config.palaceChangeWindowSec < 5 || config.palaceChangeWindowSec > 600)) {
+    throw new Error('dsh-engram: palaceChangeWindowSec must be an integer in [5, 600] (seconds)')
   }
   if (config.rankRecencyWeight !== undefined && (config.rankRecencyWeight < 0 || config.rankRecencyWeight > 2)) {
     throw new Error('dsh-engram: rankRecencyWeight must be in [0, 2]')
@@ -472,7 +519,8 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     hfEndpoint: config.hfEndpoint,
     ingest: config.ingest ?? 'off',
     reflect: config.reflect ?? 'off',
-    language: resolveLanguage(config.language ?? 'auto'),
+    language: resolveLanguage(languageSetting ?? 'auto'),
+    languageSetting,
     redactWords: config.redactWords ?? [],
     routeOverride: hasProvider && hasModel ? { provider: config.provider!, model: config.model! } : undefined,
     decayAfterDays: config.decayAfterDays ?? 30,
@@ -487,6 +535,7 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     queryRewrite: config.queryRewrite ?? true,
     autoSlot: config.autoSlot ?? true,
     reviewScheduling: config.reviewScheduling ?? true,
+    palaceChangeWindowSec: config.palaceChangeWindowSec ?? 30,
     historyBackfill: {
       days: config.historyBackfillDays ?? 7,
       maxTurnsPerSession: config.historyBackfillMaxTurnsPerSession ?? 20,
@@ -507,8 +556,8 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     },
     embedder: {
       kind: embedderKind,
-      localModel: embedderConfig?.localModel ?? ENGRAM_MODEL_ID,
-      localPooling: embedderConfig?.localPooling ?? 'mean',
+      localModel: embedderConfig?.localModel,
+      localPooling: embedderConfig?.localPooling,
       remote: embedderKind === 'remote' && embedderConfig?.model !== undefined && embedderConfig.baseUrl !== undefined
         ? {
             model: embedderConfig.model,

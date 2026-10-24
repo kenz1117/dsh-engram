@@ -10,7 +10,16 @@
 
 ## [Unreleased]
 
-_暂无。_
+### 多语言层、数据注册表与库维护（合并 #36）
+
+- **默认嵌入模型改为注册表数据，不再是代码常量**：模型目录 `registry/models.json`（`bge-small-zh` 512 维 / `minilm-l12` 384 维）、语言绑定 `registry/bindings.json`（zh → bge-small-zh，`*` → minilm-l12）、语言表 `registry/languages.json` 与结构说明 `registry/schema.json` 全部作为数据文件落盘；`src/embedder/local.ts` 不再硬编码模型标识，`src/embedder/select.ts` 按语言解析模型，`embedder.localModel` 保留为显式覆盖。
+- **服务端词典外置**：`i18n/ru.txt`（498 条）与 `i18n/panel.ru.txt`（48 条）以 TAB 分隔的左原文/右译文格式落盘，服务端消息与面板文案从文件读取，不再内嵌在代码里。
+- **新增 `engram_language_guide` 工具**（工具总数 22 → **23**）：输出 `<包根>/docs/agent-language-guide.ru.md`，兑现首启窗口对未内置语言用户的「agent 会输出一份说明」承诺。
+- **面板新增「维护」视图**：库状态、模型标签、向量重算（`runVectorConvert`）、宫殿语言切换、词典查看与维护。
+- **面板词典接口**：`/api/engram/locales` 提供「非内置语言 + 面板词典」，客户端 `src/client/index.ts` 拉取后 `addLanguage` + `register(NS, code, entries)`；路由不可用时回落到内置语言。
+- **已知边界**记于 `docs/tech-debt.md`（四条，均不阻塞使用）：语言切换联锁目前只在客户端生效、远程嵌入器不参与目标模型选择、未知维度的库可能被盖上目标标签、向量转换只校验条数不校验每条长度。
+- **打包修复**：`i18n/`、`registry/`、`docs/agent-language-guide.ru.md` 三条路径补进 `package.json` 的 `files`；`scripts/check-hook-order.mjs` 新增静态钩子顺序检查（React 只在运行时报 #310，构建与 `tsc` 不会）。
+- **文档**：新增 `docs/author/`（中英俄三语的作者向设计文档与插图，留在仓库不进包）、`docs/tech-debt.md`；工具数 22 → 23 同步到 README（中英）与落地页。
 
 ## [0.9.9] - 2026-10-23
 

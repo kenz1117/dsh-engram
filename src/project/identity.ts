@@ -220,7 +220,7 @@ export function migrationWarning(dbDir: string, identity: ProjectIdentity, outco
       return message('store.migrationDeferred', { names, manual })
     case 'already-migrated': {
       const pointer = readMigrationPointer(dbDir, identity)
-      return message('store.migrationAlreadyMigrated', { names, pointer: JSON.stringify(pointer), manual })
+      return message('store.migrationAlreadyMigrated', { names, pointer: JSON.stringify(pointer), cwd: pointer?.claimedByCwd ?? identity.cwd, manual })
     }
   }
 }

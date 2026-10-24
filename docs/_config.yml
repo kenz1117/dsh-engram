@@ -1,0 +1,10 @@
+# GitHub Pages отдаёт эту папку как сайт (ветка work/dsv, папка /docs).
+# Публикуется только `author/` — документы для автора плагина. Планы, аудит и заметки
+# остаются в репозитории, но на сайт не попадают: письмо ссылается только на author.
+exclude:
+  - plans
+  - screenshots
+  - agent-language-guide.ru.md
+  - audit-2026-10-18.md
+  - panel-history-v0.7.md
+  - tech-debt.md

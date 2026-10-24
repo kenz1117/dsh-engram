@@ -1,3 +1,5 @@
+import { messageVocabulary } from '../src/i18n/messages.ts'
+
 /**
  * REAL-composition coverage：测试用 cordis.yml 经真实 Loader 装载
  * webserver + system-prompt + tools + llm 替身 + dsh-engram，HTTP 断言
@@ -996,3 +998,138 @@ describe('migration policy through the real Loader and session tools', () => {
     }
   }
 })
+
+/**
+   * Правка словаря из панели: обещания, которые видит человек, а не только код.
+   *
+   * Панель шлёт только изменённые клетки — и прежние правки обязаны уцелеть: иначе одно
+   * сохранение стирало бы всё, что человек правил раньше, и заметить это можно было бы
+   * только глазами. Тело сверх предела обязано стать внятной ошибкой, а не «снять всё»:
+   * разбор тела возвращает null, а пустой список правок — это как раз «снять всё».
+   * Заполнение моделью обязано уважать маршрут и ничего не писать в файл: переводы идут
+   * в черновик панели, файл меняет «Сохранить». Здесь модель — заглушка, поэтому
+   * проверяется, что вызов собран и что неудачный вызов файл не тронул.
+   */
+  describe('правка словаря из панели', () => {
+    /** Настоящий термин набора сообщений: словарь ключуется английской строкой из кода. */
+    const TERM = messageVocabulary().find(term => term.length > 3 && term.length < 40 && !term.includes('\n')) ?? ''
+    /** Строка, которой в коде нет: правка вольна её завести, и таблица обязана её показать. */
+    const EXTRA = 'Строка которой нет в коде'
+    /** Язык стенда — zh (см. loadComposition): файл правок лежит рядом с базой. */
+    const userFile = (dbDir: string): string => join(dbDir, 'i18n', 'zh.txt')
+
+    it('сохранение одной клетки не стирает прежнюю правку', { timeout: 60_000 }, async () => {
+      const loaded = await loadComposition([], undefined, async (dbDir) => {
+        await mkdir(join(dbDir, 'i18n'), { recursive: true })
+        await writeFile(userFile(dbDir), `${TERM}\tПервая правка\n`)
+      })
+      const port = loaded.webServer.port
+
+      const saved = await call(port, 'POST', '/api/engram/dictionary', {
+        set: 'messages',
+        entries: [[EXTRA, 'Вторая правка']],
+      })
+      expect(saved.status).toBe(200)
+      const written = await readFile(userFile(join(root!, 'engram')), 'utf8')
+      expect(written).toContain(`${TERM}\tПервая правка`)
+      expect(written).toContain(`${EXTRA}\tВторая правка`)
+      // Ответ несёт свежее представление: панель показывает записанное, а не своё мнение.
+      const view = (saved.json as { view: { rows: { left: string, right: string }[] } }).view
+      expect(view.rows.find(row => row.left === EXTRA)?.right).toBe('Вторая правка')
+    })
+
+    it('пустая клетка снимает правку, а не пишет пустое', { timeout: 60_000 }, async () => {
+      const loaded = await loadComposition([], undefined, async (dbDir) => {
+        await mkdir(join(dbDir, 'i18n'), { recursive: true })
+        await writeFile(userFile(dbDir), `${TERM}\tПервая правка\n`)
+      })
+      const saved = await call(loaded.webServer.port, 'POST', '/api/engram/dictionary', {
+        set: 'messages',
+        entries: [[TERM, '']],
+      })
+      expect(saved.status).toBe(200)
+      const written = await readFile(userFile(join(root!, 'engram')), 'utf8')
+      expect(written).not.toContain(`${TERM}\t`)
+    })
+
+    it('«Создать» пишет файл с ключами, а не пустую заготовку', { timeout: 60_000 }, async () => {
+      // Требование пользователя дословно: «создать файл словаря с ключами и открыть его
+      // как по кнопке открыть». Пустой файл с заголовком открывался бы так же, но это
+      // было бы отсутствие заготовки, а не заготовка: ключи в таблице шли бы из программы.
+      const loaded = await loadComposition([], undefined, async () => {})
+      const port = loaded.webServer.port
+      const created = await call(port, 'POST', '/api/engram/dictionary-create', { language: 'de' })
+      expect(created.status).toBe(200)
+      const written = (created.json as { written: { set: string, file: string, lines: number }[] }).written
+      expect(written.map(entry => entry.set).sort()).toEqual(['messages', 'panel'])
+      expect(written.every(entry => entry.lines > 0)).toBe(true)
+
+      const text = await readFile(join(root!, 'engram', 'i18n', 'de.txt'), 'utf8')
+      expect(text).toContain(`${TERM}\t`)
+
+      // Сверка считается при открытии: строк в файле столько же, сколько ключей в программе,
+      // и перевода нет ни у одной — поставки для этого языка в пакете нет.
+      const opened = await call(port, 'GET', '/api/engram/dictionary?set=messages&language=de')
+      expect(opened.status).toBe(200)
+      const view = opened.json as { stats: { program: number, file: number, missing: number }, problems: unknown[] }
+      expect(view.problems).toEqual([])
+      expect(view.stats.file).toBe(view.stats.program)
+      expect(view.stats.missing).toBe(view.stats.program)
+    })
+
+    it('тело сверх предела — ошибка, а не «снять всё»', { timeout: 60_000 }, async () => {
+      const loaded = await loadComposition([], undefined, async (dbDir) => {
+        await mkdir(join(dbDir, 'i18n'), { recursive: true })
+        await writeFile(userFile(dbDir), `${TERM}\tПервая правка\n`)
+      })
+      const before = await readFile(userFile(join(root!, 'engram')), 'utf8')
+      // 70 КиБ: разбор тела возвращает null (предел 64 КиБ), и продолжить нельзя —
+      // пустой список правок означал бы «снять все правки разом».
+      const huge = await call(loaded.webServer.port, 'POST', '/api/engram/dictionary', {
+        set: 'messages',
+        entries: [[TERM, 'я'.repeat(70_000)]],
+      })
+      expect(huge.status).toBe(413)
+      expect(await readFile(userFile(join(root!, 'engram')), 'utf8')).toBe(before)
+    })
+
+    it('заполнение моделью: маршрут берётся, запрос собран, файл не тронут', { timeout: 60_000 }, async () => {
+      // Маршрут задан настройкой (в стенде сессии нет, а без маршрута заполнять нечем).
+      const loaded = await loadComposition([
+        "    provider: 'deepseek'",
+        "    model: 'deepseek-v4'",
+      ], undefined, async (dbDir) => {
+        await mkdir(join(dbDir, 'i18n'), { recursive: true })
+        await writeFile(userFile(dbDir), `${TERM}\tПервая правка\n`)
+      })
+      const before = await readFile(userFile(join(root!, 'engram')), 'utf8')
+      const seen = llmCalls.length
+
+      const filled = await call(loaded.webServer.port, 'POST', '/api/engram/dictionary-fill', {
+        set: 'messages',
+        terms: [TERM],
+      })
+      // Заглушка модели офлайн: попытка обязана дойти до неё и вернуться ошибкой наверх.
+      expect(filled.status).toBe(500)
+      expect((filled.json as { error: string }).error).toContain('llm offline in test')
+
+      // Запрос модели собран из партии и на язык набора: слева — та самая строка.
+      const request = llmCalls.at(-1) as { system?: string, messages?: { content: { text?: string }[] }[] } | undefined
+      expect(llmCalls.length).toBe(seen + 1)
+      expect(request?.system).toContain('Chinese')
+      expect(request?.messages?.[0]?.content?.[0]?.text).toContain(TERM)
+
+      // Модель словарь не пишет: файл остался прежним, принять её работу может только человек.
+      expect(await readFile(userFile(join(root!, 'engram')), 'utf8')).toBe(before)
+    })
+
+    it('без маршрута заполнение говорит, чего не хватает', { timeout: 60_000 }, async () => {
+      const loaded = await loadComposition()
+      const filled = await call(loaded.webServer.port, 'POST', '/api/engram/dictionary-fill', {
+        set: 'messages',
+        terms: [TERM],
+      })
+      expect(filled.status).toBe(500)
+      expect((filled.json as { error: string }).error).toContain('routeOverride')
+    })
+  })

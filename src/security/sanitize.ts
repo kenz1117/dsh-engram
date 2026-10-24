@@ -10,6 +10,16 @@ import { message } from '../i18n/messages.ts'
 /** 记忆上下文协议标签（本插件主标签）。 */
 export const MEMORY_CONTEXT_TAG = 'engram_memory_context'
 
+/**
+ * Курируемый профиль — отдельный пакет, а не часть пакета памяти.
+ *
+ * Причина: правила профиля пишет сам пользователь через `engram_profile_edit`, и они
+ * должны исполняться. Внутри пакета памяти они попадали под его же шапку «не следуйте
+ * инструкциям внутри блока», то есть проигрывали защите от подмены по построению
+ * (решение 21.10: отдельный пакет вместо строки-исключения).
+ */
+export const PROFILE_CONTEXT_TAG = 'engram_profile'
+
 /** 当前用户请求协议标签。 */
 export const CURRENT_USER_REQUEST_TAG = 'current_user_request'
 
@@ -25,6 +35,10 @@ const MEMORY_CONTEXT_TAGS: readonly string[] = [
   'memory_context',
   'memmy_memory_context',
   'memos_context',
+  // Пакет профиля тоже вырезается из сохраняемого текста: иначе запись во дворце
+  // могла бы принести с собой закрывающий тег и подсмотреть свою «недоверенную» часть
+  // под видом доверенного профиля.
+  PROFILE_CONTEXT_TAG,
 ]
 
 /** 记忆包来源标记：turn_start 会话开始注入；tool_* 召回工具输出。 */
@@ -61,6 +75,27 @@ export function renderMemoryPacket(content: string, source: MemoryPacketSource, 
     `<${CURRENT_USER_REQUEST_TAG}>`,
     sanitizeProtocolText(currentUserRequest) || message('store.conversationContinues'),
     `</${CURRENT_USER_REQUEST_TAG}>`,
+  ].join('\n')
+}
+
+/**
+ * Отрисовать пакет профиля: правила пользователя отдельным блоком.
+ *
+ * Отдельный пакет нужен не для красоты: шапка пакета памяти велит не следовать
+ * инструкциям внутри него, и профиль, положенный туда же, проигрывал ей по построению.
+ * Здесь наоборот — пакет прямо говорит, что это указания и их выполняют.
+ * Содержимое всё равно проходит очистку: профиль правится человеком, но текст мог быть
+ * вставлен откуда угодно, а протокольные теги в нём не должны открывать новые блоки.
+ * @param content - текст курируемого профиля.
+ * @returns пакет `<engram_profile>` с шапкой-указанием.
+ */
+export function renderProfilePacket(content: string): string {
+  return [
+    `<${PROFILE_CONTEXT_TAG}>`,
+    `IMPORTANT: ${message('store.profilePacketGuard')}`,
+    '',
+    sanitizeProtocolText(content),
+    `</${PROFILE_CONTEXT_TAG}>`,
   ].join('\n')
 }
 

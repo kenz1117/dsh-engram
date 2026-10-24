@@ -150,7 +150,11 @@ export function extraRedactWords(): readonly string[] {
  * @param language - действующий язык; по умолчанию — язык процесса.
  */
 export function redactLabelPatterns(language: EngramLanguage = messageLanguage()): readonly RedactLabelPattern[] {
-  const patterns = activePatternLanguages(language).map((lang) => REDACT_LABEL[lang])
+  // Набора для языка может не быть (новый язык без образцов): такие языки просто
+  // не дают образцов, и молча пропускать их — правильно, подставлять чужие — нет.
+  const patterns = activePatternLanguages(language)
+    .map((lang) => REDACT_LABEL[lang])
+    .filter((pattern): pattern is RedactLabelPattern => pattern !== undefined)
   return extraWordsPattern === undefined ? patterns : [...patterns, extraWordsPattern]
 }
 
@@ -159,7 +163,9 @@ export function redactLabelPatterns(language: EngramLanguage = messageLanguage()
  * @param language - действующий язык; по умолчанию — язык процесса.
  */
 export function chitchatPatterns(language: EngramLanguage = messageLanguage()): readonly RegExp[] {
-  return activePatternLanguages(language).map((lang) => CHITCHAT_RE[lang])
+  return activePatternLanguages(language)
+    .map((lang) => CHITCHAT_RE[lang])
+    .filter((pattern): pattern is RegExp => pattern !== undefined)
 }
 
 /**
@@ -167,5 +173,7 @@ export function chitchatPatterns(language: EngramLanguage = messageLanguage()): 
  * @param language - действующий язык; по умолчанию — язык процесса.
  */
 export function noCapturePatterns(language: EngramLanguage = messageLanguage()): readonly RegExp[] {
-  return activePatternLanguages(language).map((lang) => NO_CAPTURE_RE[lang])
+  return activePatternLanguages(language)
+    .map((lang) => NO_CAPTURE_RE[lang])
+    .filter((pattern): pattern is RegExp => pattern !== undefined)
 }

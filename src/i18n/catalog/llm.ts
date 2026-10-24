@@ -3,8 +3,8 @@
  * консолидация убеждений, переписывание запроса.
  *
  * Ключи этой области начинаются с `llm.`. Оригинальный китайский текст автора
- * сохранён в `zh`; английский набор — образец полноты, русский может быть неполным
- * (недостающее берётся из английского).
+ * сохранён в `zh`; английский набор — образец полноты и источник ключей для словаря переводов;
+ * сами переводы лежат в файлах `i18n/<язык>.txt` (см. `../dictionary.ts`).
  *
  * @module @kenz1117/dsh-engram/i18n/catalog/llm
  */
@@ -41,6 +41,12 @@ export const zh = {
   // ---- Переписывание поискового запроса (retrieve/rewrite) ----
   'llm.rewriteSystemIntro': '把用户输入的检索查询改写为最多 {max} 个互补的检索查询（同义词、上下位概念、不同措辞），用于长期记忆库的语义+关键词混合检索。',
   'llm.rewriteSystemJsonOnly': '只输出一个 JSON 字符串数组，不要输出 JSON 以外的任何内容；无法改进时输出只含原查询的数组。',
+
+  // ---- Заполнение словаря моделью (i18n/dictionary-ai) ----
+  'llm.dictionaryFillSystem': '把开发者工具的界面字符串翻译成 {language}。\n这个工具是给编码代理用的长期记忆插件：palace = 记忆库，room = 记忆类别，corridor = 记忆之间的联系，placard = 一行记忆题名，review = 按间隔重复复习。短标签单独看可能有歧义——按这个含义理解并翻译，不要回答「意思不明」。\n你会收到一个 JSON 对象，两个键：strings —— 要翻译的英文原串；glossary —— 本界面已经采用的译文（可能是空数组）。\n把 glossary 当作既定术语：某个字符串指的概念在 glossary 里已有译法时，就用那个词，不要换说法。每个概念只选一个准确的词，并在整份回答里保持一致；不要使用有歧义的词、逐字直译的说法，也不要给已定术语找同义词。\n只输出一个由二元数组组成的 JSON 数组：[原样给出的英文字符串, 它的 {language} 译文]。\n左侧字符串必须与给出的一模一样（标点、空格、大小写都不改）。\n占位符（如 {name}）保持原样，不要翻译也不要移动。\n译文尽量简短，长度接近原文——这是界面标签，不是句子；用 {language} 界面里通行的说法，不要生造词。\n字符串本身已是 {language} 时原样返回；没有可翻译的就省略该对。\n不要输出注释、解释或 Markdown，只输出 JSON 数组。',
+  'llm.dictionaryFillTooMany': 'dsh-engram: 词典填充一次请求的术语过多（{n} 个，最多 {max} 个）',
+  'llm.dictionaryFillNoRoute': 'dsh-engram: 词典填充不知道调用哪个模型——请在部署配置里指定 routeOverride',
+  'llm.dictionaryFillEmptyAnswer': 'dsh-engram: 词典填充：模型没有给出可用的译文——回答：{snippet}',
 
   // ---- Ошибки вспомогательного вызова (llm/client) ----
   'llm.finishMaxTokens': 'dsh-engram: 辅助调用输出达到 maxTokens 上限',
@@ -82,49 +88,15 @@ export const en = {
   'llm.rewriteSystemIntro': 'Rewrite the retrieval query the user entered into at most {max} complementary retrieval queries (synonyms, broader and narrower concepts, different phrasings) for hybrid semantic + keyword retrieval over the long-term memory store.',
   'llm.rewriteSystemJsonOnly': 'Output only one JSON array of strings and nothing other than JSON; when the query cannot be improved, output an array containing only the original query.',
 
+  // ---- Dictionary fill by a model (i18n/dictionary-ai) ----
+  'llm.dictionaryFillSystem': 'Translate the interface strings of a developer tool into {language}.\nThe tool is a long-term memory plugin for a coding agent: palace = the memory store, room = a memory category, corridor = the links between memories, placard = a one-line memory caption, review = spaced repetition of memories. Short labels can be ambiguous on their own — read them in this sense and translate; never answer that the meaning is unclear.\nYou get a JSON object with two keys: strings — the English source strings to translate; glossary — the translations this interface already uses (it may be an empty array).\nTreat the glossary as established terminology: when a string names a concept the glossary already names, use exactly that word and do not reword it. Choose one precise term for every concept and keep it the same throughout the answer; do not use ambiguous words, word-for-word calques, or a synonym for a term that is already settled.\nOutput only one JSON array of two-element arrays: [the English string exactly as given, its {language} translation].\nKeep the left string byte for byte as given — punctuation, spacing and case unchanged.\nKeep placeholders such as {name} as they are: do not translate or move them.\nThese are interface labels, not sentences: use the shortest accurate wording, in the terminology native to {language} interfaces rather than an invented one.\nWhen a string is already in {language}, return it unchanged; when there is nothing to translate, omit the pair.\nOutput no comments, no explanations and no Markdown — only the JSON array.',
+  'llm.dictionaryFillTooMany': 'dsh-engram: dictionary fill got too many terms in one request ({n}, at most {max})',
+  'llm.dictionaryFillNoRoute': 'dsh-engram: dictionary fill has no model to call — set routeOverride in the deployment config',
+  'llm.dictionaryFillEmptyAnswer': 'dsh-engram: dictionary fill: the model returned no usable translations — answer: {snippet}',
+
   // ---- Auxiliary-call errors (llm/client) ----
   'llm.finishMaxTokens': 'dsh-engram: auxiliary call output reached the maxTokens limit',
   'llm.finishUnexpectedToolCalls': 'dsh-engram: auxiliary call unexpectedly requested tools',
   'llm.finishUnsupported': 'dsh-engram: unsupported finish reason "{kind}"',
   'llm.emptyOutput': 'the auxiliary call returned empty output',
-} as const
-
-/** Русский набор. */
-export const ru = {
-  // ---- Извлечение из диалога (ingest/hook) ----
-  'llm.ingestSystem': 'Извлеки из записи диалога информацию о пользователе, которую стоит помнить между сессиями долго (факты/предпочтения/решения/опыт/способы работы).\nВыведи только один JSON-массив, каждый элемент вида {"content": "законченное утверждение из одного предложения", "kind": "fact|preference|decision|episode|skill", "scope": "project|user", "importance": десятичная дробь от 0 до 1, "entities": [{"name": "имя сущности", "kind": "person|project|tool|concept|other", "aliases": ["другое название"]}], "facts": [{"entity": "имя сущности", "content": "факт об этой сущности одним предложением"}]}.\nentities — конкретные объекты, упомянутые в этом воспоминании (имена людей/проектов/инструментов/понятий); если их нет, опусти это поле. Имена сущностей должны быть короткими (само имя собственное, не более 20 символов); aliases перечисляет другие названия этой сущности — если их нет, опусти.\nfacts перечисляет объективные факты о конкретных сущностях в этом воспоминании (состояние/принадлежность/отношения/данные); entity должно быть именем, которое встречалось в entities этого элемента, одна запись — один факт; если их нет, опусти это поле.\nscope решает, в какой дворец попадёт воспоминание: то, что касается только текущего проекта/репозитория (выбор технологий, договорённости проекта, архитектурные решения, факты о самом проекте), — project; то, что не связано с конкретным проектом и общее для разных проектов (личные предпочтения, привычки, собственный опыт пользователя, общие факты), — user. Если сомневаешься, используй project.\nСохраняй смысл сказанного точно: то, что в тексте отрицается, отвергается или исправляется, в записи должно остаться отрицанием, отказом или исправлением — не превращай это в положительное утверждение; не достраивай связи, оценки и выводы, которых в тексте не было.\nИзвлекай только явную информацию, пригодную для повторного использования; приветствия, временный контекст и собственные ответы не извлекай. Если запоминать нечего, выведи [].\nНе выводи ничего, кроме JSON.',
-  'llm.ingestUserPrompt': 'Из следующего хода (массив JSON) извлеки информацию, которую стоит помнить долго:',
-  'llm.ingestRecallNote': '(Внимание: в прошлом ходе вызывались инструменты припоминания (engram_search и подобные), их вывод опущен; уже существующие воспоминания, пересказанные в ответе ассистента, — не новая информация, не извлекай их.)',
-  'llm.sessionSummarySystem': 'Суммируй приведённый ниже диалог: одним предложением (не более 60 символов) скажи, чем в основном занимались в этой сессии и к какому результату пришли.\nВыведи сам текст резюме, без префикса, кавычек и каких-либо пояснений.',
-  'llm.sessionSummaryUserPrompt': 'Суммируй приведённый ниже диалог:',
-  'llm.warnFinalIngestFailed': '[dsh-engram] Извлечение последнего хода при завершении сессии не удалось (поставлено в очередь на повтор, диалог не затронут):',
-
-  // ---- Правила заполнения истории (ingest/history) ----
-  'llm.backfillDaysRange': 'historyBackfill: days должно быть целым числом в диапазоне [0, 3650] (0 = без ограничения)',
-  'llm.backfillMaxTurnsRange': 'historyBackfill: maxTurnsPerSession должно быть целым числом в диапазоне [1, 500]',
-  'llm.backfillMaxTotalTurnsRange': 'historyBackfill: maxTotalTurns должно быть целым числом в диапазоне [1, 5000]',
-  'llm.backfillProviderModelPair': 'historyBackfill: provider и model должны передаваться вместе',
-  'llm.backfillUnavailable': 'В этом окружении не подключена служба сохранения сессий (журналы сессий недоступны для чтения, например в headless-сборке), поэтому заполнить историю сессий нельзя',
-
-  // ---- Дистилляция (flywheel/distill) ----
-  'llm.distillSystem': 'Ниже — набор долговременных воспоминаний пользователя. Объедини те из них, что выражают одну тему или сводятся к одной закономерности, в одну запись более высокого уровня.\nВыведи только один JSON-массив, каждый элемент вида {"content": "закономерность одним предложением после обобщения", "kind": "skill или fact", "importance": от 0 до 1, "supersedes": ["id объединённой записи", ...]}.\nsupersedes должен выбираться из id, приведённых во входе, и в каждой группе должен быть хотя бы 1; записи, которые нельзя объединить, не выводи. Если объединять нечего, выведи [].\nНе выводи ничего, кроме JSON.',
-  'llm.distillUserPrompt': 'Записи памяти:',
-
-  // ---- Закрепление убеждений (consolidation/reflect) ----
-  'llm.reflectMarkerNewMemories': '[НОВЫЕ ВОСПОМИНАНИЯ]',
-  'llm.reflectMarkerBeliefs': '[УБЕЖДЕНИЯ НА ПЕРЕПРОВЕРКУ]',
-  'llm.reflectSystem': 'Ниже даны две части материала: {newMark} — недавно записанные исходные воспоминания; {reviewMark} — ранее выведенные убеждения, на которые могли повлиять новые доказательства (с исходными доказательствами).\nЗакрепи и перепроверь материал; выведи только один JSON-массив, каждый элемент — одно из четырёх действий:\n1. {"action":"form","belief":"убеждение одним предложением, выведенное при закреплении (вывод/закономерность/устойчивое предпочтение)","sourceIds":["id воспоминания-доказательства"]} — в sourceIds нужен хотя бы 1 id, и все они должны быть из id в {newMark}; если одно убеждение подтверждают несколько воспоминаний, объедини их в одно — не создавай убеждение ради одного мелкого воспоминания.\n2. {"action":"refine","observationId":"id убеждения под перепроверкой","belief":"новая формулировка с учётом новых доказательств","sourceIds":["id нового воспоминания-доказательства"]} — используй, когда новые доказательства дополняют или сужают это убеждение; sourceIds должны быть из {newMark} и могут быть пустым массивом (только более точная формулировка).\n3. {"action":"still","observationId":"id убеждения под перепроверкой"} — новые доказательства не влияют на убеждение; исходная формулировка остаётся верной.\n4. {"action":"refute","observationId":"id убеждения под перепроверкой","reason":"причина опровержения (со ссылкой на доказательства)"} — новые доказательства противоречат убеждению и исходное убеждение больше не верно.\nobservationId должен быть взят из id, приведённых в {reviewMark}. Если в материале нет ничего, что стоит закреплять или перепроверять, выведи []. Не выводи ничего, кроме JSON.',
-  'llm.reflectStaleLine': '[{id}] доказательств: {count} — {belief}',
-  'llm.reflectFormBeliefMissing': 'form: belief отсутствует',
-  'llm.reflectFormSourceIdsInvalid': 'form: sourceIds вне диапазона или пуст',
-
-  // ---- Переписывание поискового запроса (retrieve/rewrite) ----
-  'llm.rewriteSystemIntro': 'Перепиши поисковый запрос пользователя в не более чем {max} взаимодополняющих поисковых запросов (синонимы, более общие и более узкие понятия, иные формулировки) для гибридного семантического и ключевого поиска по хранилищу долговременной памяти.',
-  'llm.rewriteSystemJsonOnly': 'Выведи только один JSON-массив строк и ничего, кроме JSON; если улучшить запрос нельзя, выведи массив, содержащий только исходный запрос.',
-
-  // ---- Ошибки вспомогательного вызова (llm/client) ----
-  'llm.finishMaxTokens': 'dsh-engram: вывод вспомогательного вызова достиг предела maxTokens',
-  'llm.finishUnexpectedToolCalls': 'dsh-engram: вспомогательный вызов неожиданно запросил инструменты',
-  'llm.finishUnsupported': 'dsh-engram: неподдерживаемая причина завершения "{kind}"',
-  'llm.emptyOutput': 'вспомогательный вызов вернул пустой вывод',
 } as const

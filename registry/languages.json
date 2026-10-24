@@ -1,0 +1,8 @@
+{
+  "formatVersion": 1,
+  "languages": [
+    { "code": "zh", "label": "中文", "builtin": true },
+    { "code": "en", "label": "English", "builtin": true },
+    { "code": "ru", "label": "Русский", "builtin": false }
+  ]
+}

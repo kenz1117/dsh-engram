@@ -6,7 +6,7 @@
 
 <p align="center"><b>Local-first long-term memory for your coding agent.</b><br>
 Cross-session long-term memory on plain local SQLite: <b>no external service, no API key, no Docker</b> — one command and it works.<br>
-22 narrow-parameter tools · hybrid retrieval (FTS5 + local vectors, RRF) · an evidence gate · full provenance audit · SM-2 spaced-repetition review · a zh / en / ru panel.</p>
+23 narrow-parameter tools · hybrid retrieval (FTS5 + local vectors, RRF) · an evidence gate · full provenance audit · SM-2 spaced-repetition review · a zh / en / ru panel.</p>
 
 <p align="center">
   <a href="https://github.com/kenz1117/dsh-engram/blob/main/LICENSE"><img alt="GitHub license" src="https://img.shields.io/github/license/kenz1117/dsh-engram"></a>
@@ -72,7 +72,7 @@ Plenty of memory plugins exist, but most want you to stand up infrastructure fir
 |---|---|---|---|
 | Setup cost | One npm command, **works immediately** | Docker + database + vector store + migrations | One npm command |
 | External dependencies | **None**: embeddings run offline and degrade to keyword-only with an explicit marker | Required, usually plus an LLM API key | None |
-| Agent-facing tools | **22 narrow-parameter tools** across the whole lifecycle — save, search, fact chains, timelines, audit, export, distill, beliefs, review | Usually 1–3 (search only) | Usually 0–1 |
+| Agent-facing tools | **23 narrow-parameter tools** across the whole lifecycle — save, search, fact chains, timelines, audit, export, distill, beliefs, review | Usually 1–3 (search only) | Usually 0–1 |
 | Evidence gate | **Yes**: `engram_assess` is enforced in code — "claims sufficient" + at least one valid ref from this batch + `nextStrategy=answer` | Generally none | Generally none |
 | Audit | Session/turn/seq provenance, supersede chains, contradiction edges, full `op_log` | Usually logs only | None |
 | Review | **SM-2 spaced repetition**: coordinates and placard cues only, never the body — recall first, reveal later | None | None |
@@ -196,6 +196,7 @@ Sensory and emotional dimensions (smell, temperature, emotional weight) are deli
 | `engram_distill` | Distill: merge same-topic clusters into higher-level rules (LLM) |
 | `engram_reflect` | Belief consolidation: abstract unconsolidated raw memories into proof-backed higher-level beliefs (four actions form/refine/still/refute; automatic vector-near-neighbor merging; raw memories stay active). Also drains the pending-consolidation queue created by reflect=suggest |
 | `engram_profile_edit` | Edit the curated profile block: `view` shows the current content and version history; `edit` writes a new version (optimistic lock via `expectedVersion`, conflicts fail loud); `rollback` restores a historical version (appended as a new version; history is never rewritten). The curated profile is injected ahead of the derived profile; every edit lands in the operation log, and the profile card on the panel's Today view shows version diffs |
+| `engram_language_guide` | Output the plugin language guide (the body of `<package-root>/docs/agent-language-guide.ru.md`). The first-run window promises a human whose language is not built in that the agent will print an instruction; this tool keeps that promise. The source text is written in Russian as a draft — the agent translates it into the asker's language itself |
 
 ## Configuration
 
@@ -337,7 +338,7 @@ Each turn's first step appends a plugin-source user snapshot: `User memory profi
 
 #### Token effect
 
-Profile injection is a conditional fixed cost (bounded by both the entry cap and the token budget); the tool schemas are a standing cost (22 narrow-parameter tools).
+Profile injection is a conditional fixed cost (bounded by both the entry cap and the token budget); the tool schemas are a standing cost (23 narrow-parameter tools).
 
 #### KV Cache effect
 

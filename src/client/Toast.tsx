@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import styles from './panel.module.css'
 
 /** Toast 语义类型。 */
-export type ToastKind = 'info' | 'success' | 'error' | 'warning'
+export type ToastKind = 'info' | 'success' | 'error' | 'warning' | 'reset'
 
 /** 单条 Toast。 */
 interface ToastItem {
@@ -24,6 +24,10 @@ const DEFAULT_DURATION: Record<ToastKind, number> = {
   success: 3000,
   warning: 5000,
   error: 5000,
+  // «Сброс» — не ошибка и не удача: событие, которое случилось без участия человека
+  // (истекло окно, предохранитель встал обратно). Держим на экране столько же,
+  // сколько предупреждение, но цветом ниже по громкости.
+  reset: 5000,
 }
 
 /** 顺序自增 id 源（避免 useEffect 依赖 Date.now）。 */
@@ -43,6 +47,7 @@ function ToastViewport({ items, onDismiss }: {
         const kindClass = toast.kind === 'success' ? styles.toastSuccess
           : toast.kind === 'error' ? styles.toastError
           : toast.kind === 'warning' ? styles.toastWarning
+          : toast.kind === 'reset' ? styles.toastReset
           : styles.toastInfo
         return (
           <div key={toast.id}

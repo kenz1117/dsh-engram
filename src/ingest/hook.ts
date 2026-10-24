@@ -261,6 +261,36 @@ function collectTexts(events: readonly SessionEventLike[], includeAssistant: boo
   return { texts, minSeq }
 }
 
+/**
+ * Реплики человека из событий текущей сессии.
+ *
+ * Нужны языку дворца: по ним видно, на каком языке человек ведёт диалог. Это единственный
+ * дешёвый источник — события текущей сессии уже в памяти процесса. Журналы сессий,
+ * в том числе прошлых, по-прежнему не читаются (решение 20.10): журнал читается целиком
+ * и стоит сотни мегабайт кучи.
+ *
+ * Считается только то, что человек набрал сам: события с видом `user`. Инструкции
+ * агента (`agent-instructions`), снимок рантайма (`runtime-context`) и каталог навыков
+ * (`skill-catalog`) приходят теми же `user/message`, но написаны по-английски и голосом
+ * человека не являются — без этого отсева английский служебный текст перевешивал русскую
+ * речь (проверено 21.10 на живом дворце: `dialogue: en` при базах `ru`). Всё незнакомое
+ * тоже не считается: ошибиться в сторону «спросить» безопаснее, чем назначить чужой язык.
+ * @param events - события текущей сессии.
+ * @returns Реплики человека в порядке появления.
+ */
+export function userTexts(events: readonly SessionEventLike[]): string[] {
+  const texts: string[] = []
+  for (const event of events) {
+    if (event.type !== 'user/message') continue
+    const data = event.data as { source?: { kind?: unknown }; content?: { type?: unknown; text?: unknown }[] } | null
+    if (data?.source?.kind !== 'user') continue
+    for (const block of data.content ?? []) {
+      if (block?.type === 'text' && typeof block.text === 'string') texts.push(block.text)
+    }
+  }
+  return texts
+}
+
 /** 摄取切片模式：previous = 上一轮（新轮第一步触发）；last = 末轮到日志末尾（session/disposed 触发）；number = 指定轮次（pending 重放）。 */
 export type IngestSlice = 'previous' | 'last' | number
 
@@ -576,7 +606,7 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
       // judge 在场时矛盾边先经 Jev 确认（失败返回 undefined = 降级为全量建边，与旧行为一致）。
       const neighbors = judge === undefined
         ? [decision.neighbor]
-        : (await confirmContradictions(judge, content, [decision.neighbor])) ?? [decision.neighbor]
+        : (await confirmContradictions(judge, content, [decision.neighbor], target)) ?? [decision.neighbor]
       for (const neighbor of neighbors) {
         // Запись уже сохранена: защитно пропускаем саму себя, чтобы не создать
         // связь «противоречит сама себе» (см. то же место в tools/create.ts).

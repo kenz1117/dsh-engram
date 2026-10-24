@@ -6,7 +6,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed } from '@deepseek-ai/dsh-llm'
@@ -21,15 +21,29 @@ declare module '@deepseek-ai/dsh-llm' {
     [kind: `plugin:${string}`]: { kind: `plugin:${string}` } & ContextFormed
   }
 }
-import { resolveConfig } from './config.ts'
+import { readLanguageSetting, resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
+import { describeDictionaryProblems, loadMessageDictionary, loadPanelDictionary, readDictionaryLayer } from './i18n/dictionary-file.ts'
+import type { LoadedDictionary } from './i18n/dictionary-file.ts'
+import { applyDictionaryPatch, dictionaryPaths, layerOverrides, readDictionarySet, writeDictionarySet } from './i18n/dictionary-edit.ts'
+import { DICTIONARY_SETS, dictionaryTerms, PANEL_BUILTIN_LANGUAGES } from './i18n/dictionary-terms.ts'
+import { FILL_MAX_TOKENS, FILL_SPLIT_DEPTH, FILL_TIMEOUT_MS, splitFillBatch } from './i18n/dictionary-limits.ts'
+import { answerSnippet, fillBatch, fillPrompt, glossaryPairs, parseFillAnswer } from './i18n/dictionary-ai.ts'
+import type { FillPair } from './i18n/dictionary-ai.ts'
+import { describeRegistryProblems, loadRegistry } from './registry/registry-file.ts'
+import type { LoadedRegistry } from './registry/registry-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
-import { message, messageIn, setMessageLanguage } from './i18n/messages.ts'
+import { pickLanguage } from './i18n/language.ts'
+import { dominantLanguage, palaceCase } from './i18n/palace-language.ts'
+import { collectLanguageSignals } from './language-signals.ts'
+import { interfacePreference, writePalaceLanguage, writePalaceLanguageWithRetry, type SettingsServiceView } from './settings-bridge.ts'
+import { message, messageIn, setMessageDictionary, setMessageLanguage } from './i18n/messages.ts'
 import { setExtraRedactWords } from './i18n/patterns.ts'
 import { roomLabel } from './i18n/rooms.ts'
-import { createEmbedder } from './embedder/select.ts'
+import { createEmbedder, resolveLocalModel } from './embedder/select.ts'
+import type { LocalModelChoice } from './embedder/select.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
-import { FINAL_INGEST_TIMEOUT_MS, ensureSessionSummary, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, lastTurnNumber, replayPendingIngests } from './ingest/hook.ts'
+import { FINAL_INGEST_TIMEOUT_MS, ensureSessionSummary, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, lastTurnNumber, replayPendingIngests, userTexts } from './ingest/hook.ts'
 import { estimateHistoryBackfill, runHistoryBackfill } from './ingest/history.ts'
 import type {
   HistoryBackfillDeps, HistoryBackfillRules, HistoryEstimate, HistoryLogSource, HistoryRunProgress, HistoryRunResult,
@@ -41,7 +55,12 @@ import type { IngestRequestEventData } from './ingest/hook.ts'
 import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
 import { registerEngramRoutes } from './routes.ts'
-import type { ProjectPalaceView, RouteDeps } from './routes.ts'
+import type { BaseConvertResult, BaseLabelResult, BaseView, DictionarySaveResult, ProjectPalaceView, RegistryView, RouteDeps } from './routes.ts'
+import { judgeBase, labelToStamp, languageOfLabels, MODEL_LABEL_KEY } from './registry/base-state.ts'
+import type { CatalogModel } from './registry/base-state.ts'
+import { readBaseCensus } from './registry/base-census.ts'
+import { planBaseVectors, runVectorConvert } from './registry/convert.ts'
+import { loadVectorSchema } from './registry/vector-schema.ts'
 import { migrateProjectDb, migrationWarning, resolveProjectIdentity } from './project/identity.ts'
 import { findProjectPalace, listProjectPalaces } from './project/registry.ts'
 import type { ProjectPalace, WorkspaceRef } from './project/registry.ts'
@@ -50,10 +69,11 @@ import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
 import { resolveJevField } from './jev/runtime.ts'
 import { readJevCatalog, readProviderModels, resolveJevConnection } from './jev/host.ts'
-import { currentUserRequestText, renderMemoryPacket } from './security/sanitize.ts'
+import { currentUserRequestText, renderMemoryPacket, renderProfilePacket } from './security/sanitize.ts'
 import { wrapWithRationale } from './selection-rationale.ts'
 import { buildAssessReminder, evidenceBatches } from './retrieve/evidence.ts'
 import { estimateTokens } from './token.ts'
+import { EngramError } from './types.ts'
 import type { EngramScope, Slot } from './types.ts'
 
 /** Cordis 插件名（loader 诊断与注入 source 使用）。 */
@@ -164,34 +184,39 @@ export function renderProfile(
  * curated block 段的标题行（模型据此知道这一段是人工维护的最高优先画像）。
  * Значение английское: автор написал эту строку по-английски, поэтому в китайском
  * наборе она совпадает с английской. Для показа берите
- * `messageIn(language, 'core.curatedHeader')` — так делает renderProfileWithCurated.
+ * `messageIn(language, 'core.curatedHeader')` — так делает renderProfileParts.
  * Модульная константа вычисляется при загрузке модуля, то есть ДО того, как плагин
  * узнаёт язык из настроек, и навсегда застыла бы в английском.
  */
 export const CURATED_HEADER = message('core.curatedHeader')
 
 /**
- * 画像渲染（curated 优先）：有 curated block 时其全文置于派生画像之前（模型可见的
- * 第一段），并先从 token 预算中扣除自身占用，剩余预算才给派生条目装填；派生段
- * 照旧走分级递减与索引行/计数行降级。curated 是用户显式维护的意志，即使超出剩余
- * 预算也完整注入（与 due 行同理）；block 缺省时等同 renderProfileDetailed。
- * @param curated - 当前态 curated block；undefined = 尚未编辑过。
- * @param records - 派生画像候选条目（调用方已按重要性排序、按条数截断）。
- * @param tokenBudget - 整段画像的 token 预算（curated 段与派生段共享）。
- * @param itemBudget - 分级递减的单条正文预算（透传 renderProfileDetailed）。
- * @returns 渲染文本与派生段的溢出条目。
+ * Та же отрисовка, но части врозь: профиль и память уходят разными пакетами.
+ *
+ * Разделение нужно потому, что правила профиля должны исполняться, а шапка пакета
+ * памяти велит не следовать инструкциям внутри него. В одном пакете профиль проигрывал
+ * этой шапке по построению — отсюда отдельный `<engram_profile>` (решение 21.10).
+ * Бюджет по-прежнему общий: профиль занимает его первым и вставляется целиком.
+ * @param curated - текущий курируемый профиль; undefined — его ещё не заводили.
+ * @param records - кандидаты производного профиля (уже отсортированы и урезаны).
+ * @param tokenBudget - общий бюджет профиля и памяти.
+ * @param language - язык вывода (заголовки профиля).
+ * @param itemBudget - бюджет одной строки по уровням важности.
+ * @returns текст профиля (если есть) и производная часть с её переполнением.
  */
-export function renderProfileWithCurated(
+export function renderProfileParts(
   curated: { content: string } | undefined,
   records: readonly { id: string; kind: string; content: string; slot?: Slot }[],
   tokenBudget: number,
   language: EngramLanguage,
   itemBudget: GraduatedItemBudget = DEFAULT_ITEM_BUDGET,
-): ProfileRender {
-  if (curated === undefined) return renderProfileDetailed(records, tokenBudget, language, itemBudget)
+): { readonly curated: string | undefined; readonly derived: ProfileRender } {
+  if (curated === undefined) {
+    return { curated: undefined, derived: renderProfileDetailed(records, tokenBudget, language, itemBudget) }
+  }
   const curatedSection = `${messageIn(language, 'core.curatedHeader')}\n${curated.content}`
-  const detailed = renderProfileDetailed(records, Math.max(0, tokenBudget - estimateTokens(curatedSection)), language, itemBudget)
-  return { text: `${curatedSection}\n${detailed.text}`, overflow: detailed.overflow }
+  const derived = renderProfileDetailed(records, Math.max(0, tokenBudget - estimateTokens(curatedSection)), language, itemBudget)
+  return { curated: curatedSection, derived }
 }
 
 /** 压缩辅助调用的输出 token 上限（40 字 × 若干条，短输出足够）。 */
@@ -264,11 +289,17 @@ async function preStep(
   embedder: Promise<EngramEmbedder | undefined>,
   state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null; lastProfileCompactions: number | null; lastAssessReminder: string | null; route: LlmRoute | undefined },
   logRequest: (data: IngestRequestEventData) => void,
+  onDialogueLanguage: (language: EngramLanguage) => void,
   { agent, step, turn, signal }: { agent: Agent; step: number; turn: number; signal: AbortSignal },
   next: () => Promise<PreStepDecision>,
 ): Promise<PreStepDecision> {
   const decision = await next()
   if (decision.kind === 'reject') return decision
+  // Язык дворца смотрит на диалоги (решение 21.10): реплики человека лежат в событиях
+  // текущей сессии — для этого не нужно читать журналы, которые стоят сотни мегабайт.
+  // Реплик может ещё не быть (первый ход) — тогда сигнала просто нет.
+  const observed = dominantLanguage(userTexts(agent.session.snapshotEvents() as unknown as readonly SessionEventLike[]))
+  if (observed !== undefined) onDialogueLanguage(observed.language)
   // 记录当前会话在用的路由：历史回填优先复用它——历史日志里的 provider/model 是当年的，
   // 在当前环境可能已不可用（如换过提供商），用当前模型才跑得通。
   if (step === 1) {
@@ -362,21 +393,18 @@ async function preStep(
     ? (await Promise.all((['user', 'project'] as const).map(async scope =>
         (await openStore(scope)).dueReviews(Date.now(), 50)))).reduce((sum, rows) => sum + rows.length, 0)
     : 0
-  const detailed = renderProfileWithCurated(
-    curated,
-    top,
-    resolved.injectTokenBudget,
-    resolved.language,
-    { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor },
-  )
-  let text = detailed.text
+  const itemBudget = { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor }
+  // Части врозь: правила профиля уходят своим пакетом, память — своим. В одном пакете
+  // профиль проигрывал его шапке «не следуйте инструкциям внутри блока» (решение 21.10).
+  let parts = renderProfileParts(curated, top, resolved.injectTokenBudget, resolved.language, itemBudget)
   // 超预算压缩：装不下的条目交给辅助 LLM 压短后重渲染；失败保持索引行降级不变。
-  if (detailed.overflow.length > 0) {
-    const compressed = await compressProfileOverflow(ctx, agent, resolved.routeOverride, detailed.overflow, signal)
+  if (parts.derived.overflow.length > 0) {
+    const overflow = parts.derived.overflow
+    const compressed = await compressProfileOverflow(ctx, agent, resolved.routeOverride, overflow, signal)
     if (compressed !== undefined) {
       // 辅助请求审计（压缩产物随注入消息进会话日志；请求本身落 op_log 供归因）。
-      void openStore('user').then(auditStore => auditStore.audit('compress-request', 'AUX', JSON.stringify({ count: detailed.overflow.length }))).catch(() => { /* 审计失败不影响注入 */ })
-      text = renderProfileWithCurated(
+      void openStore('user').then(auditStore => auditStore.audit('compress-request', 'AUX', JSON.stringify({ count: overflow.length }))).catch(() => { /* 审计失败不影响注入 */ })
+      parts = renderProfileParts(
         curated,
         top.map(record => {
           const shorter = compressed.get(record.id)
@@ -384,10 +412,11 @@ async function preStep(
         }),
         resolved.injectTokenBudget,
         resolved.language,
-        { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor },
-      ).text
+        itemBudget,
+      )
     }
   }
+  let text = parts.derived.text
   // 巩固信念区块：active 信念按证据数/新近度取前 N，拼入同一份画像包；
   // stale/refuted 不注入。区块独立于画像预算（固定硬上限），信念更新后画像 hash 变化自然触发重注。
   const observations = await store.listObservations({ status: 'active', limit: OBSERVATION_INJECT_LIMIT })
@@ -408,13 +437,20 @@ async function preStep(
     ? ''
     : message('core.reviewDue', { count: dueTotal, plus: dueTotal >= 50 ? '+' : '' })
   const textWithRationale = wrapWithRationale(text, top) + dueLine
-  const hash = createHash('sha256').update(textWithRationale).digest('hex')
+  // Профиль входит в хеш: правка правил без изменения памяти тоже должна переинжектиться.
+  const hash = createHash('sha256').update(`${parts.curated ?? ''}\n${textWithRationale}`).digest('hex')
   if (!compacted && state.lastProfileAgent === String(agent.id) && hash === state.lastProfileHash) return decision
   state.lastProfileAgent = String(agent.id)
   state.lastProfileHash = hash
   state.lastProfileCompactions = compactionCount
   // 画像包协议标签：记忆条目是不可信历史上下文；当前请求取本轮 admitted 消息的最后一个文本块。
-  const packet = renderMemoryPacket(text, 'turn_start', currentUserRequestText(decision.messages))
+  // Правила профиля идут отдельным пакетом и первыми: это указания человека, а не память,
+  // и шапка пакета памяти к ним не относится (решение 21.10).
+  const requestText = currentUserRequestText(decision.messages)
+  const memoryPacket = renderMemoryPacket(text, 'turn_start', requestText)
+  const packet = parts.curated === undefined
+    ? memoryPacket
+    : `${renderProfilePacket(parts.curated)}\n\n${memoryPacket}`
   return {
     ...decision,
     messages: [
@@ -512,16 +548,299 @@ function makeSessionResolver(
 }
 
 /**
+ * Снимок обслуживания: чем выбрана модель и из каких файлов это следует.
+ *
+ * Собирается один раз при сборке плагина, потому что все источники — реестр,
+ * оба словаря, разрешённый язык — читаются один раз и дальше не меняются.
+ * Панель получает готовый ответ и ничего не выводит сама: правило выбора модели
+ * должно быть одно, и жить оно должно там, где модель выбирается, а не в отрисовке.
+ * @param input - прочитанные реестр и словари, язык, признак удалённой модели и выбор модели.
+ * @returns JSON-совместимый снимок для `GET registry`.
+ */
+function registrySnapshot(input: {
+  readonly registry: LoadedRegistry
+  readonly language: string
+  /** Язык дворца: чем определён и были ли расхождения сигналов. */
+  readonly palace: RegistryView['palace']
+  /** Длина окна собранного условия (настройка `palaceChangeWindowSec`). */
+  readonly palaceChangeWindowSec: number
+  readonly remote: boolean
+  readonly model: LocalModelChoice | undefined
+  readonly messages: LoadedDictionary
+  readonly panel: LoadedDictionary
+  /** Языки моделей, у которых файл словаря уже есть (см. `dictionaryLanguages`). */
+  readonly dictionaryLanguages: readonly string[]
+}): RegistryView {
+  const dictionary = (name: string, loaded: LoadedDictionary): RegistryView['dictionaries'][number] => ({
+    name,
+    files: loaded.files,
+    entries: loaded.entries.size,
+    problems: loaded.problems.map(problem => ({
+      file: problem.file,
+      line: problem.line,
+      kind: problem.kind,
+      detail: problem.detail,
+    })),
+  })
+  return {
+    language: input.language,
+    palace: input.palace,
+    defaultLanguage: input.registry.defaultLanguage ?? null,
+    palaceChangeWindowSec: input.palaceChangeWindowSec,
+    // Языки — тем же ответом, что и модели с привязками: список выбора в панели
+    // обязан приходить от реестра, а не из своей копии в сборке клиента.
+    languages: input.registry.languages.map(row => ({ code: row.code, label: row.label, builtin: row.builtin })),
+    dictionaryLanguages: [...input.dictionaryLanguages],
+    remote: input.remote,
+    resolved: input.model === undefined ? null : {
+      id: input.model.id,
+      label: input.model.label ?? null,
+      source: input.model.source,
+      pooling: input.model.pooling,
+      dtype: input.model.dtype,
+    },
+    models: [...input.registry.models.values()].map(row => ({
+      id: row.id,
+      label: row.label ?? null,
+      pooling: row.pooling,
+      dtype: row.dtype,
+      dimensions: row.dimensions ?? null,
+      languages: [...row.languages],
+    })),
+    bindings: [...input.registry.bindings].map(([language, model]) => ({ language, model })),
+    files: input.registry.files,
+    problems: input.registry.problems.map(problem => ({
+      file: problem.file,
+      kind: problem.kind,
+      detail: problem.detail,
+    })),
+    dictionaries: [dictionary('messages', input.messages), dictionary('panel', input.panel)],
+  }
+}
+
+/** Хостовый сервис настроек: живёт отдельно от плагина и может отсутствовать. */
+function settingsOf(ctx: Context): SettingsServiceView | undefined {
+  return ctx.get('settings' as never) as SettingsServiceView | undefined
+}
+
+/** Сколько раз пробуем записать язык дворца и с какой паузой (окно ~3 с). */
+const PALACE_WRITE_ATTEMPTS = 20
+const PALACE_WRITE_DELAY_MS = 150
+
+/**
+ * Записать выбранный язык дворца в конфигурацию плагина.
+ *
+ * Одна реализация на два повода: определение на первом старте и явный выбор в панели.
+ * Пишем через хостовый сервис настроек: он кладёт значение в профильный patch, то есть
+ * ровно в конфигурацию плагина, и применяет его на живом фибере volatile-путём —
+ * без перемонтирования. Если сервиса или своей записи нет, язык остаётся на этот
+ * процесс и на следующий старт не переживает: об этом говорим вызывающему, а не молчим.
+ * @param ctx - контекст плагина.
+ * @param language - выбранный язык дворца.
+ * @returns Причина отказа; undefined — запись удалась.
+ */
+
+
+/**
+ * Записать определённый язык дворца, не задерживая старт плагина.
+ *
+ * Повтор и сам отказ живут в мосте (`settings-bridge.ts`): там же, где поиск своей
+ * формы. Здесь только привязка к контексту — где взять сервис и когда остановиться.
+ * @param ctx - контекст плагина.
+ * @param language - определённый язык дворца.
+ */
+function persistPalaceLanguage(ctx: Context, language: EngramLanguage): void {
+  let stopped = false
+  ctx.effect(() => {
+    void writePalaceLanguageWithRetry({
+      settings: () => settingsOf(ctx),
+      language,
+      attempts: PALACE_WRITE_ATTEMPTS,
+      delayMs: PALACE_WRITE_DELAY_MS,
+      stopped: () => stopped,
+    }).then(reason => {
+      if (reason !== undefined) console.warn(`dsh-engram: ${reason}`)
+    })
+    return () => { stopped = true }
+  }, 'dsh-engram: palace language persistence')
+}
+
+/**
  * 插件体：预热分库与嵌入器，注册 10 个工具、画像注入、自动摄取与衰减调度。
  * @param ctx - host 上下文。
  * @param config - cordis.yml 传入的可选配置；非法值在加载时 loud 失败。
  */
-export function apply(ctx: Context, config: EngramConfig = {}): void {
-  const resolved = resolveConfig(config)
+export async function apply(ctx: Context, config: EngramConfig = {}): Promise<void> {
+  const resolvedConfig = resolveConfig(config)
+  // Реестры читаются до языка: умолчание пакета живёт в привязках (см. src/registry),
+  // а от языка уже зависят и словарь, и шаблоны сообщений. Чтение чистое — файлы без
+  // сети, — поэтому порядок ничего не стоит.
+  const registry = loadRegistry({ dbDir: resolvedConfig.dbDir })
+  /** Что записано в настройке: `auto` — решения о языке дворца ещё нет. */
+  const languageSetting = readLanguageSetting(config.language)
+  let language = pickLanguage(languageSetting, registry.defaultLanguage)
+  // Язык дворца определяется полуавтоматически (В.02): если решения нет, дворец
+  // смотрит на preference интерфейса и локаль машины и записывает СВОЙ язык —
+  // конкретным значением, а не «auto». Разошлись сигналы среды — не выставляем
+  // ничего: спросим пользователя в панели.
+  //
+  // Журналы сессий здесь больше не читаются (решение 20.10): журнал читается целиком,
+  // и на живых данных это сотни мегабайт кучи на каждом старте ради сорока реплик.
+  let determination: Awaited<ReturnType<typeof collectLanguageSignals>> | undefined
+  if (languageSetting === undefined || languageSetting === 'auto') {
+    determination = await collectLanguageSignals({
+      readInterfacePreference: async () => {
+        const settings = settingsOf(ctx)
+        return settings === undefined ? undefined : interfacePreference(settings.describe())
+      },
+    })
+    if (!determination.decision.conflict) language = determination.decision.language
+  }
+  // Настройка главнее умолчания, умолчание — главнее системной локали (см.
+  // src/i18n/language.ts): «наш язык» должен зависеть от объявленного выпуска, а не
+  // от машины, на которой плагин запущен.
+  const resolved: ResolvedEngramConfig = { ...resolvedConfig, language, languageSetting }
+  // Запись решения — отдельным тиком, когда фибер уже поднялся: правка конфигурации
+  // на стартующем фибере пошла бы обычным путём (перемонтирование посреди apply),
+  // а на живом идёт volatile-путём — значение меняется на ходу, плагин не грузится заново.
+  // Записываем сами только то решение, у которого есть опора — голос диалога.
+  // Локаль машины и preference интерфейса для этого слишком слабы: язык дворца держит
+  // модель, инструкции и язык новых записей, поэтому в остальных случаях спрашиваем
+  // человека в панели (В.02), а до ответа считаем по тем же слабым сигналам.
+  if (determination !== undefined && determination.decision.grounded) {
+    const decided = determination.decision.language
+    ctx.effect(() => {
+      const timer = setTimeout(() => { persistPalaceLanguage(ctx, decided) }, 0)
+      return () => { clearTimeout(timer) }
+    }, 'dsh-engram: palace language persistence')
+  }
   // Язык служебных сообщений — один на процесс. Помощник message() зовут десятки
   // функций, и протаскивать язык в каждую было бы куда грубее, чем задать его здесь
   // один раз при сборке плагина (см. src/i18n/messages.ts).
   setMessageLanguage(resolved.language)
+  // Переводы: файл словаря накладывается поверх наборов из кода (см. src/i18n/dictionary-file.ts).
+  // Нет файла — работаем на коде. Дефектные строки пропускаются: это чтение, а не запись,
+  // и падать из-за словаря незачем — но о них говорим, иначе правка «молча не работает».
+  const dictionary = loadMessageDictionary({ language: resolved.language, dbDir: resolved.dbDir })
+  setMessageDictionary(resolved.language, dictionary.entries)
+  if (dictionary.problems.length > 0) {
+    console.warn(message('misc.warnDictionaryProblems', {
+      count: dictionary.problems.length,
+      sample: describeDictionaryProblems(dictionary.problems),
+    }))
+  }
+  // Реестры: каталог моделей и привязки «язык → модель» (см. src/registry). Каталог
+  // кладёт поставка, привязки перекрывает слой пользователя. Прочитано выше, до языка;
+  // здесь только претензии — в прежнем порядке, после словарных.
+  if (registry.problems.length > 0) {
+    console.warn(message('misc.warnRegistryProblems', {
+      count: registry.problems.length,
+      sample: describeRegistryProblems(registry.problems),
+    }))
+  }
+  // Словарь панели — тот же механизм, другой файл (`i18n/panel.<язык>.txt`): тексты
+  // интерфейса должны правиться без пересборки так же, как тексты сообщений. Панель
+  // забирает его тем же ответом, что и снимок обслуживания, и накладывает поверх
+  // словарей, вшитых в сборку.
+  const panelDictionary = loadPanelDictionary({ language: resolved.language, dbDir: resolved.dbDir })
+  if (panelDictionary.problems.length > 0) {
+    console.warn(message('misc.warnDictionaryProblems', {
+      count: panelDictionary.problems.length,
+      sample: describeDictionaryProblems(panelDictionary.problems),
+    }))
+  }
+  // Снимок обслуживания: что выбрано, по какому правилу и из каких файлов это следует.
+  // Собирается один раз при сборке плагина — реестр и словари читаются один раз и
+  // дальше не меняются, а панель показывает именно это состояние, а не свежий опрос.
+  // Выбор модели считается здесь, а не внутри снимка: та же строка нужна карточке баз —
+  // она называет метку, которой подписываются базы (`ru-minilm-l12`), и разойтись эти
+  // два места не должны.
+  const localModel = resolveLocalModel(registry, resolved.language, resolved.embedder.localModel, resolved.embedder.localPooling)
+  /** Снимок обслуживания по прочитанным словарям: собирается заново после правки из панели. */
+  /**
+   * Язык дворца в снимке обслуживания. Здесь всегда null: язык диалога появляется
+   * посреди работы, поэтому снимок панели собирается на каждый запрос (`palaceView`),
+   * а это — заготовка для остальных чтений снимка.
+   */
+  const palaceLanguageView: RegistryView['palace'] = null
+  /**
+   * Языки, у которых файл словаря уже есть: в поставке или у человека.
+   *
+   * Проверяем файлы, а не разбор: вопрос ровно один — «словарь заведён или нет», и ответ
+   * даёт наличие файла в любом из двух наборов. Разбор читал бы мегабайты ради признака.
+   */
+  const languagesWithDictionary = (codes: readonly string[]): readonly string[] => codes.filter(code =>
+    DICTIONARY_SETS.some(set => {
+      const paths = dictionaryPaths({ set, language: code as EngramLanguage, dbDir: resolved.dbDir })
+      return existsSync(paths.delivery) || existsSync(paths.user)
+    }))
+  /** Языки, объявленные моделями реестра: из них панель выбирает, чему заводить словарь. */
+  const modelLanguages = (): readonly string[] => [...new Set(
+    [...registry.models.values()].flatMap(row => row.languages),
+  )]
+  const snapshotView = (messages: LoadedDictionary, panel: LoadedDictionary): RegistryView => registrySnapshot({
+    registry,
+    language: resolved.language,
+    palace: palaceLanguageView,
+    palaceChangeWindowSec: resolved.palaceChangeWindowSec,
+    remote: resolved.embedder.remote !== undefined,
+    model: localModel,
+    messages,
+    panel,
+    dictionaryLanguages: languagesWithDictionary(modelLanguages()),
+  })
+  let registryView = snapshotView(dictionary, panelDictionary)
+  /**
+   * Перечитать словари и применить их заново.
+   *
+   * Вызывается после правки из панели (см. routes.ts, POST dictionary): файл — это
+   * то, что видит и серверная половина, и панель. Серверные сообщения берут словарь
+   * из модульной переменной (см. ./i18n/messages), панель — из снимка обслуживания,
+   * поэтому обновить нужно оба места, и без перезапуска плагина.
+   * @returns свежий снимок обслуживания.
+   */
+  const reloadDictionaries = (): RegistryView => {
+    const messages = loadMessageDictionary({ language: resolved.language, dbDir: resolved.dbDir })
+    const panel = loadPanelDictionary({ language: resolved.language, dbDir: resolved.dbDir })
+    setMessageDictionary(resolved.language, messages.entries)
+    registryView = snapshotView(messages, panel)
+    return registryView
+  }
+  // Объявление схемы данных: какие таблицы несут векторы и по какому условию. Читается
+  // один раз — это реестр, а не состояние базы. Без него состояние баз не проверяется:
+  // судить о векторах по догадке мы не будем, и об этом скажет карточка.
+  const vectorSchema = loadVectorSchema({ dbDir: resolved.dbDir })
+  if (vectorSchema.problems.length > 0) {
+    console.warn(message('misc.warnRegistryProblems', {
+      count: vectorSchema.problems.length,
+      sample: describeRegistryProblems(vectorSchema.problems),
+    }))
+  }
+  /** Каталог моделей в том виде, в каком его понимает правило состояния базы. */
+  const catalogModels: readonly CatalogModel[] = [...registry.models.values()]
+    .map(row => ({ id: row.id, label: row.label, dimensions: row.dimensions }))
+  /**
+   * Язык, под который считаются метки и пересчёт баз.
+   *
+   * Меняется вместе со сменой языка дворца, не дожидаясь перезапуска: собранное условие
+   * существует ровно для того, чтобы язык и базы менялись одним действием. Если бы здесь
+   * остался язык, прочитанный при сборке плагина, «Выполнить» записало бы новый язык, а
+   * базы подписало и пересчитало под старый — и человек получил бы ровно то расхождение,
+   * от которого условие защищает.
+   */
+  let basesLanguage: EngramLanguage = resolved.language
+  /** Ожидание базы под текущий язык: пересчитывается, а не берётся из сборки плагина. */
+  const baseTargetNow = (): {
+    readonly label: string | undefined
+    readonly model: { readonly id: string, readonly label: string | undefined, readonly dimensions: number | undefined } | undefined
+  } => {
+    const model = resolveLocalModel(registry, basesLanguage, resolved.embedder.localModel, resolved.embedder.localPooling)
+    const record = model === undefined ? undefined : registry.models.get(model.id)
+    return {
+      label: model?.label,
+      model: model === undefined ? undefined : { id: model.id, label: record?.label, dimensions: record?.dimensions },
+    }
+  }
   // Слова пользователя для вычистки секретов. Действуют поверх языковых наборов и
   // независимо от языка: пользователь добавляет их как раз потому, что пакета не хватило
   // (см. src/i18n/patterns.ts, настройка redactWords).
@@ -544,6 +863,41 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   // 分库懒打开：按分库文件名缓存连接（user / shared / project-<hash>；项目库按标识命名，同仓库跨会话共享）。
   const stores = new Map<string, Promise<EngramStore>>()
 
+  /**
+   * Подписать базу меткой модели при открытии.
+   *
+   * Метку ставила только починка — и всякая новая база жила без неё до нажатия кнопки,
+   * а карточка честно звала это «база требует ремонта» (решение 22.10: подписывать при
+   * создании). Правило то же, что у кнопки — `labelToStamp`, чтобы второй правды о
+   * метке не завелось. Пустой базе метка тоже пишется: писать в неё будет эта модель.
+   *
+   * Ошибка чтения или записи метки не мешает открытию: база просто останется без метки,
+   * как было до этой строки, и о том говорится в журнал.
+   * @param dbName - имя файла базы в каталоге данных.
+   * @param store - уже открытое хранилище этой базы (метку пишем через него).
+   */
+  const stampLabelOnOpen = async (dbName: string, store: EngramStore): Promise<void> => {
+    const target = baseTargetNow()
+    if (target.label === undefined) return
+    try {
+      const census = await readBaseCensus({
+        path: join(resolved.dbDir, dbName),
+        specs: vectorSchema.specs,
+        schemaVersion: vectorSchema.schemaVersion,
+      })
+      if (!census.checkable) return
+      // Читать не удалось (битый файл, таблицы нет, база заперта писателем) — фактов
+      // нет, и подписывать «на всякий случай» нельзя: пустая на вид база может
+      // оказаться чужой, просто нечитаемой в этот момент.
+      if (census.problems.length > 0) return
+      const label = labelToStamp({ facts: census.facts, target, language: basesLanguage, catalog: catalogModels })
+      if (label === undefined) return
+      await store.writeMeta(MODEL_LABEL_KEY, label)
+    } catch (error) {
+      console.warn(message('core.warnLabelStampFailed', { file: dbName }), error)
+    }
+  }
+
   /** 打开（或复用）一个分库文件；首次打开时幂等补齐存量排桩。 */
   const openDb = (dbName: string): Promise<EngramStore> => {
     const existing = stores.get(dbName)
@@ -559,6 +913,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
           console.warn(message('core.warnRoomFull', { room }))
         })
         if (assigned > 0) console.warn(message('core.warnSlotsBackfilled', { count: assigned, path }))
+        await stampLabelOnOpen(dbName, store)
         return store
       })
     // 审计 F17：打开失败（SCHEMA_INCOMPATIBLE / 迁移中断 / 文件损坏）不缓存 rejection——
@@ -624,12 +979,19 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
 
   // 嵌入器可选：下载/加载失败不阻塞插件加载，检索降级纯关键词并在结果中标记。
   // 后端由配置选择：本地离线模型或 OpenAI 兼容端点。
-  const embedder: Promise<EngramEmbedder | undefined> = createEmbedder(resolved)
+  const embedder: Promise<EngramEmbedder | undefined> = createEmbedder(resolved, registry)
     .catch((error: unknown) => {
       console.warn(message('core.warnEmbedderUnavailable'), error)
       return undefined
     })
   void embedder
+  // Эмбеддер держит ONNX-инстанс и память под модель: при выгрузке плагина его надо
+  // отпустить, иначе перемонтирование оставляет в процессе ещё один живой инстанс,
+  // а память под модель не возвращается. Закрываем независимо от того, успел ли он
+  // загрузиться: обещание разрешается в undefined, если модель не поднялась.
+  ctx.effect(() => () => {
+    void embedder.then(active => active?.close()).catch(() => { /* закрытие не чинится */ })
+  }, 'dsh-engram: close embedder')
 
   // 辅助请求写 engram 自己的操作日志（下游插件禁止向会话日志写未知事件类型）。
   const logIngestRequest = (data: IngestRequestEventData): void => {
@@ -750,6 +1112,385 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       return { store: await openDb(palace.dbName), project: await palaceView(palace) }
     },
   }
+
+  /** Имя файла базы → чья она. Имена задаёт сам плагин, поэтому разбор по имени точен. */
+  const scopeOfBaseFile = (file: string): BaseView['scope'] =>
+    file === 'user.db' ? 'user' : file === 'shared.db' ? 'shared' : 'project'
+
+  /**
+   * Состояние каждой базы дворца для карточки обслуживания.
+   *
+   * Считается на каждый запрос: метку меняет кнопка в этой же карточке, и старая
+   * картинка после неё была бы враньём. Базы читаются отдельным read-only
+   * соединением (см. `registry/base-census.ts`) — карточка не открывает чужие базы
+   * через хранилище и ничего в них не меняет.
+   */
+  const baseStates = async (): Promise<{ bases: readonly BaseView[], pendingBases: number }> => {
+    const palaces = await projectPalaces()
+    const titles = new Map(palaces.map(palace => [palace.dbName, palace.title]))
+    const files = readdirSync(resolved.dbDir).filter(name => name.endsWith('.db')).sort()
+    const bases: BaseView[] = []
+    for (const file of files) {
+      const census = await readBaseCensus({
+        path: join(resolved.dbDir, file),
+        specs: vectorSchema.specs,
+        schemaVersion: vectorSchema.schemaVersion,
+      })
+      const scope = scopeOfBaseFile(file)
+      // Объявление схемы описывает другую версию — состояние не проверяем и не
+      // выдумываем: карточка покажет «не проверено» и причину.
+      const verdict = census.checkable
+        ? judgeBase({ facts: census.facts, target: baseTargetNow(), language: basesLanguage, catalog: catalogModels })
+        : undefined
+      bases.push({
+        file,
+        scope,
+        title: scope === 'project' ? titles.get(file) ?? null : null,
+        label: census.facts.label ?? null,
+        targetLabel: baseTargetNow().label ?? null,
+        state: verdict?.state ?? null,
+        action: verdict?.action ?? null,
+        rows: verdict?.rows ?? census.facts.rows,
+        missing: verdict?.missing ?? census.facts.missing,
+        foreign: verdict?.foreign ?? 0,
+        dims: verdict?.dims ?? [],
+        checked: census.checkable,
+        problems: census.problems.map(problem => ({ kind: problem.kind, detail: problem.detail })),
+      })
+    }
+    const present = new Set(files)
+    return { bases, pendingBases: palaces.filter(palace => !present.has(palace.dbName)).length }
+  }
+
+  /**
+   * Что замечено о языке дворца в этой сессии: язык диалога и принято ли уже решение.
+   *
+   * Живёт в процессе, а не в базе: язык диалога — наблюдение над текущей сессией,
+   * и после перезапуска его заново даст первая же реплика человека.
+   */
+  const dialogueWatch = { language: undefined as EngramLanguage | undefined, decided: false }
+
+  /**
+   * Дворец выставляет язык сам, когда опора — диалог (решение 21.10, случаи 1–2):
+   * диалоги есть, базы или нет, или они на том же языке — тогда просто настраиваемся
+   * на язык диалогов и не о чем рассуждать. Спрашиваем человека только когда опоры нет
+   * (`ask`) или базы стоят на другом языке (`mismatch`) — это дело окна в панели.
+   *
+   * Записываем один раз за процесс: если язык уже пришёл из настройки, наблюдение
+   * только запоминается для панели, а конфигурация не трогается.
+   * @param language - язык, на котором говорит человек.
+   */
+  const observeDialogueLanguage = (language: EngramLanguage): void => {
+    dialogueWatch.language = language
+    if (dialogueWatch.decided) return
+    dialogueWatch.decided = true
+    if (languageSetting !== undefined && languageSetting !== 'auto') return
+    void (async () => {
+      const { bases } = await baseStates()
+      const standing = languageOfLabels(bases.map(base => base.label))
+      // Базы на другом языке — не наше решение: это расхождение, его показывает окно.
+      if (standing !== null && standing !== language) return
+      const reason = await writePalaceLanguageWithRetry({
+        settings: () => settingsOf(ctx),
+        language,
+        attempts: PALACE_WRITE_ATTEMPTS,
+        delayMs: PALACE_WRITE_DELAY_MS,
+      })
+      if (reason !== undefined) console.warn(`dsh-engram: ${reason}`)
+    })().catch((error: unknown) => {
+      console.warn('dsh-engram: palace language persistence failed', error)
+    })
+  }
+
+  /**
+   * Язык дворца глазами панели: на чём основано решение и какой случай из трёх (21.10).
+   *
+   * Считается на каждый запрос, а не при сборке плагина: язык диалога появляется
+   * посреди работы, а метку базы меняет кнопка в соседней карточке.
+   * @param bases - состояния баз на момент запроса.
+   * @returns Снимок для панели либо null, когда решать нечего.
+   */
+  const palaceLanguageState = (bases: readonly BaseView[]): RegistryView['palace'] => {
+    // Язык пришёл из настройки — решать нечего, окно не нужно.
+    if (languageSetting !== undefined && languageSetting !== 'auto') return null
+    const dialogue = dialogueWatch.language ?? null
+    const standing = languageOfLabels(bases.map(base => base.label))
+    const state = palaceCase(dialogue, standing)
+    return {
+      setting: resolved.languageSetting ?? null,
+      source: determination?.decision.source ?? 'fallback',
+      conflict: determination?.decision.conflict ?? false,
+      machine: determination?.machine ?? '',
+      dialogue,
+      bases: standing,
+      state,
+    }
+  }
+
+  /**
+   * Поставить метку модели всем базам, которым она нужна.
+   *
+   * Пишем ровно одну строку в `meta` и только туда (решение 20.10): ни размерности,
+   * ни времени. Идём через хранилище плагина, а не вторым соединением: у базы должен
+   * быть один писатель в процессе — иначе два соединения начнут спорить за блокировку,
+   * а кеш соединений останется со старым представлением о файле.
+   */
+  const writeBaseLabels = async (): Promise<BaseLabelResult> => {
+    const written: { file: string, label: string }[] = []
+    const failed: { file: string, error: string }[] = []
+    if (baseTargetNow().label === undefined) return { written, failed }
+    const { bases } = await baseStates()
+    for (const base of bases) {
+      if (base.action !== 'write-label' || base.targetLabel === null) continue
+      try {
+        const store = await openDb(base.file)
+        await store.writeMeta(MODEL_LABEL_KEY, base.targetLabel)
+        written.push({ file: base.file, label: base.targetLabel })
+      } catch (error) {
+        failed.push({ file: base.file, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    return { written, failed }
+  }
+
+  /**
+   * Пересчитать векторы базам, которые стоят не на целевой модели или растеряли их.
+   *
+   * Одно действие на два состояния (`convert` и `repair`): критерий у них общий —
+   * строка области объявления схемы, у которой вектор пуст или его длина не равна
+   * ожидаемой. Метка ставится только там, где после пересчёта она перестала быть
+   * верной; у ремонта она уже верна, и трогать её незачем.
+   *
+   * Эмбеддер тот же, чем плагин пишет векторы при обычной записи: иначе «пересчитали»
+   * означало бы «посчитали другой моделью» — и база тихо перестала бы быть ровной.
+   * Длина вектора берётся из каталога: у модели без объявленной размерности пересчёт
+   * не начинается, потому что проверять его было бы не на чем.
+   */
+  const convertBases = async (): Promise<BaseConvertResult> => {
+    const result: { converted: number, empty: number, written: { file: string, label: string }[], failed: { file: string, table: string | null, error: string }[] } = {
+      converted: 0,
+      empty: 0,
+      written: [],
+      failed: [],
+    }
+    const dimensions = baseTargetNow().model?.dimensions
+    if (dimensions === undefined) return result
+    const active = await embedder
+    if (active === undefined) {
+      result.failed.push({ file: '*', table: null, error: message('store.embedderModelUnresolved') })
+      return result
+    }
+    const { bases } = await baseStates()
+    for (const base of bases) {
+      if (base.action !== 'convert' && base.action !== 'repair') continue
+      try {
+        const plan = await planBaseVectors({
+          path: join(resolved.dbDir, base.file),
+          specs: vectorSchema.specs,
+          targetBytes: dimensions * 4,
+        })
+        for (const problem of plan.problems) {
+          result.failed.push({ file: base.file, table: null, error: `${problem.kind} — ${problem.detail}` })
+        }
+        // Через хранилище, а не вторым соединением: у базы один писатель в процессе.
+        const store = await openDb(base.file)
+        const outcome = await runVectorConvert({
+          plan,
+          embedder: active,
+          write: targets => store.rewriteVectors(targets),
+        })
+        result.converted += outcome.converted
+        result.empty += outcome.empty
+        for (const failure of outcome.failed) {
+          result.failed.push({ file: base.file, table: failure.table, error: failure.error })
+        }
+        // Метка после пересчёта: база теперь стоит на целевой модели, и запись об этом
+        // должна это называть. Если пересчёт ничего не сделал, метку не меняем — она
+        // всё ещё описывает то, что в базе лежит.
+        if (base.targetLabel !== null && base.targetLabel !== base.label && (outcome.converted > 0 || plan.rows.length === 0)) {
+          await store.writeMeta(MODEL_LABEL_KEY, base.targetLabel)
+          result.written.push({ file: base.file, label: base.targetLabel })
+        }
+      } catch (error) {
+        result.failed.push({ file: base.file, table: null, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    return result
+  }
+
+  /**
+   * Правка словарей из панели: чтение набора и запись пользовательского слоя.
+   *
+   * Пишем в каталог данных (`<dbDir>/i18n/<имя>`), а не в пакет: файл поставки
+   * принадлежит выпуску плагина, и правка в нём потерялась бы при первом же
+   * обновлении. После записи словари перечитываются и применяются заново —
+   * серверные сообщения сразу, панель по свежему снимку обслуживания.
+   */
+  const dictionaryDeps: RouteDeps['dictionary'] = {
+    read: (set, language) => readDictionarySet({ set, language: language ?? resolved.language, dbDir: resolved.dbDir }),
+    write: (set, patch, language): DictionarySaveResult => {
+      const sources = { set, language: language ?? resolved.language, dbDir: resolved.dbDir }
+      // Панель присылает только изменённые клетки: накладываем их на текущий слой, чтобы
+      // не тронутые человеком строки не стёрлись и запрос остался соразмерен правке.
+      // Текущий слой берём вместе со строками заготовки: иначе первое же сохранение
+      // выбросило бы из файла все ключи, которые ещё не перевели.
+      const current = layerOverrides(readDictionaryLayer(dictionaryPaths(sources).user, { keepEmptyRight: true }))
+      const written = writeDictionarySet({ ...sources, entries: applyDictionaryPatch(current, patch) })
+      // Перечитываем словари до снимка набора: панель должна увидеть то, что записали.
+      reloadDictionaries()
+      return { set, ...written, view: readDictionarySet(sources) }
+    },
+    /**
+     * Заготовка словаря нового языка: оба набора, заголовок и все ключи без переводов.
+     *
+     * Файл с одним заголовком был бы пустым местом: человек открыл бы таблицу и увидел
+     * ключи программы, которых в файле нет, — то есть не заготовку, а её отсутствие.
+     * Поэтому в файл ложатся ровно термины набора с пустой правой частью, в порядке
+     * таблицы: файл можно править и вне панели, и он же — мера полноты словаря.
+     */
+    create: language => DICTIONARY_SETS.map(set => {
+      const blank = new Map<string, string>()
+      for (const left of dictionaryTerms(set)) blank.set(left, '')
+      const written = writeDictionarySet({ set, language, dbDir: resolved.dbDir, entries: blank })
+      return { set, file: written.file, lines: written.written, bytes: written.bytes }
+    }),
+  }
+
+  /**
+   * Заполнение словаря моделью: одна партия английских строк → переводы.
+   *
+   * Маршрут берётся так же, как у прочих вспомогательных вызовов: переопределение из
+   * настроек главнее модели текущей сессии (панель — не сессия, своего маршрута у неё
+   * нет). Запрос модели пишется в op_log тем же способом, что у соседей: обещание
+   * «что видел пользователь — то и записано» не должно зависеть от того, откуда вызов.
+   *
+   * Вместе с партией уходит словарь уже принятых переводов (`glossaryPairs`): без него
+   * модель в каждой следующей партии выбирала для того же понятия другое слово, и
+   * словарь переставал быть словарём. Словарь пополняется принятыми парами по ходу
+   * прохода, поэтому первый проход по новому языку держит терминологию так же, как
+   * повторное заполнение по готовому набору.
+   */
+  const dictionaryFillDeps: RouteDeps['dictionaryFill'] = async (set, rawTerms) => {
+    const terms = fillBatch(rawTerms)
+    const route = resolved.routeOverride ?? preStepState.route
+    if (terms.length === 0) {
+      return { set, provider: route?.provider ?? '', model: route?.model ?? '', translations: [] }
+    }
+    if (route === undefined) throw new EngramError('DICTIONARY_FILL_NO_ROUTE', message('llm.dictionaryFillNoRoute'))
+    const sources = { set, language: resolved.language, dbDir: resolved.dbDir }
+    const known = readDictionarySet(sources).rows
+    let glossary: readonly FillPair[] = glossaryPairs(known)
+    // Партия режется по числу и по длине строк (`splitFillBatch`): вывод модели растёт вместе
+    // со входом, а предел вывода один на ответ — сорок длинных подсказок упирались в него и
+    // теряли ответ целиком. Режем здесь, а не только в панели: тогда любой вызывающий получает
+    // переводы на всё, что спросил.
+    const translations: (readonly [string, string])[] = []
+    let emptyAnswer: string | undefined
+    /**
+     * Перевести одну партию; упёрлись в предел вывода — делим партию и пробуем снова.
+     *
+     * Обрыв на пределе вывода — не ошибка словаря, а слишком длинное рассуждение модели:
+     * живой прогон 21.10 дал партию из 21 строки, где рассуждение съело весь потолок и
+     * ни одна пара не дописалась. Раньше такая партия останавливала всё заполнение
+     * («модель достигла предела»), и человек видел недоделанный словарь. Половина партии
+     * просит вдвое меньше вывода, поэтому повтор почти всегда проходит; глубина — два
+     * деления, дальше это уже отдельная строка, и упорство там бесполезно.
+     */
+    const fillOne = async (batch: readonly string[], depth: number): Promise<void> => {
+      const prompt = fillPrompt(batch, resolved.language, glossary)
+      void openStore('user')
+        .then(store => store.audit('dictionary-fill-request', 'AUX', JSON.stringify({
+          route, set, language: resolved.language, terms: batch, maxTokens: FILL_MAX_TOKENS,
+        })))
+        .catch(() => { /* аудит не должен ломать заполнение */ })
+      let text: string
+      try {
+        text = await streamText(ctx, {
+          route,
+          system: prompt.system,
+          userText: prompt.userText,
+          // Своей сессии у панели нет: пустой id — как у исторического бэкфилла (см. buildHistoryDeps).
+          sessionId: '',
+          maxTokens: FILL_MAX_TOKENS,
+          purpose: 'engram-dictionary-fill',
+          signal: AbortSignal.timeout(FILL_TIMEOUT_MS),
+        })
+      } catch (error) {
+        // Ответ оборвался на пределе вывода: целые пары из начала ответа спасаем (ошибка
+        // предела приносит недосказанный текст, см. llm/client.ts).
+        const partial = (error as { partialText?: string }).partialText
+        const salvaged = partial === undefined ? [] : parseFillAnswer(partial, batch)
+        if (salvaged.length > 0) {
+          translations.push(...salvaged)
+          return
+        }
+        if (depth < FILL_SPLIT_DEPTH && batch.length > 1) {
+          const half = Math.ceil(batch.length / 2)
+          await fillOne(batch.slice(0, half), depth + 1)
+          await fillOne(batch.slice(half), depth + 1)
+          return
+        }
+        throw error
+      }
+      // Ответ модели пишется в журнал: без него «переводов нет» не разобрать, а обещание
+      // «что видел пользователь — то и записано» иначе не выполняется. Срез — чтобы журнал
+      // не пух от многострочных подсказок.
+      void openStore('user')
+        .then(store => store.audit('dictionary-fill-answer', 'AUX', answerSnippet(text, 2000)))
+        .catch(() => { /* аудит не должен ломать заполнение */ })
+      const parsed = parseFillAnswer(text, batch)
+      // Партия без переводов — та же история, что обрыв: модель не справилась с объёмом.
+      if (parsed.length === 0) {
+        if (depth < FILL_SPLIT_DEPTH && batch.length > 1) {
+          const half = Math.ceil(batch.length / 2)
+          await fillOne(batch.slice(0, half), depth + 1)
+          await fillOne(batch.slice(half), depth + 1)
+          return
+        }
+        emptyAnswer ??= text
+        return
+      }
+      translations.push(...parsed)
+      // Принятые пары становятся словарём для следующих партий: понятие, названное в
+      // одной партии, называется тем же словом и в следующей.
+      glossary = glossaryPairs([
+        ...known,
+        ...translations.map(([left, right]) => ({ left, right })),
+      ])
+    }
+    // Партия режется по числу и по длине строк (`splitFillBatch`): вывод модели растёт вместе
+    // со входом, а предел вывода один на ответ — сорок длинных подсказок упирались в него и
+    // теряли ответ целиком. Режем здесь, а не только в панели: тогда любой вызывающий получает
+    // переводы на всё, что спросил.
+    for (const batch of splitFillBatch(terms)) await fillOne(batch, 0)
+    if (translations.length === 0) {
+      // В сообщении — срез ответа: без него «модель не дала переводов» не разобрать.
+      throw new EngramError('DICTIONARY_FILL_EMPTY', message('llm.dictionaryFillEmptyAnswer', {
+        snippet: answerSnippet(emptyAnswer ?? ''),
+      }))
+    }
+    return { set, provider: route.provider, model: route.model, translations }
+  }
+
+  /**
+   * Языки интерфейса, которые приходят словарём из файла.
+   *
+   * Хост знает только те языки, которые ему объявили плагины, поэтому язык, добавленный
+   * файлом реестра и словарём, без этой строки оставался бы в списке выбора дворца и
+   * отсутствовал в списке языков интерфейса. Сюда попадают только языки без вшитого
+   * набора панели: у `zh`, `en` и `ru` словарь приходит кодом клиента, и второй слой
+   * из файла спорил бы с ним, а не дополнял.
+   */
+  const localePacksDeps: RouteDeps['localePacks'] = () => registry.languages
+    .filter(row => !PANEL_BUILTIN_LANGUAGES.includes(row.code))
+    .map(row => ({
+      code: row.code,
+      label: row.label,
+      entries: Object.fromEntries(loadPanelDictionary({ language: row.code, dbDir: resolved.dbDir }).entries),
+    }))
+    // Язык без единого слова не объявляем: пустой словарь превратил бы переключатель
+    // в пункт, который ничего не меняет, — человек решил бы, что язык не сработал.
+    .filter(pack => Object.keys(pack.entries).length > 0)
 
   /** 组装历史回填依赖；source 每次现取，兼容持久化服务在插件之后挂载的组合。 */
   const buildHistoryDeps = (): HistoryBackfillDeps => ({
@@ -881,6 +1622,24 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       dbDir: resolved.dbDir,
       pluginVersion: VERSION,
       language: resolved.language,
+      registry: () => registryView,
+      dictionaryLanguages: languagesWithDictionary,
+      baseStates,
+      palaceLanguage: palaceLanguageState,
+      writeBaseLabels,
+      convertBases,
+      writePalaceLanguage: async (language: string) => {
+        const reason = await writePalaceLanguage(settingsOf(ctx), language)
+        // Язык записан — с этого момента базы подписываются и пересчитываются под него,
+        // не дожидаясь перезапуска: иначе «Выполнить» оставило бы базы на прежнем языке.
+        if (reason === undefined) basesLanguage = language
+        return reason === undefined ? { ok: true, language } : { ok: false, language, error: reason }
+      },
+      palaceChangeWindowSec: resolved.palaceChangeWindowSec,
+      dictionary: dictionaryDeps,
+      dictionaryFill: dictionaryFillDeps,
+      localePacks: localePacksDeps,
+      convertAvailable: true,
       embedder,
       // Настройки Jev для панели: база из cordis.yml, каталог файла перекрытия и мост
       // к хосту — список провайдеров DSH и сборка соединения с их адресом и ключом.
@@ -906,7 +1665,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   })
 
   if (resolved.injectProfile || resolved.ingest !== 'off') {
-    ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, openStoreForProjectCwd, resolved, embedder, preStepState, logIngestRequest, payload, next), { prepend: true })
+    ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, openStoreForProjectCwd, resolved, embedder, preStepState, logIngestRequest, observeDialogueLanguage, payload, next), { prepend: true })
   }
 
   // 会话结束即释放该会话的证据批次（进程内注册表，避免长驻进程累积）。

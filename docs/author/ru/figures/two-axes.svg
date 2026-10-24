@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 480" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="480" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">Две оси языка: интерфейс и дворец</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">Это разные вещи, и путать их нельзя: одна меняет только текст, другая — поведение памяти</text>
+<rect x="40" y="92" width="920" height="150" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">ОСЬ ИНТЕРФЕЙСА · свободный переключатель</text>
+<rect x="60" y="124" width="260" height="100" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="190" y="162.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Язык панели</text>
+<text x="190" y="179.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">auto или вручную; следует за языком</text>
+<text x="190" y="194.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">DSH</text>
+<rect x="360" y="124" width="260" height="100" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="490" y="162.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Словари надписей</text>
+<text x="490" y="179.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">zh / en / ru в коде, остальные —</text>
+<text x="490" y="194.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">файлом</text>
+<rect x="660" y="124" width="280" height="100" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="800" y="170" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">Меняется только текст</text>
+<text x="800" y="187" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">ни модель, ни метки, ни записи</text>
+<path d="M 320 174 L 358 174" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 620 174 L 658 174" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="40" y="258" width="920" height="160" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="286" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">ОСЬ ДВОРЦА · выключатель, которым управляет дворец</text>
+<rect x="60" y="292" width="260" height="108" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="190" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">config.language</text>
+<text x="190" y="351.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">полуавтоматически: по диалогам или</text>
+<text x="190" y="366.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">ответом в окне</text>
+<rect x="360" y="292" width="260" height="108" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="490" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Что он держит</text>
+<text x="490" y="351.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">модель, инструкции, язык новых</text>
+<text x="490" y="366.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">записей, метку баз</text>
+<rect x="660" y="292" width="280" height="108" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="800" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">Меняет поведение дворца</text>
+<text x="800" y="351.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">поэтому смена языка идёт вместе с</text>
+<text x="800" y="366.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">пересчётом баз</text>
+<path d="M 320 346 L 358 346" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 620 346 L 658 346" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 120 224 L 120 290" fill="none" stroke="#f59e0b" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#arwA)"/>
+<text x="128" y="262" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#b45309" text-anchor="start" font-weight="600">не влияет</text>
+<text x="40" y="452" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#475569" text-anchor="start">Поэтому выбор языка интерфейса «посмотреть» не переводит дворец, а смена языка дворца не трогает уже записанное — меняется то, чем дворец будет писать дальше.</text>
+</svg>

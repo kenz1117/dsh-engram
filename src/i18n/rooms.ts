@@ -50,7 +50,9 @@ function splitRoom(roomId: string): { base: string; suffix: string } {
  */
 export function roomLabel(roomId: string, language: EngramLanguage): string {
   const { base, suffix } = splitRoom(roomId)
-  const label = BASE_LABELS[language][base]
+  // Языка может не быть в наборе названий (новый язык, для которого ещё нет
+  // словаря): тогда комната называется идентификатором, а не пустой строкой.
+  const label = BASE_LABELS[language]?.[base]
   return label === undefined ? roomId : `${label}${suffix}`
 }
 
@@ -76,5 +78,5 @@ export function resolveRoomInput(input: string): string | undefined {
 
 /** Известные идентификаторы комнат (для подсказок в описаниях инструментов). */
 export function knownRoomIds(language: EngramLanguage): readonly string[] {
-  return Object.keys(BASE_LABELS[language])
+  return Object.keys(BASE_LABELS[language] ?? {})
 }

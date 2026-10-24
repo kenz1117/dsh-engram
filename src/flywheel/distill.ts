@@ -42,6 +42,10 @@ export interface DistillOutcome {
   readonly distilled: number
   /** 被归档的旧条目数。 */
   readonly superseded: number
+  /** 带向量写进去的产物数。 */
+  readonly vectorsAttached: number
+  /** 未带向量写进去的产物数（嵌入器当时不可用）：这些条目将来会让库要求修复。 */
+  readonly vectorsWithout: number
 }
 
 /** 蒸馏依赖。 */
@@ -62,7 +66,7 @@ export interface DistillDeps {
  */
 export async function distillMemories(deps: DistillDeps): Promise<DistillOutcome> {
   const rows = await deps.store.topActive(deps.scope, DISTILL_MAX_INPUT)
-  if (rows.length < 2) return { input: rows.length, distilled: 0, superseded: 0 }
+  if (rows.length < 2) return { input: rows.length, distilled: 0, superseded: 0, vectorsAttached: 0, vectorsWithout: 0 }
 
   const lines = rows.map(record => `[${record.id}] (${record.kind}, importance ${record.importance.toFixed(2)}) ${record.content}`)
   const userText = `${message('llm.distillUserPrompt')}\n${lines.join('\n')}`
@@ -76,12 +80,17 @@ export async function distillMemories(deps: DistillDeps): Promise<DistillOutcome
     signal: deps.signal,
   })
   const parsed = parseJsonArray(raw)
-  if (parsed === undefined || parsed.length === 0) return { input: rows.length, distilled: 0, superseded: 0 }
+  if (parsed === undefined || parsed.length === 0) return { input: rows.length, distilled: 0, superseded: 0, vectorsAttached: 0, vectorsWithout: 0 }
 
   const validIds = new Set(rows.map(record => String(record.id)))
   const byId = new Map(rows.map(record => [String(record.id), record]))
   let distilled = 0
   let superseded = 0
+  // Вектор считается и тогда, когда продукт пишется без него: «дистилляция прошла, а
+  // база потом попросит починки» — это факт, который человек должен видеть сразу, а не
+  // находить через сутки в карточке обслуживания (случилось 22.10).
+  let vectorsAttached = 0
+  let vectorsWithout = 0
   for (const item of parsed) {
     const candidate = item as { content?: unknown; kind?: unknown; importance?: unknown; supersedes?: unknown }
     if (typeof candidate.content !== 'string' || candidate.content.trim() === '') continue
@@ -131,6 +140,8 @@ export async function distillMemories(deps: DistillDeps): Promise<DistillOutcome
     )
     distilled += 1
     superseded += oldIds.length
+    if (embedding === undefined) vectorsWithout += 1
+    else vectorsAttached += 1
   }
-  return { input: rows.length, distilled, superseded }
+  return { input: rows.length, distilled, superseded, vectorsAttached, vectorsWithout }
 }

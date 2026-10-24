@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 800" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1040" height="800" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">Base schema: what the handler reads and how that becomes an action</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">The table list is data, not code. The handler takes the declaration, inspects the base and decides what to do with it</text>
+<rect x="360" y="104" width="340" height="66" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+<text x="530" y="133" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#4c1d95" text-anchor="middle">registry/schema.json</text>
+<text x="530" y="150" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">shipped default; &lt;dbDir&gt;/registry/schema.json layer wins</text>
+<rect x="360" y="196" width="340" height="72" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="530" y="220.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">Declaration parsing</text>
+<text x="530" y="237.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">role, properties.vector.text,</text>
+<text x="530" y="252.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">properties.vector.where</text>
+<rect x="360" y="294" width="340" height="62" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="530" y="321" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">VectorTableSpec[]</text>
+<text x="530" y="338" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">nodes and observations — “here lie the vectors”</text>
+<rect x="360" y="382" width="340" height="76" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="530" y="416" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Base inspection: read only</text>
+<text x="530" y="433" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">PRAGMA table_info, row count, vector lengths</text>
+<rect x="360" y="484" width="340" height="84" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="530" y="522" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">judgeBase → 7 states → 4 actions</text>
+<text x="530" y="539" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">the rule reads facts and expectation, base unchanged</text>
+<rect x="360" y="594" width="340" height="62" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="530" y="621" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">Button performs the action</text>
+<text x="530" y="638" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">write-label / convert / repair / nothing</text>
+<path d="M 530 170 L 530 194" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 268 L 530 292" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 356 L 530 380" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 458 L 530 482" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 568 L 530 592" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="40" y="92" width="290" height="400" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">WHAT THE DECLARATION SAYS</text>
+<rect x="60" y="124" width="250" height="70" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="147.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">role: user | service</text>
+<text x="185" y="164.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">service (FTS shadows) is skipped, not</text>
+<text x="185" y="179.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">analyzed</text>
+<rect x="60" y="208" width="250" height="70" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="239" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">text — the text field</text>
+<text x="185" y="256" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">the model string is read from it</text>
+<rect x="60" y="292" width="250" height="74" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="317.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">where — row condition</text>
+<text x="185" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">nodes: status = «active»;</text>
+<text x="185" y="349.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">observations: all</text>
+<rect x="60" y="380" width="250" height="74" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="405.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">vector field not declared</text>
+<text x="185" y="422.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">inferred: the only BLOB field in</text>
+<text x="185" y="437.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">the row</text>
+<path d="M 310 250 L 358 250" fill="none" stroke="#8b5cf6" stroke-width="1.6" marker-end="url(#arwA)"/>
+<text x="312" y="242" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#6d28d9" text-anchor="start">data</text>
+<rect x="40" y="522" width="290" height="84" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="552.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Palace files: &lt;dbDir&gt;/*.db</text>
+<text x="185" y="569.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">user.db, shared.db, project-&lt;hash&gt;.db — one</text>
+<text x="185" y="584.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">file per scope</text>
+<path d="M 330 546 L 358 460" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="268" y="596" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="10.5" fill="#64748b" text-anchor="start">read by the same declaration</text>
+<rect x="740" y="466" width="270" height="210" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="760" y="494" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">IF THE ACTION IS A RECOMPUTE</text>
+<rect x="760" y="490" width="230" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="875" y="513" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Plan: who needs it</text>
+<text x="875" y="530" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">vector empty or wrong length</text>
+<rect x="760" y="552" width="230" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="875" y="567.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Batches of 16 texts</text>
+<text x="875" y="584.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">the model limit does not decide</text>
+<text x="875" y="599.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">the fate of the base</text>
+<rect x="760" y="614" width="230" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="875" y="637" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">Write — via the store</text>
+<text x="875" y="654" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">one connection per base</text>
+<path d="M 700 625 L 738 625" fill="none" stroke="#10b981" stroke-width="1.6" marker-end="url(#arwT)"/>
+<rect x="740" y="92" width="270" height="350" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="760" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">STATES THAT ARE VISIBLE</text>
+<text x="762" y="132" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· absent — no base yet</text>
+<text x="762" y="162" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· empty — no records</text>
+<text x="762" y="192" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· no-label — no label</text>
+<text x="762" y="222" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· other-model — the label is foreign</text>
+<text x="762" y="252" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· mixed-dims — vectors differ in length</text>
+<text x="762" y="282" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· missing-vectors — records with no vector</text>
+<text x="762" y="312" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· normal — all in place</text>
+<text x="762" y="366" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#7c3aed" text-anchor="start">Four actions: none, write-label,</text>
+<text x="762" y="384" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#7c3aed" text-anchor="start">convert, repair. State → action is</text>
+<text x="762" y="402" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#7c3aed" text-anchor="start">one rule, not panel markup.</text>
+<path d="M 738 526 L 702 526" fill="none" stroke="#6366f1" stroke-width="1.6"/>
+<rect x="40" y="700" width="960" height="74" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="520" y="725.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">Extension without our code</text>
+<text x="520" y="742.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">the author added a table with a vector — one line appears in the declaration, and the state check, label and recompute start seeing it; no TypeScript edit and</text>
+<text x="520" y="757.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">rebuild the plugin</text>
+</svg>

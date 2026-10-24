@@ -6,7 +6,7 @@ import {
   ACTIVITY_THRESHOLD, INGEST_DONE_OP, INGEST_PENDING_OP, activityScore, encodeTurnKey, ensureSessionSummary, ingestFinalTurn,
   ingestPreviousTurn, ingestWriteRouting, isChitchat, forbidsCapture, lastTurnNumber, lastTurnSlice, markPendingIngest,
   parseEntityMentions, parseFactMentions, previousTurnSlice, replayPendingIngests, throttleDecision,
-  turnSlice, turnSignals,
+  turnSlice, turnSignals, userTexts,
 } from '../src/ingest/hook.ts'
 import type { IngestRequestEventData } from '../src/ingest/hook.ts'
 import { openEngramStore } from '../src/store/sqlite.ts'
@@ -887,5 +887,32 @@ describe('摄取管线事实抽取（schema v11）', () => {
     const [entity] = (await store.listEntities({ q: 'ken', limit: 10, offset: 0 })).items
     const { total } = await store.factsOfEntity({ entityId: entity!.entity.id, limit: 10, offset: 0 })
     expect(total).toBe(0)
+  })
+})
+
+describe('userTexts: чей голос считается репликой человека', () => {
+  const message = (kind: string, text: string, seq: number) => ({
+    seq,
+    type: 'user/message',
+    time: 0,
+    data: { source: { kind }, content: [{ type: 'text', text }] },
+  })
+
+  it('берёт только набранное человеком, служебные снимки отбрасывает', () => {
+    // Живая проверка 21.10: английские служебные события (снимок рантайма, каталог
+    // навыков, инструкции агента) перевешивали русскую речь — дворец получал «en».
+    const events = [
+      message('user', 'перезапустил', 1),
+      message('runtime-context', 'Current runtime context. This snapshot supersedes', 2),
+      message('skill-catalog', '<system-reminder> A skill is a reusable set', 3),
+      message('agent-instructions', '<system-reminder> The following workspace instructions', 4),
+      message('user', 'ладно делаем дальше работу', 5),
+    ]
+    expect(userTexts(events as never)).toEqual(['перезапустил', 'ладно делаем дальше работу'])
+  })
+
+  it('незнакомый вид события тоже не считается голосом человека', () => {
+    // Ошибиться в сторону «спросить» безопаснее, чем назначить дворцу чужой язык.
+    expect(userTexts([message('some-new-harness-note', 'Some English note', 1)] as never)).toEqual([])
   })
 })

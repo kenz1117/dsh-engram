@@ -20,7 +20,8 @@ import { embedImportedRecords, parseImportData, parseMarkdownExport } from '../s
 import { parseEntityMentions } from '../ingest/hook.ts'
 import type { EngramKind, EngramScope, EntityId, EntityMention, ExportData, FactRecord, FactWriteInput, ImageryLabel, MemoryId } from '../types.ts'
 import type { MemoryRecord, SearchHit } from '../types.ts'
-import { EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asEntityId, asFactId, asMemoryId, normalizeEntityName } from '../types.ts'
+import { EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, EngramError, asEntityId, asFactId, asMemoryId, normalizeEntityName } from '../types.ts'
+import { packageRoot } from '../registry/root.ts'
 import { renderMemoryPacket, sanitizeProtocolText } from '../security/sanitize.ts'
 import { redactSecrets } from '../security/redact.ts'
 import {
@@ -404,7 +405,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       // judge 在场时矛盾边先经 Jev 确认（失败返回 undefined = 降级为全量建边，与旧行为一致）。
       const confirmed = judge === undefined
         ? candidates
-        : (await confirmContradictions(judge, item.content, candidates)) ?? candidates
+        : (await confirmContradictions(judge, item.content, candidates, store)) ?? candidates
       for (const candidate of confirmed) {
         await store.linkEdge(record.id, candidate.id, 'contradicts')
       }
@@ -1723,7 +1724,21 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         route,
         signal: exec.signal,
       })
-      return { text: message('tool.distillDone', { input: outcome.input, distilled: outcome.distilled, superseded: outcome.superseded }) }
+      // Наблюдение за векторами: продукт дистилляции без вектора — это будущее «база
+      // требует ремонта» (так и вышло 22.10). Пишем это и в ответ модели, и в журнал
+      // операций: молчаливое «дистилляция прошла» скрывает причину от человека.
+      if (outcome.vectorsWithout > 0) {
+        void (async () => {
+          const auditStore = await deps.openStore(scope)
+          await auditStore.audit('vectors-missing', 'AUX', JSON.stringify({ count: outcome.vectorsWithout, scope }))
+        })().catch(() => { /* журнал не влияет на дистилляцию */ })
+      }
+      const done = message('tool.distillDone', { input: outcome.input, distilled: outcome.distilled, superseded: outcome.superseded })
+      return {
+        text: outcome.vectorsWithout === 0
+          ? done
+          : `${done}\n${message('tool.distillNoVectors', { count: outcome.vectorsWithout })}`,
+      }
     },
   })
 
@@ -2050,7 +2065,43 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     },
   })
 
-  const tools = [save, search, factsTool, assess, timeline, episodeTimeline, update, forget, report, reviewQueue, review, stats, exportTool, importTool, distill, reflect, examine, neighborsTool, tour, auditForgotten, ingestHistory, profileEdit]
+  /**
+   * Инструкция для агента: как ввести новый язык дворца (В.08).
+   *
+   * Окно первого запуска обещает человеку, чьего языка нет среди вшитых, что агент
+   * выведет инструкцию. Обещание держится этим инструментом: текст лежит файлом рядом
+   * с пакетом (`docs/agent-language-guide.ru.md`) и пока написан только по-русски —
+   * это черновик, который агент переводит на язык человека сам.
+   *
+   * Файл, а не строка в каталоге сообщений: текст длинный, правится как документ, и
+   * перевод на другие языки появится позже, не ломая проверку полноты словарей.
+   */
+  const languageGuide = defineTool({
+    name: 'engram_language_guide',
+    description: message('tool.languageGuideDescription'),
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      // Типы у параметров заданы явно: объявлений типов у хоста нет, и без этого
+      // проверка типов записывала бы их в «неявный any» — лишний шум в базе ошибок.
+      render: (_args: unknown, value: { readonly text: string }) => [{ type: 'text', text: value.text }],
+    },
+    async execute() {
+      const file = join(packageRoot(), 'docs', 'agent-language-guide.ru.md')
+      try {
+        return { text: await readFile(file, 'utf8') }
+      } catch (error) {
+        // Файл потерялся при упаковке — это наша ошибка, а не «инструкции нет»:
+        // говорим, где её искать, вместо пустого ответа.
+        throw new EngramError('LANGUAGE_GUIDE_MISSING', message('tool.languageGuideMissing', {
+          file,
+          error: error instanceof Error ? error.message : String(error),
+        }))
+      }
+    },
+  })
+
+  const tools = [save, search, factsTool, assess, timeline, episodeTimeline, update, forget, report, reviewQueue, review, stats, exportTool, importTool, distill, reflect, examine, neighborsTool, tour, auditForgotten, ingestHistory, profileEdit, languageGuide]
   // 执行前把该会话的 cwd 放进 ALS 上下文：project scope 的分库解析据此归属（并发会话互不串味）。
   return tools.map(tool => ({
     ...tool,

@@ -16,7 +16,11 @@ const reachable = shouldRun
 describe.runIf(reachable)('createLocalEmbedder (e2e)', () => {
   it('产出 512 维归一化向量，语义相近句子相似度更高', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'engram-model-'))
-    const embedder = await createLocalEmbedder(dir, process.env.HF_ENDPOINT)
+    const embedder = await createLocalEmbedder(dir, process.env.HF_ENDPOINT, {
+      id: 'Xenova/bge-small-zh-v1.5',
+      pooling: 'mean',
+      dtype: 'q8',
+    })
     const [first, second, third] = await embedder.embed([
       '今天天气很好，阳光明媚',
       '天气晴朗，适合出门散步',

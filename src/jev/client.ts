@@ -22,6 +22,41 @@ interface JevAnswerBody {
   noul?: unknown
 }
 
+/** Вид отказа связи: панель показывает его словом, чтобы «ключ не принят» не путать с «молчит». */
+export type JevFailureKind = 'http' | 'network' | 'timeout' | 'shape'
+
+/**
+ * Отказ вызова Jev с разобранной причиной.
+ *
+ * Класс, а не строка: панель показывает не только текст ошибки, но и вид отказа и
+ * HTTP-код — по ним видно, чинить ключ, сеть или протокол. Раньше всё это приходилось
+ * угадывать по тексту сообщения.
+ */
+export class JevCallError extends Error {
+  readonly kind: JevFailureKind
+  /** HTTP-код ответа; у сетевого отказа и тайм-аута кода нет. */
+  readonly status: number | undefined
+
+  constructor(kind: JevFailureKind, message: string, status?: number) {
+    super(message)
+    this.name = 'JevCallError'
+    this.kind = kind
+    this.status = status
+  }
+}
+
+/**
+ * Причина отказа из брошенного значения: тайм-аут отличается от сети по имени ошибки,
+ * всё остальное — сеть (fetch отверг соединение, DNS, TLS).
+ * @param error - то, что попало в catch.
+ * @returns вид отказа для панели.
+ */
+function failureKind(error: unknown): JevFailureKind {
+  if (error instanceof JevCallError) return error.kind
+  const name = error instanceof Error ? error.name : ''
+  return name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'network'
+}
+
 /**
  * Задать Noul-вопросы эндпоинту System One и получить вероятности.
  * @param connection - собранное соединение (адрес, ключ, модель, тайм-аут).
@@ -38,34 +73,39 @@ export async function askNoul(
   signal: AbortSignal = new AbortController().signal,
 ): Promise<JudgeAnswers> {
   if (questions.length === 0) return {}
-  const response = await fetch(connection.endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${connection.apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: connection.model,
-      state,
-      questions: Object.fromEntries(questions.map(question => [question.id, {
-        type: 'noul',
-        instructions: question.instructions,
-      }])),
-    }),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(connection.timeoutMs)]),
-  })
+  let response: Response
+  try {
+    response = await fetch(connection.endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${connection.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: connection.model,
+        state,
+        questions: Object.fromEntries(questions.map(question => [question.id, {
+          type: 'noul',
+          instructions: question.instructions,
+        }])),
+      }),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(connection.timeoutMs)]),
+    })
+  } catch (error) {
+    throw new JevCallError(failureKind(error), error instanceof Error ? error.message : String(error))
+  }
   if (!response.ok) {
-    throw new Error(`jev: HTTP ${response.status} from ${connection.endpoint}`)
+    throw new JevCallError('http', `jev: HTTP ${response.status} from ${connection.endpoint}`, response.status)
   }
   const payload = (await response.json()) as { answers?: Record<string, JevAnswerBody> | null }
   if (payload.answers === undefined || payload.answers === null) {
-    throw new Error('jev: response missing answers')
+    throw new JevCallError('shape', 'jev: response missing answers')
   }
   const result: Record<string, number> = {}
   for (const question of questions) {
     const noul = payload.answers[question.id]?.noul
     if (typeof noul !== 'number' || !Number.isFinite(noul) || noul < 0 || noul > 1) {
-      throw new Error(`jev: answer "${question.id}" is not a noul probability`)
+      throw new JevCallError('shape', `jev: answer "${question.id}" is not a noul probability`)
     }
     result[question.id] = noul
   }
@@ -121,6 +161,10 @@ export interface JevConnectionTestResult {
   readonly elapsedMs: number
   readonly probability: number | undefined
   readonly error: string | undefined
+  /** HTTP-код ответа; у сетевого отказа и тайм-аута его нет. */
+  readonly status: number | undefined
+  /** Вид отказа: http / network / timeout / shape; удачная проверка — undefined. */
+  readonly kind: JevFailureKind | undefined
 }
 
 /**
@@ -137,13 +181,22 @@ export async function testJevConnection(connection: JevConnection): Promise<JevC
       id: 'ping',
       instructions: 'This is a connectivity test. Return any probability between 0 and 1.',
     }])
-    return { ok: true, elapsedMs: Date.now() - startedAt, probability: answers['ping'], error: undefined }
+    return {
+      ok: true,
+      elapsedMs: Date.now() - startedAt,
+      probability: answers['ping'],
+      error: undefined,
+      status: 200,
+      kind: undefined,
+    }
   } catch (error) {
     return {
       ok: false,
       elapsedMs: Date.now() - startedAt,
       probability: undefined,
       error: error instanceof Error ? error.message : String(error),
+      status: error instanceof JevCallError ? error.status : undefined,
+      kind: failureKind(error),
     }
   }
 }

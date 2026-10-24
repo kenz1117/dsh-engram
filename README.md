@@ -6,7 +6,7 @@
 
 <p align="center"><b>Local-first long-term memory for your coding agent.</b><br>
 纯本地 SQLite 的跨会话长期记忆：<b>零外部服务 · 零 API Key · 零 Docker</b>，一条命令装完即用。<br>
-22 个窄参数工具 · 混合检索（FTS5 + 本地向量 RRF）· 证据门 · 全链路审计 · SM-2 间隔重复复习 · 面板中英俄文。</p>
+23 个窄参数工具 · 混合检索（FTS5 + 本地向量 RRF）· 证据门 · 全链路审计 · SM-2 间隔重复复习 · 面板中英俄文。</p>
 
 <p align="center">
   <a href="https://github.com/kenz1117/dsh-engram/blob/main/LICENSE"><img alt="GitHub license" src="https://img.shields.io/github/license/kenz1117/dsh-engram"></a>
@@ -32,7 +32,7 @@
 - [界面速览](#界面速览)
 - [宫殿结构：目录即房间，路径即路线](#宫殿结构目录即房间路径即路线)
 - [特性](#特性)
-- [工具（22 个，窄参数）](#工具22-个窄参数)
+- [工具（23 个，窄参数）](#工具23-个窄参数)
 - [配置](#配置)
 - [工作原理](#工作原理)
 - [Web 管理面板](#web-管理面板)
@@ -61,7 +61,7 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 请执行这条命令安装 dsh-engram（DeepSeek Harness 的跨会话长期记忆插件）：
   dsh plugin --profile web add @kenz1117/dsh-engram
 装完后确认插件中心出现「记忆宫殿」侧栏入口，并在新会话里用 engram_stats
-确认已注册 22 个 engram_* 工具。
+确认已注册 23 个 engram_* 工具。
 ```
 
 ## 为什么是它
@@ -72,7 +72,7 @@ dsh plugin --profile web add @kenz1117/dsh-engram
 |---|---|---|---|
 | 安装成本 | 一条 npm 命令，**装完即用** | Docker + 数据库 + 向量库 + 迁移 | 一条 npm 命令 |
 | 外部依赖 | **无**：嵌入模型离线推理，失败自动降级纯关键词并显式标记 | 必装，通常还要 LLM API Key | 无 |
-| agent 工具面 | **22 个窄参数工具**，覆盖保存/检索/事实链/时间线/审计/导出/蒸馏/信念/复习全生命周期 | 常见 1–3 个（只给检索） | 常见 0–1 个 |
+| agent 工具面 | **23 个窄参数工具**，覆盖保存/检索/事实链/时间线/审计/导出/蒸馏/信念/复习全生命周期 | 常见 1–3 个（只给检索） | 常见 0–1 个 |
 | 证据门 | **有**：`engram_assess` 由代码强制「声称充足 + 本批次有效证据 + nextStrategy=answer」三者齐备才判充足 | 一般无 | 一般无 |
 | 审计 | 来源会话/轮次/seq 三级溯源 + 取代链 + 矛盾边 + op_log 全量流水 | 通常只有日志 | 无 |
 | 复习 | **SM-2 间隔重复**：只给坐标与门牌线索，不给正文，先回忆后揭示 | 无 | 无 |
@@ -172,7 +172,7 @@ DeepSeek Harness 跨会话长期记忆插件 —— 把记忆宫殿的**信息�
 - **数据可携带**：`engram_export` 一键导出 Markdown / JSON 文件，支持脱敏视图（内容二次清洗 + 预览截断，分享安全）。`engram_mirror` 导出可漫游的镜像目录（Obsidian / Logseq 友好：每条记忆一个 Markdown，正文 + YAML frontmatter + 双向链接 `[[id]]`），让「宫殿」也成为可人读的私人知识库。
 - **认知架构探索（dsh-market · AGI 架构探索）**：本仓库是 dsh-market「AGI 架构探索」类目下，对 agent 长期记忆的认知科学方法论重构——记忆宫殿（意象标签 + 房间铭牌）、走廊拓扑（力导向图）、闭环提问（摄入时让模型主动追问用户细节）、巩固合并（启发式去重 + 余弦相似度），与 MemGPT/Letta 同层「agent 记忆架构」叙事。
 
-## 工具（22 个，窄参数）
+## 工具（23 个，窄参数）
 
 | 工具 | 作用 |
 |---|---|
@@ -197,6 +197,7 @@ DeepSeek Harness 跨会话长期记忆插件 —— 把记忆宫殿的**信息�
 | `engram_distill` | 蒸馏：同主题簇合并为高层规律（LLM） |
 | `engram_reflect` | 信念巩固：把尚未巩固的原始记忆经辅助 LLM 抽象为带证据数的高层信念（form/refine/still/refute 四动作，向量近邻自动归并，原始记忆保留不归档）；同时是 reflect=suggest 待巩固登记的执行出口 |
 | `engram_profile_edit` | 画像 curated block 编辑：`view` 看当前内容与版本历史；`edit` 写入新版本（乐观锁 `expectedVersion`，冲突 loud 失败）；`rollback` 回滚到历史版本（作为新版本追加，历史永不改写）。curated 画像优先于派生画像注入；编辑记录入操作日志，面板今日页画像卡可查版本 diff |
+| `engram_language_guide` | 输出插件语言指南（`<包根>/docs/agent-language-guide.ru.md` 的正文）。首启时对未内置语言的人承诺「agent 会输出一份说明」，这份承诺由本工具兑现；正文以俄文写成草稿，由 agent 按提问者的语言自行翻译 |
 
 ## 配置
 
@@ -339,7 +340,7 @@ pnpm test
 
 #### Token effect
 
-画像注入为条件性固定成本（受条数上限与 token 预算双重约束）；工具 schema 为常驻成本（22 个窄参数工具）。
+画像注入为条件性固定成本（受条数上限与 token 预算双重约束）；工具 schema 为常驻成本（23 个窄参数工具）。
 
 #### KV Cache effect
 

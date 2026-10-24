@@ -6,6 +6,7 @@
  * @module @kenz1117/dsh-engram/routes
  */
 
+import { existsSync, statSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isAbsolute, join, relative } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -20,14 +21,20 @@ import { IMPORT_BODY_LIMIT_BYTES, readJsonBody } from './http-body.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
 import type { ProjectPalaceKind } from './project/registry.ts'
+import type { BaseActionId, BaseStateId } from './registry/base-state.ts'
+import { checkPalaceChange } from './registry/palace-change.ts'
 import type { ResolvedHistoryRules, ResolvedJevConfig } from './config.ts'
 import { effectiveJevConfig, jevConfigView, loadJevOverride, parseJevPatch, saveJevOverride } from './jev/runtime.ts'
 import { testJevConnection } from './jev/client.ts'
 import type { JevCatalog, JevConnection, JevModelList } from './jev/host.ts'
 import { listJevObservations } from './jev/observe.ts'
 import { writeMirror } from './mirror/markdown.ts'
-import type { EngramLanguage } from './i18n/language.ts'
+import { isLanguageCode, type EngramLanguage } from './i18n/language.ts'
 import { message, messageIn } from './i18n/messages.ts'
+import { entriesFromRequest } from './i18n/dictionary-edit.ts'
+import type { DictionarySetView } from './i18n/dictionary-edit.ts'
+import { isDictionarySet } from './i18n/dictionary-terms.ts'
+import type { DictionarySet } from './i18n/dictionary-terms.ts'
 import { createBackup, restoreBackup, BACKUP_SCHEMA_VERSION } from './backup/tar.ts'
 import { runConsolidation } from './consolidation/run.ts'
 import { aggregateTelemetry } from './telemetry/aggregate.ts'
@@ -118,10 +125,44 @@ async function readBody(req: IncomingMessage, res: ServerResponse, language: Eng
   return null
 }
 
+/**
+ * Язык из тела запроса: код языка либо ничего.
+ *
+ * Пустое и отсутствующее значение — не ошибка: без языка набор читается на том,
+ * на котором плагин считает сейчас. Всё остальное, что не похоже на код языка,
+ * отбрасывается здесь, а не в вызывающем: `fr` пройдёт, `../../x` — нет.
+ */
+function languageOf(raw: unknown): EngramLanguage | undefined {
+  return typeof raw === 'string' && isLanguageCode(raw) ? raw : undefined
+}
+
 /** 从 URL searchParams 收敛 scope（缺省 user）。 */
 function scopeOf(raw: string | null, fallback: EngramScope): EngramScope {
   if (raw === 'user' || raw === 'project' || raw === 'shared') return raw
   return fallback
+}
+
+/**
+ * Какие записи op_log — не журнал, а состояние.
+ *
+ * Ключи повторной загрузки (`ingest-*`) и очередь отложенных записей (`reflect-pending`) читаются
+ * обратно при следующем старте: удалить их — значит заставить загрузчик заново
+ * разбирать ходы, которые уже разобраны. Всё остальное в op_log — только след
+ * истории, его очистка ничего не ломает.
+ */
+export const LOG_KEEP_OPS: readonly string[] = ['ingest-done', 'ingest-pending', 'ingest-skip', 'ingest-nothing', 'reflect-pending']
+
+/** Размер базы на диске вместе с WAL/SHM — для индикации «сколько занимает журнал». */
+function dbFileBytes(path: string): number {
+  let total = 0
+  for (const candidate of [path, `${path}-wal`, `${path}-shm`]) {
+    try {
+      if (existsSync(candidate)) total += statSync(candidate).size
+    } catch {
+      // Недоступный файл не учитываем: размер — индикация, а не отчётность.
+    }
+  }
+  return total
 }
 
 /** 宽松取数：数字与数字字符串都接受，其余返回 undefined（回退配置默认）。 */
@@ -179,6 +220,264 @@ export interface ProjectPalaceView {
   readonly memories: number | null
 }
 
+/** Неполадка в файле реестра или словаря: где и что именно. */
+export interface RegistryFileProblem {
+  /** Путь к файлу (панель показывает последний сегмент). */
+  readonly file: string
+  readonly kind: string
+  readonly detail: string
+}
+
+/** Строка каталога моделей в том виде, в каком её видит панель. */
+export interface RegistryModelView {
+  readonly id: string
+  /** Короткая метка; у модели без метки — null. */
+  readonly label: string | null
+  readonly pooling: string
+  readonly dtype: string
+  /** Объявленная размерность; у удалённой модели её нет — null. */
+  readonly dimensions: number | null
+  /**
+   * Языки, которые модель умеет. Пусто — модель их не объявила.
+   *
+   * Панель берёт отсюда список языков, для которых имеет смысл заводить словарь:
+   * язык, которого модель не знает, считался бы ею вслепую.
+   */
+  readonly languages: readonly string[]
+}
+
+/** Ответ `GET registry`: чем считается содержимое базы и какими словами оно описано. */
+export interface RegistryView {
+  /** Язык, на котором говорит серверная половина (он же язык прочитанных словарей). */
+  readonly language: string
+  /**
+   * Язык дворца: чем определён и разошлись ли сигналы. null — определять было нечего
+   * (язык пришёл из настройки), либо определение ещё не сделано.
+   *
+   * Прочитанных реплик здесь нет намеренно: журналы сессий больше не читаются
+   * при старте (решение 20.10), и показывать «0 сессий» значило бы выдавать
+   * отсутствие чтения за отсутствие диалогов.
+   */
+  readonly palace: {
+    readonly setting: string | null
+    readonly source: string
+    readonly conflict: boolean
+    /**
+     * Локаль машины как есть («ru», «fr», пустая строка — не прочитать).
+     *
+     * Нужна панели первого старта: она подставляет этот язык в выбор, а если такого
+     * языка у дворца нет — предлагает выбор «другой язык» с инструкцией (решение 21.10).
+     * Это сырая локаль, а не наш язык: сводить её к zh/en/ru здесь нельзя, иначе
+     * французу предложили бы английский как «его» язык.
+     */
+    readonly machine: string
+    /**
+     * Язык, на котором человек ведёт диалог в этой сессии; null — реплик ещё не было
+     * (журналы не читаются, кроме текущей сессии).
+     */
+    readonly dialogue: string | null
+    /**
+     * Язык, на котором стоят базы по своим меткам; null — метки нет ни у одной базы,
+     * `mixed` — базы подписаны разными языками.
+     */
+    readonly bases: string | null
+    /**
+     * Что происходит (решение 21.10): `auto` — дворец настраивается сам на язык диалогов;
+     * `ask` — опоры нет, спрашиваем; `mismatch` — диалоги и базы на разных языках.
+     */
+    readonly state: string
+  } | null
+  /** Объявленное умолчание пакета; не объявлено — null. */
+  readonly defaultLanguage: string | null
+  /**
+   * Языки дворца, которые знает поставка: код, как он называется человеку и есть ли
+   * у плагина вшитый набор текстов.
+   *
+   * Отдаётся панели, чтобы список выбора приходил от того, кто решает, какие языки
+   * есть (реестр `registry/languages.json`), а не из копии тройки в сборке клиента:
+   * иначе язык, добавленный файлом, был бы на сервере, но не в списке выбора.
+   */
+  readonly languages: readonly { readonly code: string, readonly label: string, readonly builtin: boolean }[]
+  /**
+   * Языки из объявленных моделями, у которых словарь уже есть: файл поставки или
+   * файл пользователя.
+   *
+   * Считается по файлам, а не по реестру языков: словарь мог быть заведён и для
+   * языка, которого в реестре нет. Панель вычитает этот список из языков моделей —
+   * так в выборе «Создать словарь» остаются ровно те языки, для которых заведение
+   * имеет смысл.
+   */
+  readonly dictionaryLanguages: readonly string[]
+  /**
+   * Длина окна собранного условия смены языка дворца, секунды.
+   *
+   * Одно число на панель и сервер: панель считает по нему отсчёт и подпись, сервер —
+   * принимает ли запрос смены языка. Расходиться им нельзя, поэтому настройка едет
+   * тем же ответом, что и языки.
+   */
+  readonly palaceChangeWindowSec: number
+  /** Выбрана ли удалённая модель: тогда локальная строка не выбирается вовсе. */
+  readonly remote: boolean
+  /** Выбранная локальная модель и правило, по которому она выбрана; нечем выбрать — null. */
+  readonly resolved: {
+    readonly id: string
+    readonly label: string | null
+    readonly source: string
+    readonly pooling: string
+    readonly dtype: string
+  } | null
+  readonly models: readonly RegistryModelView[]
+  readonly bindings: readonly { readonly language: string; readonly model: string }[]
+  /** Прочитанные файлы реестра в порядке наложения. */
+  readonly files: readonly string[]
+  readonly problems: readonly RegistryFileProblem[]
+  /** Словари: серверных сообщений и панели, с числом принятых строк и претензиями. */
+  readonly dictionaries: readonly {
+    readonly name: string
+    readonly files: readonly string[]
+    readonly entries: number
+    readonly problems: readonly { readonly file: string; readonly line: number; readonly kind: string; readonly detail: string }[]
+  }[]
+}
+
+/**
+ * Одна база дворца в карточке обслуживания: где лежит, на чём стоит и что с ней
+ * сделает кнопка «Выполнить». Состояние и действие считает ядро
+ * (`registry/base-state.ts`), панель их только называет словами.
+ */
+export interface BaseView {
+  /** Имя файла базы: `user.db`, `shared.db`, `project-<hash>.db`. */
+  readonly file: string
+  /** Чья это база: своя, общая или проектная. */
+  readonly scope: 'user' | 'shared' | 'project'
+  /** Заголовок проектного дворца; у user/shared его нет (панель называет их сама). */
+  readonly title: string | null
+  /** Метка из `meta`; базы без метки — null. */
+  readonly label: string | null
+  /** Метка, которую поставит или ожидает плагин; нечем собрать — null. */
+  readonly targetLabel: string | null
+  /** Состояние базы; null — не проверено (объявление схемы о другой версии базы). */
+  readonly state: BaseStateId | null
+  /** Что сделает кнопка; null — действие не определено, потому что состояние не проверено. */
+  readonly action: BaseActionId | null
+  /** Записей в области объявления схемы. */
+  readonly rows: number
+  /** Из них без вектора. */
+  readonly missing: number
+  /** Из них чужой длины. */
+  readonly foreign: number
+  /** Длины векторов по убыванию числа записей. */
+  readonly dims: readonly number[]
+  /** Состояние проверено; false — объявление схемы описывает другую версию базы. */
+  readonly checked: boolean
+  readonly problems: readonly { readonly kind: string, readonly detail: string }[]
+}
+
+/** Итог записи метки: что подписали и что не далось. */
+export interface BaseLabelResult {
+  readonly written: readonly { readonly file: string, readonly label: string }[]
+  readonly failed: readonly { readonly file: string, readonly error: string }[]
+}
+
+/**
+ * Итог пересчёта векторов: сколько строк получило вектор, сколько осталось без него
+ * и что не далось.
+ *
+ * Разделение на «пустой текст» и «сбой» намеренное: первое — факт о содержимом базы
+ * (строке не из чего строить вектор), второе — сбой эмбеддера или записи. Сваливать
+ * их в одно число значило бы обещать «всё пересчитано» там, где часть строк осталась
+ * прежней.
+ */
+export interface BaseConvertResult {
+  /** Строк получило новый вектор за этот прогон. */
+  readonly converted: number
+  /** Строк пропущено: текста нет, вектор не из чего строить. */
+  readonly empty: number
+  /** Метки, обновлённые после пересчёта. */
+  readonly written: readonly { readonly file: string, readonly label: string }[]
+  /** Что не далось: файл, таблица (если известна) и причина. */
+  readonly failed: readonly { readonly file: string, readonly table: string | null, readonly error: string }[]
+}
+
+/**
+ * Итог выбора языка дворца из панели.
+ *
+ * `ok: false` — язык не записан, и причина названа: без сервиса настроек значение
+ * осталось бы на этот процесс и молча потерялось при следующем старте.
+ */
+export interface PalaceLanguageResult {
+  readonly ok: boolean
+  /** Записанный язык; при отказе — тот, что просили записать. */
+  readonly language: string
+  readonly error?: string
+}
+
+/**
+ * Итог правки словаря: сколько строк легло, куда и как набор выглядит после записи.
+ *
+ * Панель получает свежий набор тем же ответом, а не вторым запросом: после
+ * сохранения таблица обязана показывать записанное, и разойтись эти два
+ * представления не должны.
+ */
+export interface DictionarySaveResult {
+  readonly set: DictionarySet
+  readonly file: string
+  readonly written: number
+  readonly bytes: number
+  readonly view: DictionarySetView
+}
+
+/**
+ * Итог заведения пустого словаря для языка, которого в плагине ещё нет.
+ *
+ * Заводятся оба набора сразу: язык без пары файлов — половина словаря, и человек,
+ * выбравший его в панели, увидел бы английский текст в одном месте и перевод в
+ * другом. Строк с переводом в новом файле нет вовсе, но строки-ключи есть все:
+ * заготовка — это файл с ключами и пустыми правыми частями, а не пустой файл.
+ */
+export interface DictionaryCreateResult {
+  readonly set: DictionarySet
+  readonly file: string
+  readonly lines: number
+  readonly bytes: number
+}
+
+/**
+ * Итог заполнения партии словаря моделью: переводы и то, кто их дал.
+ *
+ * Пустой список переводов — не ошибка формата: модель вправе не перевести строку,
+ * которую уже нельзя перевести (или перевести её же). Настоящее «нечего принять»
+ * отличается тем, что модель не ответила вовсе, — это уже ошибка (см. deps).
+ */
+export interface DictionaryFillResult {
+  readonly set: DictionarySet
+  /** Маршрут, который отвечал: виден в тосте и в аудите. */
+  readonly provider: string
+  readonly model: string
+  /** Пары «английская строка → перевод»; строки вне запроса сюда не попадают. */
+  readonly translations: readonly (readonly [string, string])[]
+}
+
+/**
+ * Ответ `GET registry`: снимок реестра плюс состояние баз.
+ *
+ * Разделение намеренное: реестр, словари и язык читаются один раз при сборке
+ * плагина, а состояние баз считается на каждый запрос — метку меняет кнопка в
+ * этой же карточке, и после неё панель обязана увидеть новое состояние, а не
+ * запомненное при запуске.
+ */
+export interface RegistryResponse extends RegistryView {
+  readonly bases: readonly BaseView[]
+  /** Есть ли базы, которых ещё нет: их создаёт код автора, не мы. */
+  readonly pendingBases: number
+  /**
+   * Подключён ли пересчёт векторов (этап 2 блока Б). false — кнопка умеет только
+   * ставить метку, а состояния «другая модель», «пересортица» и «записи без
+   * вектора» она честно называет невыполнимыми, вместо того чтобы молчать.
+   */
+  readonly convertAvailable: boolean
+}
+
 /** 未知项目选择器（路由统一映射为 404）。 */
 class UnknownProjectError extends Error {
   constructor(selector: string) {
@@ -215,6 +514,97 @@ export interface RouteDeps {
   readonly pluginVersion: string
   /** 房间名的显示语言（服务器侧渲染的文本用它取词，如镜像 _index.md）。 */
   readonly language: EngramLanguage
+  /**
+   * Обслуживание: выбранная модель и прочитанные словари.
+   *
+   * Функция, а не готовое значение: снимок собирается там, где известны и конфиг,
+   * и реестр, и словари (src/index.ts), а правка словаря меняет его — после неё
+   * панель обязана увидеть новый текст, а не прочитанный при сборке плагина.
+   */
+  readonly registry: () => RegistryView
+  /**
+   * Какие из перечисленных языков уже имеют словарь (файл поставки или файл человека).
+   *
+   * Спрашивается по кодам, а не отдаётся готовым списком: набор языков задают модели
+   * в реестре, и меняется он файлом, а не пересборкой. Проверка — здесь, а не в
+   * панели: файлы словарей лежат на серверной стороне.
+   */
+  readonly dictionaryLanguages: (codes: readonly string[]) => readonly string[]
+  /**
+   * Правка словарей: прочитать набор терминов и записать пользовательский слой.
+   *
+   * Пишется только пользовательский слой в каталоге данных; поставка не трогается
+   * (см. i18n/dictionary-edit.ts). Чтение отдаёт строки, файлы и претензии разбора.
+   *
+   * Язык — необязательный: без него берётся язык, на котором плагин считает сейчас.
+   * Панель передаёт выбранный в блоке «Язык Плагина», чтобы таблица и счётчики
+   * относились к тому языку, на который человек смотрит, а не к тому, что случайно
+   * оказался текущим.
+   */
+  readonly dictionary: {
+    readonly read: (set: DictionarySet, language?: EngramLanguage) => DictionarySetView
+    readonly write: (set: DictionarySet, entries: ReadonlyMap<string, string>, language?: EngramLanguage) => DictionarySaveResult
+    /**
+     * Завести пустой словарь для языка, которого в плагине ещё нет: оба набора
+     * пишутся в пользовательский слой, каждая строка — с пустым переводом.
+     */
+    readonly create: (language: EngramLanguage) => readonly DictionaryCreateResult[]
+  }
+  /**
+   * Заполнение словаря моделью: перевести партию английских строк на язык набора.
+   *
+   * Партии режет панель (см. i18n/dictionary-ai): один запрос — одна партия, чтобы
+   * у прогресса была цена, а обрыв одной партии не уносил остальные. Здесь ничего
+   * не пишется: переводы уходят в черновик таблицы и станут файлом только после
+   * «Сохранить» — модель не должна править словарь молча.
+   */
+  readonly dictionaryFill: (set: DictionarySet, terms: readonly string[]) => Promise<DictionaryFillResult>
+  /**
+   * Языки интерфейса, которые приходят словарём из файла, а не вшитым набором.
+   *
+   * Панель объявляет их у себя в момент запуска (`ctx.locale.addLanguage`) и отдаёт
+   * словарь — иначе язык лежит в реестре и в файле словаря, но выбрать его в
+   * переключателе нельзя: хост знает только те языки, которые ему объявили плагины.
+   * Считается на каждый запрос: файл словаря правится из панели, и объявлять старый
+   * текст после правки значило бы «сохранил, а не вижу».
+   */
+  readonly localePacks: () => readonly {
+    readonly code: string
+    readonly label: string
+    readonly entries: Readonly<Record<string, string>>
+  }[]
+  /**
+   * Обслуживание: состояние каждой базы дворца. Считается на каждый запрос, а не
+   * при сборке плагина: метку меняет кнопка в этой же карточке, и после неё панель
+   * должна увидеть новое состояние.
+   */
+  readonly baseStates: () => Promise<{ readonly bases: readonly BaseView[], readonly pendingBases: number }>
+  /**
+   * Язык дворца глазами панели: считается на каждый запрос, потому что язык диалога
+   * появляется посреди работы, а метку базы меняет кнопка в соседней карточке (21.10).
+   */
+  readonly palaceLanguage: (bases: readonly BaseView[]) => RegistryView['palace']
+  /** Обслуживание: поставить метку модели во все базы, которым она нужна. */
+  readonly writeBaseLabels: () => Promise<BaseLabelResult>
+  /** Обслуживание: пересчитать векторы базам, которые стоят не на целевой модели. */
+  readonly convertBases: () => Promise<BaseConvertResult>
+  /**
+   * Обслуживание: выбрать язык дворца — тот, на котором модель пишет записи.
+   *
+   * Это не язык интерфейса: интерфейс переключается своим селектором хоста, а язык
+   * дворца решает, каким словарём и какой моделью описывается содержимое баз. Выбор
+   * записывается в конфигурацию плагина, а не живёт в панели.
+   */
+  readonly writePalaceLanguage: (language: string) => Promise<PalaceLanguageResult>
+  /**
+   * Длина окна собранного условия, секунды (настройка `palaceChangeWindowSec`).
+   *
+   * Отдаётся панели в снимке обслуживания, чтобы отсчёт и подпись считались по одному
+   * числу с сервером: иначе панель показывала бы «ещё 30 секунд», а сервер уже отказывал.
+   */
+  readonly palaceChangeWindowSec: number
+  /** Подключён ли пересчёт векторов (этап 2 блока Б); false — кнопка умеет только метку. */
+  readonly convertAvailable: boolean
   /** 历史回填（面板「历史回填」tab）：估算 / 启动 / 取消 / 查进度 + 部署默认规则。 */
   readonly history: {
     /** 估算候选会话与轮数（不写库、不调 LLM）。 */
@@ -502,6 +892,55 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 createdAt: record.createdAt,
                 ...(record.slot === undefined ? {} : { slot: record.slot }),
               })),
+            })
+            return
+          }
+          // Журнал дворца — наш собственный: таблица op_log в базах дворца, а не файл
+          // хост-сессии. Поэтому у него есть путь, размер и кнопка очистки; журналы
+          // хост-сессий (dsh) мы не читаем и не трогаем вовсе.
+          if ((req.method === 'GET' && route === 'log-info') || (req.method === 'POST' && route === 'log-clear')) {
+            const clear = req.method === 'POST'
+            if (clear) {
+              if (!guardWrite(req, res)) return
+              const body = await readBody(req, res, deps.language)
+              if (body === null) return
+              adoptBodySelector(body)
+            }
+            // Собираем только существующие базы: ожидание панели не должно создавать пустышки.
+            const targets: { scope: EngramScope; store: EngramStore; path: string }[] = []
+            for (const [scope, file] of [['user', 'user.db'], ['shared', 'shared.db']] as const) {
+              const path = join(deps.dbDir, file)
+              if (!existsSync(path)) continue
+              targets.push({ scope, store: await deps.openStore(scope), path })
+            }
+            const opened = await deps.projects.open(selectorRef.value)
+            if (opened !== undefined) {
+              targets.push({ scope: 'project', store: opened.store, path: join(deps.dbDir, opened.project.dbName) })
+            }
+            const parts: Record<string, unknown>[] = []
+            for (const target of targets) {
+              const cleared = clear ? await target.store.clearLog(LOG_KEEP_OPS) : undefined
+              const size = await target.store.logSize()
+              parts.push({
+                scope: target.scope,
+                path: target.path,
+                fileBytes: dbFileBytes(target.path),
+                rows: size.rows,
+                bytes: size.bytes,
+                ...(cleared === undefined ? {} : { deleted: cleared.deleted, vacuumed: cleared.vacuumed }),
+              })
+            }
+            const sum = (key: string): number => parts.reduce((total, part) => total + Number(part[key] ?? 0), 0)
+            json(res, 200, {
+              dir: deps.dbDir,
+              keepOps: LOG_KEEP_OPS,
+              parts,
+              totals: {
+                fileBytes: sum('fileBytes'),
+                rows: sum('rows'),
+                bytes: sum('bytes'),
+                ...(clear ? { deleted: sum('deleted') } : {}),
+              },
             })
             return
           }
@@ -852,6 +1291,166 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             json(res, 200, { pluginVersion: deps.pluginVersion })
             return
           }
+          if (req.method === 'GET' && route === 'registry') {
+            // Обслуживание: чем считается содержимое базы (выбранная модель, каталог,
+            // привязки) и какими словами оно описано (файлы словарей и их претензии).
+            // Сам словарь панели здесь не едет: тексты для языков из файла отдаёт
+            // отдельный маршрут `locales` (его клиент забирает при запуске), а карточке
+            // обслуживания хватает счёта строк и претензий разбора.
+            // Плюс состояние каждой базы — оно считается здесь, а не при сборке плагина.
+            const states = await deps.baseStates()
+            const view = deps.registry()
+            // Языки, объявленные моделями: из них панель выбирает, чему заводить словарь.
+            const modelLanguages = [...new Set(view.models.flatMap(row => row.languages))]
+            json(res, 200, {
+              ...view,
+              dictionaryLanguages: deps.dictionaryLanguages(modelLanguages),
+              // Язык дворца пересчитывается здесь вместе с базами: и то и другое меняется
+              // на ходу, а снимок из сборки плагина этого не знает.
+              palace: deps.palaceLanguage(states.bases),
+              bases: states.bases,
+              pendingBases: states.pendingBases,
+              convertAvailable: deps.convertAvailable,
+            })
+            return
+          }
+          if (req.method === 'GET' && route === 'locales') {
+            // Языки интерфейса, приходящие словарём: клиент объявляет их у хоста и
+            // регистрирует их тексты. Список языков — из того же реестра, что и в
+            // снимке обслуживания, поэтому «язык есть в списке дворца» и «язык можно
+            // выбрать в интерфейсе» не расходятся.
+            json(res, 200, { packs: deps.localePacks() })
+            return
+          }
+          if (req.method === 'GET' && route === 'dictionary') {
+            // Правка словаря: таблица терминов набора («панель» или «сообщения»).
+            // Чтение отдаёт и строки, и пути слоёв, и претензии разбора: панель
+            // показывает, что именно правится и откуда взят текущий перевод.
+            const set = url.searchParams.get('set') ?? 'panel'
+            if (!isDictionarySet(set)) {
+              json(res, 400, { ok: false, error: `unknown dictionary set: ${set}` })
+              return
+            }
+            // Язык набора: панель показывает словари того языка, на который человек
+            // смотрит в блоке «Язык Плагина». Без параметра — текущий язык плагина.
+            const language = url.searchParams.get('language')
+            if (language !== null && !isLanguageCode(language)) {
+              json(res, 400, { ok: false, error: `unknown language: ${language}` })
+              return
+            }
+            json(res, 200, deps.dictionary.read(set, language ?? undefined))
+            return
+          }
+          if (req.method === 'POST' && route === 'dictionary') {
+            // Запись — только в пользовательский слой в каталоге данных: поставка
+            // принадлежит выпуску плагина (см. i18n/dictionary-edit.ts). Тело:
+            // { set, entries: [[английская строка, перевод], ...] } — только изменённые
+            // клетки: пустое значение снимает правку, отсутствие строки оставляет прежнюю.
+            // Наложение на текущий слой — в deps.dictionary.write (applyDictionaryPatch).
+            if (!guardWrite(req, res)) return
+            const body = await readBody(req, res, deps.language)
+            // null = тело не прочиталось (битый JSON или больше 64 КиБ). Продолжать нельзя:
+            // пустой список правок — это «снять всё», то есть молчаливая потеря слоя.
+            if (body === null) return
+            const set = body['set']
+            if (!isDictionarySet(set)) {
+              json(res, 400, { ok: false, error: `unknown dictionary set: ${String(set)}` })
+              return
+            }
+            json(res, 200, deps.dictionary.write(set, entriesFromRequest(body['entries']), languageOf(body['language'])))
+            return
+          }
+          if (req.method === 'POST' && route === 'dictionary-create') {
+            // Заведение пустого словаря для языка, которого в плагине ещё нет. Тело:
+            // { language }. Заводятся оба набора сразу и только в пользовательском
+            // слое: поставка принадлежит выпуску, и дописывать в неё новый язык нельзя.
+            if (!guardWrite(req, res)) return
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
+            const language = languageOf(body['language'])
+            if (language === undefined) {
+              json(res, 400, { ok: false, error: `unknown language: ${String(body['language'])}` })
+              return
+            }
+            json(res, 200, { ok: true, written: deps.dictionary.create(language) })
+            return
+          }
+          if (req.method === 'POST' && route === 'dictionary-fill') {
+            // Заполнение словаря моделью. Тело: { set, terms: [английская строка, ...] }.
+            // Пишем только в черновик панели: файл словаря меняет «Сохранить», а не модель.
+            if (!guardWrite(req, res)) return
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
+            const set = body['set']
+            if (!isDictionarySet(set)) {
+              json(res, 400, { ok: false, error: `unknown dictionary set: ${String(set)}` })
+              return
+            }
+            const raw = Array.isArray(body['terms']) ? body['terms'] as unknown[] : []
+            const terms = raw.filter((term): term is string => typeof term === 'string')
+            json(res, 200, await deps.dictionaryFill(set, terms))
+            return
+          }
+          if (req.method === 'POST' && route === 'base-label') {
+            // Обслуживание: поставить метку модели. Метка — единственное, что мы пишем
+            // в чужую базу (решение 20.10); подтверждение одно на все базы, поэтому
+            // тела у запроса нет: набор баз определяет состояние, а не клиент.
+            if (!guardWrite(req, res)) return
+            json(res, 200, await deps.writeBaseLabels())
+            return
+          }
+          if (req.method === 'POST' && route === 'base-convert') {
+            // Обслуживание: пересчитать векторы тем базам, которые стоят не на целевой
+            // модели или растеряли векторы. Тела нет по той же причине, что у метки:
+            // что делать — следует из состояния баз, а не из того, что прислал браузер.
+            if (!guardWrite(req, res)) return
+            json(res, 200, await deps.convertBases())
+            return
+          }
+          if (req.method === 'POST' && route === 'palace-change') {
+            // Смена языка дворца собранным условием (решение 20–21.10): язык выбран,
+            // предохранитель снят, «Выполнить» нажато — всё в одном окне, отсчёт с
+            // первого события. Тело: { language, from, startedAt }.
+            //
+            // Проверка здесь, а не только в панели: панель может быть старой, а запрос —
+            // прийти снаружи. Язык и окно проверяются одной формулой с панелью
+            // (см. registry/palace-change), и отказ называет причину.
+            if (!guardWrite(req, res)) return
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
+            const verdict = checkPalaceChange({
+              language: typeof body['language'] === 'string' ? body['language'] : '',
+              from: typeof body['from'] === 'string' ? body['from'] : '',
+              startedAt: typeof body['startedAt'] === 'number' ? body['startedAt'] : Number.NaN,
+            }, Date.now(), deps.palaceChangeWindowSec)
+            if (!verdict.ok) {
+              json(res, 409, { ok: false, reason: verdict.reason })
+              return
+            }
+            const written = await deps.writePalaceLanguage(String(body['language']))
+            if (!written.ok) { json(res, 200, { ...written, labels: null, convert: null }); return }
+            // Что делать с базами, решает их новое состояние, а не клиент: после записи
+            // языка целевая метка другая, и базы, стоявшие на прежнем языке, становятся
+            // «чужой модели». Сначала метки (там, где модель угадывается), затем пересчёт.
+            const labels = await deps.writeBaseLabels()
+            const convert = await deps.convertBases()
+            json(res, 200, { ...written, labels, convert })
+            return
+          }
+          if (req.method === 'POST' && route === 'palace-language') {
+            // Обслуживание: язык дворца выбран человеком. Пишется в конфигурацию
+            // плагина; неизвестный язык — отказ, а не «ближайший похожий».
+            if (!guardWrite(req, res)) return
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
+            const wanted = body['language']
+            if (typeof wanted !== 'string' || !isLanguageCode(wanted)) {
+              json(res, 400, { ok: false, error: `unknown palace language: ${String(wanted)}` })
+              return
+            }
+            json(res, 200, await deps.writePalaceLanguage(wanted))
+            return
+          }
           if (req.method === 'GET' && route === 'models') {
             // 已注册的 provider 与模型清单：面板「辅助模型」下拉的数据源。
             json(res, 200, await deps.history.models())
@@ -953,7 +1552,15 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               json(res, 200, { ok: false, elapsedMs: 0, probability: undefined, error: connection })
               return
             }
-            json(res, 200, await testJevConnection(connection))
+            // Рядом с замером отдаём то, чем мерили: панель печатает параметры проверки
+            // строкой состояния, и брать их из формы было бы враньём — форма может
+            // разойтись с тем, что реально ушло в запрос.
+            json(res, 200, {
+              ...await testJevConnection(connection),
+              ...(endpoint === undefined ? {} : { endpoint }),
+              model,
+              timeoutMs: base.timeoutMs,
+            })
             return
           }
           if (req.method === 'POST' && route === 'jev-models') {

@@ -1,0 +1,14 @@
+{
+  "formatVersion": 1,
+  "default": "ru",
+  "bindings": [
+    {
+      "language": "zh",
+      "model": "Xenova/bge-small-zh-v1.5"
+    },
+    {
+      "language": "*",
+      "model": "Xenova/paraphrase-multilingual-MiniLM-L12-v2"
+    }
+  ]
+}

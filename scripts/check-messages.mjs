@@ -3,10 +3,18 @@
  * Проверка словаря служебных сообщений.
  *
  * Сборка (tsdown) типы не проверяет, поэтому опечатка в ключе проходит молча и
- * вылезает уже в бою — как ключ вместо текста. Эта проверка ловит три вещи:
+ * вылезает уже в бою — как ключ вместо текста. Эта проверка ловит:
  *   1. ключ запрошен кодом, но не объявлен в английском наборе (образец полноты);
  *   2. ключ объявлен, но нигде не запрашивается (мусор в словаре);
- *   3. ключ есть не во всех языках, либо один и тот же ключ объявлен дважды.
+ *   3. ключ объявлен дважды;
+ *   4. нет китайского перевода либо он лишний;
+ *   5. дефекты словаря `i18n/ru.txt`, где переводы и живут: битая строка,
+ *      отсутствующий перевод, лишняя строка, китайский внутри русского текста,
+ *      внутреннее имя поля вместо наружного параметра.
+ *
+ * В коде остались два набора: английский (образец полноты и источник ключей) и
+ * китайский (авторские формулировки). Русский — только файлом: слева в нём
+ * английский текст, справа перевод (формат — src/i18n/dictionary.ts).
  *
  * Запуск: node scripts/check-messages.mjs
  */
@@ -16,7 +24,9 @@ import { pathToFileURL } from 'node:url'
 
 const SRC = resolve(import.meta.dirname, '..', 'src')
 const CATALOG = join(SRC, 'i18n', 'catalog')
-const LANGS = ['zh', 'en', 'ru']
+// Языки, чьи наборы лежат в коде. Русский — файлом, см. DICT ниже.
+const LANGS = ['zh', 'en']
+const DICT = resolve(import.meta.dirname, '..', 'i18n', 'ru.txt')
 
 function walk(dir) {
   const out = []
@@ -70,7 +80,7 @@ for (const file of walk(SRC)) {
 }
 
 // 2. Объявленные ключи — импортом модулей: так разбор не зависит от форматирования.
-const merged = { zh: {}, en: {}, ru: {} }
+const merged = { zh: {}, en: {} }
 const duplicates = []
 for (const name of readdirSync(CATALOG)) {
   if (!name.endsWith('.ts')) continue
@@ -98,28 +108,55 @@ for (const [key, where] of used) {
 for (const key of Object.keys(merged.en)) {
   if (!used.has(key)) report('unused', `объявлен, но пока не запрошен кодом: ${key}`)
 }
-for (const lang of ['ru', 'zh']) {
-  for (const key of Object.keys(merged.en)) {
-    if (!Object.hasOwn(merged[lang], key)) report('missing-lang', `нет перевода ${lang}: ${key}`)
+for (const key of Object.keys(merged.en)) {
+  if (!Object.hasOwn(merged.zh, key)) report('missing-lang', `нет перевода zh: ${key}`)
+}
+for (const key of Object.keys(merged.zh)) {
+  if (!Object.hasOwn(merged.en, key)) report('extra-lang', `лишний ключ в zh (нет в en): ${key}`)
+}
+
+// Русский словарь: файл, ключ — английский текст из кода (см. src/i18n/dictionary.ts).
+const { parseDictionary } = await import(pathToFileURL(join(SRC, 'i18n', 'dictionary.ts')).href)
+let dictionary
+try {
+  dictionary = parseDictionary(readFileSync(DICT, 'utf8'))
+} catch (error) {
+  report('dictionary', `не прочитан словарь ${DICT}: ${error.message}`)
+}
+/** Английский текст → русский перевод. */
+const ruTexts = new Map()
+if (dictionary !== undefined) {
+  for (const issue of dictionary.issues) report('dictionary', `стр.${issue.line} ${issue.kind}: ${issue.detail}`)
+  // Один английский текст может обслуживать несколько ключей — сообщаем все.
+  const keysByText = new Map()
+  for (const [key, text] of Object.entries(merged.en)) {
+    if (!keysByText.has(text)) keysByText.set(text, [])
+    keysByText.get(text).push(key)
   }
-  for (const key of Object.keys(merged[lang])) {
-    if (!Object.hasOwn(merged.en, key)) report('extra-lang', `лишний ключ в ${lang} (нет в en): ${key}`)
+  for (const [text, keys] of keysByText) {
+    const ru = dictionary.entries.get(text)
+    if (ru === undefined) report('missing-lang', `нет перевода ru: ${keys.join(', ')} — ${text.slice(0, 70)}`)
+    else ruTexts.set(text, ru)
+  }
+  for (const text of dictionary.entries.keys()) {
+    if (!keysByText.has(text)) report('extra-lang', `лишняя строка ru (такого английского текста нет в коде): ${text.slice(0, 70)}`)
   }
 }
 
 // Китайский, забытый внутри английского или русского значения, и расхождение
 // подстановок {..} между языками: и то и другое проходит сборку молча.
+// Русский сверяется с английским по подстановкам уже в разборщике словаря
+// (`placeholderMismatch`), поэтому здесь его сравнивать с китайским незачем.
 const HAN = /[\u4e00-\u9fff]/
 const placeholders = (value) => [...String(value).matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort().join(',')
 for (const key of Object.keys(merged.en)) {
+  const english = merged.en[key]
   const zh = placeholders(merged.zh[key] ?? '')
-  for (const lang of ['en', 'ru']) {
-    const value = merged[lang][key]
-    if (value === undefined) continue
-    if (HAN.test(value)) report('chinese-left', `китайский остался в ${lang}: ${key} — ${value}`)
-    const own = placeholders(value)
-    if (own !== zh) report('placeholders', `разные подстановки в ${lang}: ${key} — zh[${zh}] ${lang}[${own}]`)
-  }
+  if (HAN.test(english)) report('chinese-left', `китайский остался в en: ${key} — ${english}`)
+  const own = placeholders(english)
+  if (own !== zh) report('placeholders', `разные подстановки в en: ${key} — zh[${zh}] en[${own}]`)
+  const ru = ruTexts.get(english)
+  if (ru !== undefined && HAN.test(ru)) report('chinese-left', `китайский остался в ru: ${key} — ${ru}`)
 }
 
 // Имена внутренних полей, просочившиеся в текст сообщения как имя параметра.
@@ -138,8 +175,7 @@ const PUBLIC_SNAKE = new Set(['search_keyword', 'search_room', 'search_timeline'
 const FIELD_EXCEPTIONS = new Set(['tool.tourNoImagery'])
 for (const key of Object.keys(merged.en)) {
   if (FIELD_EXCEPTIONS.has(key)) continue
-  for (const lang of LANGS) {
-    const value = merged[lang][key]
+  for (const [lang, value] of [['en', merged.en[key]], ['zh', merged.zh[key]], ['ru', ruTexts.get(merged.en[key])]]) {
     if (value === undefined) continue
     const internal = INTERNAL_NAMES.exec(String(value))
     if (internal !== null) {
@@ -196,32 +232,84 @@ if (mapStart === -1 || mapEnd === -1) {
   if (produced.size === 0) report('skip-key', 'не нашёл ни одной причины пропуска в hook.ts — проверка потеряла опору')
 }
 
+// Словарь панели (client/locales): ключ, объявленный, но нигде не запрошенный, — тот же
+// мусор, что и на сервере, только проверки у него до сих пор не было. Ключи панели
+// встречаются не только в вызовах `t('...')`: их держат таблицы вида KIND_KEY, где имя
+// стоит строкой, — поэтому ищем ключ в кавычках по всей клиентской половине, а сам union
+// EngramKey (объявление) из поиска исключаем: иначе каждый ключ «запрошен» собой.
+const CLIENT = join(SRC, 'client')
+/** Обход клиентской половины: здесь кроме .ts лежат .tsx, и без них проверка слепа. */
+function walkClient(dir) {
+  const out = []
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name)
+    if (statSync(full).isDirectory()) out.push(...walkClient(full))
+    else if (name.endsWith('.ts') || name.endsWith('.tsx')) out.push(full)
+  }
+  return out
+}
+const panelIndexPath = join(CLIENT, 'locales', 'index.ts')
+const panelIndex = readFileSync(panelIndexPath, 'utf8')
+const panelUnion = /export type EngramKey[\s\S]*?\r?\n\r?\n/.exec(panelIndex)
+const panelKeys = panelUnion === null
+  ? []
+  : [...panelUnion[0].matchAll(/\|\s*'([^']+)'/g)].map(match => match[1])
+let panelCode = ''
+for (const file of walkClient(CLIENT)) {
+  const text = readFileSync(file, 'utf8')
+  panelCode += `${file === panelIndexPath && panelUnion !== null ? text.replace(panelUnion[0], '') : text}\n`
+}
+const panelUnused = panelKeys.filter(key =>
+  // Две формы обращения: строкой в вызове и свойством словаря (`DICTS[lang].key`).
+  !new RegExp(`'${key}'|\\.${key}\\b`).test(panelCode))
+if (panelUnion === null) report('panel-unused', 'не нашёл union EngramKey в src/client/locales/index.ts — проверка потеряла опору')
+for (const key of panelUnused) report('panel-unused', `объявлен в словаре панели, но нигде не запрошен: ${key}`)
+
 const TITLES = {
   'missing-en': 'запрошен кодом, но не объявлен в en',
   'missing-lang': 'нет перевода',
   'extra-lang': 'лишний ключ (нет в en)',
   duplicate: 'ключ объявлен дважды',
+  dictionary: 'дефект словаря i18n/ru.txt',
   'chinese-left': 'китайский остался в en/ru',
   placeholders: 'расходятся подстановки {..}',
   'internal-field': 'внутреннее имя поля в тексте сообщения',
   'skip-key': 'причина пропуска без перевода в панели',
   'skip-key-extra': 'панель переводит причину, которой конвейер не выдаёт',
   unused: 'объявлен, но пока не запрошен кодом',
+  'panel-unused': 'объявлен в словаре панели, но нигде не запрошен',
 }
 // «Пока не запрошен» — это нормальное промежуточное состояние: словарь пишут
 // раньше, чем переписывают вызовы. Провалом считаются только остальные виды расхождений.
-const ORDER = ['missing-en', 'missing-lang', 'extra-lang', 'duplicate', 'chinese-left', 'placeholders', 'internal-field', 'skip-key', 'skip-key-extra', 'unused']
-const WARNINGS = new Set(['unused', 'skip-key-extra'])
+const ORDER = ['missing-en', 'missing-lang', 'extra-lang', 'duplicate', 'dictionary', 'chinese-left', 'placeholders', 'internal-field', 'skip-key', 'skip-key-extra', 'unused', 'panel-unused']
+const WARNINGS = new Set(['unused', 'skip-key-extra', 'panel-unused'])
 const critical = problems.filter((problem) => !WARNINGS.has(problem.kind))
 
-console.log(`запрошено кодом: ${used.size}`)
-console.log(`объявлено: zh=${Object.keys(merged.zh).length} en=${Object.keys(merged.en).length} ru=${Object.keys(merged.ru).length}`)
+// Числа печатаются раздельно: ключи и тексты — разные величины. Один английский
+// текст может обслуживать несколько ключей, и тогда «en 486» против «ru 483» — не
+// недостача перевода, а три общих текста. Раньше строка смешивала счёт ключей со
+// счётом текстов, и разница в три выглядела как непереведённые сообщения.
+const enKeys = Object.keys(merged.en).length
+const zhKeys = Object.keys(merged.zh).length
+const enByText = new Map()
+for (const [key, text] of Object.entries(merged.en)) {
+  if (!enByText.has(text)) enByText.set(text, [])
+  enByText.get(text).push(key)
+}
+console.log(`запрошено кодом: ${used.size} ключей`)
+console.log(`объявлено: en ${enKeys} ключей / ${enByText.size} текстов, zh ${zhKeys} ключей / ${new Set(Object.values(merged.zh)).size} текстов, ru ${ruTexts.size} текстов (файл i18n/ru.txt)`)
+const sharedTexts = [...enByText].filter(([, keys]) => keys.length > 1)
+if (sharedTexts.length > 0) {
+  console.log(`  общих текстов: ${sharedTexts.length} — один английский текст обслуживает несколько ключей`)
+  for (const [text, keys] of sharedTexts.slice(0, 12)) console.log(`   «${text.slice(0, 60)}» → ${keys.join(', ')}`)
+  if (sharedTexts.length > 12) console.log(`   ... и ещё ${sharedTexts.length - 12}`)
+}
 for (const kind of ORDER) {
   const group = problems.filter((problem) => problem.kind === kind)
   if (group.length === 0) continue
   console.log(`\n${TITLES[kind]}: ${group.length}`)
-  for (const item of group.slice(0, 12)) console.log('  ' + item.text)
-  if (group.length > 12) console.log(`  ... и ещё ${group.length - 12}`)
+  // Имена печатаются все: список нужен как рабочий, а не как счётчик.
+  for (const item of group) console.log('  ' + item.text)
 }
 
 if (critical.length === 0) {

@@ -1,0 +1,27 @@
+{
+  "formatVersion": 1,
+  "models": [
+    {
+      "id": "Xenova/bge-small-zh-v1.5",
+      "label": "bge-small-zh",
+      "pooling": "mean",
+      "dtype": "q8",
+      "dimensions": 512,
+      "languages": ["zh"]
+    },
+    {
+      "id": "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+      "label": "minilm-l12",
+      "pooling": "mean",
+      "dtype": "q8",
+      "dimensions": 384,
+      "languages": [
+        "ar", "bg", "ca", "cs", "da", "de", "el", "en", "es", "et",
+        "fa", "fi", "fr", "gl", "gu", "he", "hi", "hr", "hu", "hy",
+        "id", "it", "ja", "ka", "ko", "ku", "lt", "lv", "mk", "mn",
+        "mr", "ms", "my", "nb", "nl", "pl", "pt", "ro", "ru", "sk",
+        "sl", "sq", "sr", "sv", "th", "tr", "uk", "ur", "vi", "zh"
+      ]
+    }
+  ]
+}

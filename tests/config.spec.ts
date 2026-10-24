@@ -227,3 +227,17 @@ describe('embedder config', () => {
     expect(resolved.remote?.apiKeyEnv).toBe('MY_KEY')
   })
 })
+
+describe('окно смены языка дворца', () => {
+  it('по умолчанию 30 секунд, значение передаётся как есть', () => {
+    // Пользователь просил менять длину окна без пересборки: «минута это много, 30 сек».
+    expect(resolveConfig({}).palaceChangeWindowSec).toBe(30)
+    expect(resolveConfig({ palaceChangeWindowSec: 45 }).palaceChangeWindowSec).toBe(45)
+  })
+
+  it('вне [5, 600] и не целое — ошибка, а не тихое приведение', () => {
+    expect(() => resolveConfig({ palaceChangeWindowSec: 4 })).toThrow(/palaceChangeWindowSec/)
+    expect(() => resolveConfig({ palaceChangeWindowSec: 601 })).toThrow(/palaceChangeWindowSec/)
+    expect(() => resolveConfig({ palaceChangeWindowSec: 12.5 })).toThrow(/palaceChangeWindowSec/)
+  })
+})

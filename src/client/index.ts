@@ -36,6 +36,15 @@ export const inject = ['slots', 'locale']
 export const PANEL_ID = 'engram' as MainPanelId
 
 /**
+ * Форма кода языка, который пришёл с сервера словарём.
+ *
+ * Те же правила, что у сервера (`src/i18n/language.ts`), и не ради красоты: код
+ * объявляется хосту через `addLanguage`, а тот проверяет форму сам и отказывает
+ * всему пакету — одна кривая строка из ответа отняла бы язык целиком.
+ */
+const LANGUAGE_ID = /^[a-z]{2,3}(-[a-z0-9]{2,8})*$/
+
+/**
  * Client plugin body: 注册 zh/en 词典、双槽位（main + sidebar.panellist）。
  *
  * 面板的「项目宫殿」跟随 GUI 当前工作区，需要宿主的工作区/会话清单服务；
@@ -60,6 +69,65 @@ export function apply(ctx: Context): void {
   }, 'dsh-engram: ru language')
   // Словарь внешнего языка регистрируется по-локально, отдельно от встроенных.
   ctx.effect(() => ctx.locale.register(NS, 'ru', ru), 'dsh-engram: ru dictionary')
+  // Языки, чьи тексты панели приходят словарём из файла (`<dbDir>/i18n/panel.<код>.txt`).
+  //
+  // Хост знает только те языки, которые объявили плагины, поэтому язык, добавленный
+  // файлом реестра и словарём, до сих пор был виден серверу и невидим переключателю:
+  // человек выбирал «французский» для дворца и не мог выбрать его для интерфейса.
+  // Здесь язык объявляется, а его словарь регистрируется — тем же способом, каким это
+  // делает любой пакет языка, только словарь не вшит в сборку, а приходит с сервера.
+  //
+  // Запрос асинхронный и необязательный: не ответил — работаем вшитыми языками, как
+  // и раньше. Откат снимает и словарь, и язык: перезагрузка не должна копить объявления.
+  ctx.effect(() => {
+    const disposers: (() => void)[] = []
+    let stopped = false
+    void (async () => {
+      try {
+        const response = await fetch('/api/engram/locales')
+        if (!response.ok) return
+        const payload = (await response.json()) as { packs?: unknown }
+        const packs = Array.isArray(payload.packs) ? (payload.packs as unknown[]) : []
+        for (const raw of packs) {
+          if (stopped) return
+          const pack = raw as { code?: unknown, label?: unknown, entries?: unknown }
+          const code = typeof pack.code === 'string' ? pack.code.toLowerCase() : ''
+          if (!LANGUAGE_ID.test(code)) continue
+          const entries: Record<string, string> = {}
+          if (typeof pack.entries === 'object' && pack.entries !== null) {
+            for (const [left, right] of Object.entries(pack.entries as Record<string, unknown>)) {
+              if (typeof right === 'string' && right !== '') entries[left] = right
+            }
+          }
+          if (Object.keys(entries).length === 0) continue
+          // Язык мог быть объявлен раньше: повторное объявление бросает, и это не ошибка —
+          // словарь ниже подхватится всё равно.
+          try {
+            disposers.push(ctx.locale.addLanguage({
+              id: code,
+              label: typeof pack.label === 'string' && pack.label !== '' ? pack.label : code,
+              fallback: 'en',
+            }))
+          } catch {
+            // Язык уже объявлен (например, пакетом локализации): словарь ниже всё равно нужен.
+          }
+          disposers.push(ctx.locale.register(NS, code, entries as Record<EngramKey, string>))
+        }
+      } catch {
+        // Сети или маршрута нет: остаёмся на вшитых языках, панель работает как прежде.
+      }
+    })()
+    return () => {
+      stopped = true
+      for (const dispose of disposers.reverse()) {
+        try {
+          dispose()
+        } catch {
+          // Снятие уже снятого не чинится: это уборка, а не работа панели.
+        }
+      }
+    }
+  }, 'dsh-engram: file languages')
   const t = ctx.locale.bind(NS)
   // 可选服务：按运行时形状取用（不硬依赖 @deepseek-ai/dsh-api-* 客户端包）；
   // 用 getter 现取而不是 apply 时取实例——这两个服务可能在本插件之后才挂载。

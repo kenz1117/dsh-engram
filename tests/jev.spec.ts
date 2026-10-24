@@ -309,6 +309,78 @@ describe('裁决观测插桩', () => {
   })
 })
 
+describe('след сорванного решения Jev в журнале', () => {
+  /** Строка, которую плагин пишет в op_log; содержимое памяти туда попадать не должно. */
+  interface AuditRow { op: string; target: string; detail: string }
+  let rows: AuditRow[]
+
+  beforeEach(() => { rows = [] })
+
+  /** Заглушка базы: ближайший сосед попадает в полосу deferred, аудит складывается в массив. */
+  function auditStore(neighbor: MemoryRecord): EngramStore {
+    return {
+      nearestNeighbor: async () => ({ record: neighbor, similarity: 0.9 }),
+      audit: async (op: string, target: string, detail: string) => { rows.push({ op, target, detail }) },
+    } as unknown as EngramStore
+  }
+  const embedding = new Float32Array(4).fill(0.5)
+
+  it('молчание Jev в模糊带 оставляет строку с причиной и вопросом', async () => {
+    const decision = await decideWrite(
+      auditStore(makeRecord('память A')), 'fact', embedding,
+      { judge: fakeJudge(new Error('network down')), content: 'память B' },
+    )
+    // Запись не сломалась: решение как раньше — defer.
+    expect(decision).toEqual({ disposition: 'defer', neighbor: makeRecord('память A'), similarity: 0.9 })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.op).toBe('jev-fallback')
+    expect(rows[0]?.target).toBe('AUX')
+    const detail = JSON.parse(rows[0]!.detail) as Record<string, unknown>
+    expect(detail['site']).toBe('band')
+    expect(detail['question']).toBe('same_memory')
+    expect(detail['reason']).toBe('network down')
+    expect(typeof detail['elapsedMs']).toBe('number')
+    // Текст памяти в журнал не едет: он там не нужен, а вторым хранилищем журнал быть не должен.
+    expect(rows[0]!.detail).not.toContain('память A')
+    expect(rows[0]!.detail).not.toContain('память B')
+  })
+
+  it('ответ Jev без вероятности тоже даёт строку', async () => {
+    const noAnswer: MemoryJudge = {
+      deferMergeAbove: 0.85,
+      deferAcceptBelow: 0.15,
+      contradictMinProbability: 0.8,
+      ask: async () => ({}),
+    }
+    await decideWrite(auditStore(makeRecord('A')), 'fact', embedding, { judge: noAnswer, content: 'B' })
+    expect(rows).toHaveLength(1)
+    expect(JSON.parse(rows[0]!.detail)['reason']).toBe('ответ без вероятности')
+  })
+
+  it('удачное решение Jev журнал не трогает', async () => {
+    await decideWrite(auditStore(makeRecord('A')), 'fact', embedding, { judge: fakeJudge(0.9), content: 'B' })
+    await confirmContradictions(fakeJudge(0.9), 'новое', [makeRecord('A', 'm-a')], auditStore(makeRecord('C')))
+    expect(rows).toEqual([])
+  })
+
+  it('срыв подтверждения противоречий даёт строку и не меняет договор', async () => {
+    const confirmed = await confirmContradictions(
+      fakeJudge(new Error('boom')), 'новое', [makeRecord('A', 'm-a')], auditStore(makeRecord('C')),
+    )
+    expect(confirmed).toBeUndefined()
+    expect(rows).toHaveLength(1)
+    const detail = JSON.parse(rows[0]!.detail) as Record<string, unknown>
+    expect(detail['site']).toBe('contradiction')
+    expect(detail['reason']).toBe('boom')
+  })
+
+  it('без базы (старый вызов) журнал не пишется и ошибки нет', async () => {
+    const confirmed = await confirmContradictions(fakeJudge(new Error('boom')), 'новое', [makeRecord('A', 'm-a')])
+    expect(confirmed).toBeUndefined()
+    expect(rows).toEqual([])
+  })
+})
+
 describe('observe 环形缓冲', () => {
   beforeEach(() => { clearJevObservations() })
 
@@ -349,5 +421,38 @@ describe('testJevConnection', () => {
     expect(result.ok).toBe(false)
     expect(result.probability).toBeUndefined()
     expect(result.error).toContain('HTTP 401')
+  })
+
+  // Вид отказа панель показывает словом: «ключ не принят» (http), «молчит» (network),
+  // «не уложились в тайм-аут» (timeout) и «ответ не по протоколу» (shape) требуют разных
+  // действий, а по тексту ошибки это приходилось угадывать.
+  it('отказ по HTTP разбирается кодом: kind=http, status=401', async () => {
+    stubFetch({}, 401)
+    const result = await testJevConnection(connection)
+    expect(result.kind).toBe('http')
+    expect(result.status).toBe(401)
+  })
+
+  it('сетевой отказ: kind=network, кода нет', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed') }))
+    const result = await testJevConnection(connection)
+    expect(result.kind).toBe('network')
+    expect(result.status).toBeUndefined()
+  })
+
+  it('тайм-аут отличается от сети по имени ошибки', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+    }))
+    const result = await testJevConnection(connection)
+    expect(result.kind).toBe('timeout')
+    expect(result.status).toBeUndefined()
+  })
+
+  it('ответ не по протоколу: kind=shape', async () => {
+    stubFetch({ answers: null })
+    const result = await testJevConnection(connection)
+    expect(result.kind).toBe('shape')
+    expect(result.error).toContain('missing answers')
   })
 })

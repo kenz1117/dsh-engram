@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>记忆宫殿 — 已完成的工作：多语言与数据库秩序</title>
+<style>
+:root {
+  --ink: #0f172a; --ink2: #334155; --muted: #64748b; --line: #e2e8f0; --soft: #f8fafc;
+  --brand: #4338ca; --brand2: #6366f1; --accent: #7c3aed;
+  --ok: #10b981; --warn: #f59e0b; --err: #f87171;
+  --mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; padding: 0 0 80px;
+  background: #f4f5f9; color: var(--ink);
+  font-family: 'Segoe UI', 'Noto Sans', Arial, sans-serif;
+  font-size: 16px; line-height: 1.62;
+}
+.page { max-width: 1040px; margin: 0 auto; background: #fff; padding: 56px 64px 72px; box-shadow: 0 12px 40px -24px rgba(15,23,42,.35); }
+header.doc { border-bottom: 3px solid var(--brand); padding-bottom: 22px; margin-bottom: 34px; }
+header.doc .kicker { font-size: 12.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+header.doc h1 { margin: 10px 0 6px; font-size: 34px; line-height: 1.18; letter-spacing: -.01em; }
+header.doc .lead { margin: 0; color: var(--ink2); font-size: 17px; }
+header.doc .meta { margin-top: 14px; color: var(--muted); font-size: 13.5px; }
+h2 { font-size: 25px; line-height: 1.22; margin: 54px 0 16px; padding-top: 8px; border-top: 1px solid var(--line); }
+h2 .num { color: var(--brand2); font-weight: 700; margin-right: 10px; }
+h3 { font-size: 18.5px; margin: 30px 0 10px; color: var(--ink); }
+h4 { font-size: 16px; margin: 22px 0 8px; color: var(--ink2); }
+p { margin: 0 0 12px; }
+ul, ol { margin: 0 0 14px; padding-left: 24px; }
+li { margin: 5px 0; }
+li > ul, li > ol { margin: 6px 0 4px; }
+a { color: var(--brand); }
+code, .mono { font-family: var(--mono); font-size: 13.5px; background: #f1f5f9; border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+pre { background: #0f172a; color: #e2e8f0; padding: 14px 18px; border-radius: 10px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+pre code { background: none; border: 0; padding: 0; color: inherit; }
+table { width: 100%; border-collapse: collapse; margin: 6px 0 20px; font-size: 14.5px; }
+th { text-align: left; font-weight: 600; color: var(--ink2); background: var(--soft); border-bottom: 2px solid var(--line); padding: 9px 12px; }
+td { border-bottom: 1px solid var(--line); padding: 9px 12px; vertical-align: top; }
+td:first-child { white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+.note, .warnbox, .dec { border-radius: 10px; padding: 14px 18px; margin: 16px 0 20px; font-size: 15px; }
+.note { background: #f5f3ff; border-left: 4px solid var(--accent); }
+.warnbox { background: #fffbeb; border-left: 4px solid var(--warn); }
+.dec { background: #ecfdf5; border-left: 4px solid var(--ok); }
+.note b, .warnbox b, .dec b { display: block; margin-bottom: 4px; }
+.fig { margin: 22px 0 26px; padding: 14px 14px 6px; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+.fig svg { display: block; width: 100%; height: auto; }
+.fig figcaption { margin-top: 10px; font-size: 13.5px; color: var(--muted); }
+.totop { margin: 26px 0 0; text-align: right; }
+.btn { display: inline-block; padding: 7px 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--soft); color: var(--ink2); text-decoration: none; font-size: 14px; }
+.btn:hover { border-color: var(--brand2); color: var(--brand); }
+#toc { background: var(--soft); border: 1px solid var(--line); border-radius: 14px; padding: 22px 26px; margin-bottom: 8px; }
+#toc h2 { margin: 0 0 12px; border: 0; padding: 0; font-size: 20px; }
+#toc ol { margin: 0; padding-left: 22px; }
+#toc li { margin: 4px 0; }
+#toc a { text-decoration: none; }
+#toc a:hover { text-decoration: underline; }
+dl.terms { margin: 0; }
+dl.terms dt { font-weight: 600; margin-top: 16px; color: var(--ink); }
+dl.terms dd { margin: 4px 0 0; color: var(--ink2); }
+.small { font-size: 14px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="page">
+<header class="doc">
+  <div class="kicker">dsh-engram · dsv180 衍生版 · 分支 pr/upstream-lift</div>
+  <h1>记忆宫殿：做了什么</h1>
+  <p class="lead">多语言、数据注册表、数据库处理、联锁保险以及顺带的修复——放在同一份说明里，附决策原因与示意图。</p>
+  <div class="meta">2026 年 10 月 23 日的草稿 · 插件版本 0.9.8-dsv.27 · 按作者 v0.9.3 发行版（<span class="mono">1aa2e82</span>）写成，已升级到 v0.9.8（<span class="mono">9ee94b0</span>）</div>
+</header>
+
+<div class="warnbox"><b>本文按 0.9.3 写成，升级已完成</b>
+以下内容都是在作者的 <b>v0.9.3</b> 发行版（提交 <span class="mono">1aa2e82</span>）上完成并验证的。<b>2026 年 10 月 23 日，分支已升级到作者当前版本——v0.9.8，合并请求 <a href="https://github.com/kenz1117/dsh-engram/pull/36">#36</a>。</b>升级带来的变化：Jev 按 DSH 的提供商与模型组装（这部分作者的版本比我们新，我们的没有搬过去）；请求体的读取改用他的 <span class="mono">http-body</span> 模块，有字节上限与 413/400 应答——现在也作用于我们新增的路由；代码中的词典保留 en 与 zh，俄语以文件形式提供。下面描述的内容没有任何回退：升级改的是<i>做法</i>，不是<i>做了什么</i>。你评审后推上来的两个修复（<span class="mono">0694dc5</span>、<span class="mono">70682fe</span>）原样保留；第四个提交（<span class="mono">b3df0d7</span>）补回了升级时丢掉的东西：我们构建的版本标记、文件语言的客户端一半、Jev 检查里的失败种类与 HTTP 码。</div>
+
+<div id="toc">
+<h2>目录</h2>
+<p class="small">紧随目录之后是<a href="#terms">术语与缩写</a>：遇到不理解的词时，就回到这里。</p>
+<ol>
+  <li><a href="#c1">问题：为什么记忆宫殿在其他语言下无法工作</a></li>
+  <li><a href="#c2">宫殿的主轴：首次启动时语言如何确定</a></li>
+  <li><a href="#c3">切换宫殿语言：一个集中起来的条件</a></li>
+  <li><a href="#c4">库标记与语言注册表：语言作为数据</a></li>
+  <li><a href="#c5">词典：什么留在代码里，什么以文件形式提供</a></li>
+  <li><a href="#c6">模型、绑定与向量维度</a></li>
+  <li><a href="#c7">库的模式：处理器如何理解什么放在哪里</a></li>
+  <li><a href="#c8">可维护档案：为什么规则被拆成单独的包</a></li>
+  <li><a href="#c9">过程中我们改了什么，以及为什么</a></li>
+  <li><a href="#c10">如何验证以及如何随包提供</a></li>
+  <li><a href="#c11">维护：库的状态、修复与日志</a></li>
+  <li><a href="#c12">还剩下什么，以及我们向作者请求什么</a></li>
+  <li><a href="#c13">与工作计划的对应关系</a></li>
+</ol>
+<p class="small">附录：<a href="#appA">A. 提交时间线</a> · <a href="#appB">B. 文件：新增了什么、修改了什么</a></p>
+</div>
+
+<h2 id="terms"><span class="num">·</span>术语与缩写</h2>
+<p>这些词在文中经常出现，而在作者那里可能含义不同。不必把这一节通读一遍——遇到不理解的术语时再回来查。</p>
+<dl class="terms">
+<dt>记忆宫殿（palace）</dt>
+<dd>插件的记忆存储：记忆（nodes）、观察项（observations）、实体、档案。它以 SQLite 文件的形式存放在插件的数据目录中。我们文中的「宫殿」指的就是它，而不是界面。</dd>
+
+<dt>面板（EngramPanel）</dt>
+<dd>DSH 内插件的界面：标签页「今天」「库」「走廊」「日志」「维护」。面板是客户端那一半，它负责绘制，不决定往库里写什么。</dd>
+
+<dt>宿主（DSH）、Fiber、插件</dt>
+<dd>DSH 是插件所运行于其中的应用。Fiber 是宿主进程中已加载的插件实例。「重启插件」指的是重启 DSH：宫殿语言在下次启动时生效。</dd>
+
+<dt>宫殿语言</dt>
+<dd>键 <code>config.language</code>。它决定：向量按哪个模型计算，插件用哪种语言写面向代理的服务文本与指令，新记忆使用哪种语言，库用哪个标记署名。它半自动变更：依据人的对话或窗口里的回答。</dd>
+
+<dt>界面语言</dt>
+<dd>面板文字与服务消息的语言。可随时自由切换，不影响模型、不影响宫殿语言，也不影响数据。两条轴不能混淆——这是第 2 章的主旨。</dd>
+
+<dt>库标记（model_label）</dt>
+<dd>库文件 <code>meta</code> 表中的一行，形如 <code>ru-minilm-l12</code>：语言代码、连字符、模型短名。这是我们写入他人库的唯一内容。语言是第一个连字符之前的那部分标记；模型名不是语言。</dd>
+
+<dt>注册表（registry/*.json）</dt>
+<dd>以数据代替代码中的常量：<code>models.json</code> — 模型目录（维度、池化、类型），<code>bindings.json</code> — 「语言 → 模型」绑定，<code>languages.json</code> — 宫殿认识哪些语言，<code>schema.json</code> — 哪些表带有向量。用户层位于数据目录中，优先级高于随包提供的内容。</dd>
+
+<dt>模式声明</dt>
+<dd><code>registry/schema.json</code>。对每张表：<code>role</code>（user 或 service）、<code>properties.vector.text</code> — 从哪个字段读取文本、<code>properties.vector.where</code> — 哪些行参与。向量字段不声明：它作为唯一一个 BLOB 类型的字段推导出来。</dd>
+
+<dt>库的七种状态</dt>
+<dd><code>absent</code> — 文件还不存在；<code>empty</code> — 没有记忆；<code>no-label</code> — 没有标记；<code>other-model</code> — 标记属于别的模型；<code>mixed-dims</code> — 向量长度不一致；<code>missing-vectors</code> — 部分记忆没有向量；<code>normal</code> — 一切就位。</dd>
+
+<dt>四个动作</dt>
+<dd><code>none</code> — 什么都不做；<code>write-label</code> — 写入标记，不碰向量；<code>convert</code> — 按所选模型重算向量；<code>repair</code> — 为缺少向量的记忆补写向量。</dd>
+
+<dt>向量重算（转换）</dt>
+<dd>一种操作应对两种场合：迁移到另一个模型和修复。判据只有一个——模式作用域中向量为空、或长度不等于预期的那一行。记忆文本不变。</dd>
+
+<dt>嵌入器、向量、维度</dt>
+<dd>嵌入器是把文本转成向量（一组数字）的模型。维度是向量中包含多少个数字：<code>bge-small-zh</code> 是 512，多语言 <code>minilm-l12</code> 是 384。不同维度的向量无法比较，因此维度是硬性条件，而不是提示。</dd>
+
+<dt>余弦（相似度阈值）</dt>
+<dd>衡量两个向量接近程度的度量，取值 0 到 1。它决定是否把记忆当作重复项（<code>MERGE_COSINE = 0.92</code>）、是否推迟合并（<code>DEFER_COSINE = 0.88</code>）、是否互相矛盾（<code>CONTRADICTION_COSINE = 0.88</code>），以及某条记忆是否进入搜索（<code>MIN_COSINE = 0.2</code>）。</dd>
+
+<dt>词典，内置集合，用户层</dt>
+<dd>词典是「英文字符串 → 译文」的文件。内置集合是代码里的译文（<code>src/i18n/catalog</code>、<code>src/client/locales</code>）。用户层是数据目录里的文件，优先级高于随包提供的部分，重装时不会丢失。</dd>
+
+<dt>人工维护的档案</dt>
+<dd>由人自己通过 <code>engram_profile_edit</code> 工具维护的规则块。它在会话开头被插入，位置早于自动推导出的档案，且优先级高于后者。在会话文本中以单独的数据包 <code>&lt;engram_profile&gt;</code> 形式出现。</dd>
+
+<dt>联锁保险</dt>
+<dd>默认状态下阻止危险动作的复选框。取消勾选是人一次单独的、有意识的操作，而不是一项设置。</dd>
+
+<dt>已凑齐的条件</dt>
+<dd>我们对触发宫殿语言切换的那条规则的叫法：语言切换、已解除的联锁保险和按下按钮，在同一个时间窗口内按「与」组合。条件没凑齐，就什么也不会发生。</dd>
+
+<dt>维护卡片</dt>
+<dd>面板中显示各库状态、所选模型、语言和词典的区域。它给出一句关于各库的汇总判断（「正常」「需要修复」「需要转换」），以及一个按钮，用来执行当前状态所要求的动作。</dd>
+
+<dt>库快照</dt>
+<dd>由 <code>VACUUM INTO</code> 命令生成的库副本。与直接复制文件不同，它是一致的：不会在写入的瞬间抓到库。</dd>
+
+<dt>门禁（检查）</dt>
+<dd>随包提供前必须做的检查：类型、文案一致性、测试、代码规则。「门禁是绿的」意思是「检查已通过」。</dd>
+
+<dt>PR、上游、分支</dt>
+<dd>上游是作者的仓库（<code>kenz1117/dsh-engram</code>），我们的基线是它的标签 <code>v0.9.3</code>。我们的工作放在 <code>work/dsv</code> 分支上；两个 pull request 已经合并：#20（Jev）——10 月 21 日，#21（嵌入器与多语言）——10 月 22 日。</dd>
+
+<dt>Jev (System One)</dt>
+<dd>作者那边的记忆外部检查。我们这一部分只涉及界面和取值替换，不涉及对提供方的检查。</dd>
+
+<dt>FTS（全文搜索）</dt>
+<dd>SQLite 中用于按词搜索的辅助表（<code>nodes_fts</code> 及其影子表）。它们不承载向量，不参与库的处理——在模式声明中标为 <code>role: service</code>。</dd>
+
+<dt>区域设置</dt>
+<dd>操作系统的语言。原样取用（「fr」「ru」），不归并到我们的三种语言：否则法国人会被当成英语用户而拿到英语。</dd>
+
+<dt>气泡提示（浮层提示）</dt>
+<dd>面板的弹出消息。面板有自己的机制和种类：<code>info</code>、<code>success</code>、<code>error</code>、<code>warning</code> 和 <code>reset</code>——淡粉色，用于自行发生且未破坏任何东西的事件。</dd>
+</dl>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c1"><span class="num">1.</span>任务：宫殿为什么在其他语言下不工作</h2>
+
+<p>作者的记忆宫殿只支持两种语言：中文和英文。界面文案和辅助消息写在代码里，嵌入模型是中文的（<code>bge-small-zh</code>，每个向量 512 个数），而配置里的「语言」概念实际上只是一个词：字符串 <code>auto | zh | en | ru</code>，以 TypeScript 形式写死在四个地方。由此生出三个问题，每一个在真实数据上都能看到。</p>
+
+<h3>问题一：换语言就必然弄坏库</h3>
+<p>模型决定向量长度。换模型就意味着得到这样的库：一部分向量是一个长度，另一部分是另一个长度。在这种数据上搜索要么直接崩溃，要么安静地丢掉一半记忆。而且库里没有记录过它自己是按<em>什么</em>算出来的：唯一的标志是向量长度，而向量长度对语言什么也说明不了。</p>
+
+<h3>问题二：不重新构建插件就加不了语言</h3>
+<p>三元组 <code>zh | en | ru</code> 活在代码里：在配置校验里、在库标记的解析里、在面板的选择列表里，以及在服务端那一半的语言集合里。加第四种语言需要在四个地方各改一处 TypeScript，并重新发版。对于一个让人自己安装的工具，这不可接受：语言是数据，不是代码。</p>
+
+<h3>问题三：两件不同的事都叫「语言」</h3>
+<p>面板标签的语言可以随时自由切换，且不应改变记忆中的任何东西。宫殿语言则决定模型、给智能体的指令以及新记忆的语言。当两者都叫「语言」时，任何关于它们的决定都是凭感觉做的。我们把它们拆成两条轴——这是理解后面全部工作的第一件事。</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 480" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="480" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">语言的两条轴：界面与宫殿</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">这是两件不同的事，不能混：一条只改文字，另一条改记忆的行为</text>
+<rect x="40" y="92" width="920" height="150" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">界面轴 · 自由切换</text>
+<rect x="60" y="124" width="260" height="100" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="190" y="162.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">面板语言</text>
+<text x="190" y="179.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">自动或手动；跟随语言</text>
+<text x="190" y="194.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">DSH</text>
+<rect x="360" y="124" width="260" height="100" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="490" y="162.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">标签词典</text>
+<text x="490" y="179.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">zh / en / ru 在代码里，其余——</text>
+<text x="490" y="194.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">用文件</text>
+<rect x="660" y="124" width="280" height="100" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="800" y="170" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">只改文字</text>
+<text x="800" y="187" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">模型、标记、记忆都不变</text>
+<path d="M 320 174 L 358 174" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 620 174 L 658 174" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="40" y="258" width="920" height="160" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="286" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">宫殿轴 · 由宫殿掌管的开关</text>
+<rect x="60" y="292" width="260" height="108" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="190" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">config.language</text>
+<text x="190" y="351.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">半自动：依据对话或</text>
+<text x="190" y="366.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">窗口里的回答</text>
+<rect x="360" y="292" width="260" height="108" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="490" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">它掌管什么</text>
+<text x="490" y="351.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">模型、指令、新记忆的</text>
+<text x="490" y="366.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">语言、库的标记</text>
+<rect x="660" y="292" width="280" height="108" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="800" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">改变宫殿行为</text>
+<text x="800" y="351.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">因此换语言要配合</text>
+<text x="800" y="366.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">库的重算</text>
+<path d="M 320 346 L 358 346" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 620 346 L 658 346" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 120 224 L 120 290" fill="none" stroke="#f59e0b" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#arwA)"/>
+<text x="128" y="262" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#b45309" text-anchor="start" font-weight="600">不受影响</text>
+<text x="40" y="452" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#475569" text-anchor="start">因此，选择界面语言只是「看看」，并不会翻译宫殿；而更换宫殿语言也不动已经写下的东西——改变的是宫殿此后用什么来写。</text>
+</svg><figcaption>图 1. 语言的两条轴。上面一条只改文字，下面一条改记忆的行为。因此选择语言「看看」并不会翻译宫殿，而更换宫殿语言也不会动已经写下的内容。</figcaption></figure>
+
+<div class="dec"><b>我们如何界定这个问题</b>
+让宫殿语言成为<em>显式</em>状态（可见且可控），而不是恰好装着哪个模型的结果；让新语言只靠数据添加——一个词典文件加一行绑定注册表记录；并且让切换语言始终伴随向量重算，而不是把宫殿留在「一半用一种语言、一半用另一种语言」的状态。</div>
+
+<h3>其中已经可用的部分</h3>
+<ul>
+  <li>宫殿语言在首次启动时确定并写入配置；带四个选项的窗口可用。</li>
+  <li>库标记 <code>&lt;语言&gt;-&lt;模型&gt;</code> 写入 <code>meta</code> 并可反向读出；由它可以看出库属于谁。自 22.10 起，标记在打开库时自动写入——但仅限不会破坏任何东西的场合（第 4 章）。</li>
+  <li><code>models.json</code>、<code>bindings.json</code>、<code>languages.json</code>、<code>schema.json</code> 都是数据；语言和模型通过文件添加。</li>
+  <li>从维护卡片发起的向量重算可用，并已在现用库上验证。另有独立的修复功能：为没有向量的记忆补算，不改动语言，也不改动模型（第 11 章）。</li>
+  <li>俄语存放在 <code>i18n/ru.txt</code> 文件里（485 条文本，文件 501 行），英语和中文仍留在作者的代码中。</li>
+  <li>词典与程序通过四个数字核对——程序中的键数、文件中的行数、未翻译数、无键数（第 5 章）。</li>
+</ul>
+<p>尚未完成的部分在第 11 章，那里也说明了其中哪些是我们的工作、哪些要等作者处理。</p>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c2"><span class="num">2.</span>宫殿的轴心：首次启动时如何确定语言</h2>
+
+<p>宫殿语言不是「看看就好」的设置。它承载的东西太多，不能默默设定，因此只决定一次，并且依据一条清晰的规则：<em>如果人已经用某种语言与代理说过话，那就是宫殿语言；如果没有可依据的言语，就去问</em>。</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="700" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">首次启动：宫殿如何选语言</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">开头一个分叉，三种结果。只有在无从判断时才弹窗询问</text>
+<rect x="340" y="104" width="320" height="56" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="500" y="128" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">config.language 已设置？</text>
+<text x="500" y="145" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">具体语言代码</text>
+<text x="352" y="96" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#4f46e5" text-anchor="start">否——自行判断</text>
+<path d="M 500 160 L 500 186" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="340" y="186" width="320" height="62" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="500" y="213" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">读取人的发言</text>
+<text x="500" y="230" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">仅当前会话；不读日志</text>
+<path d="M 500 248 L 500 274" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="340" y="274" width="320" height="64" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="500" y="302" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">对话语言已确定？</text>
+<text x="500" y="319" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">不少于 40 个字母，占比 ≥ 0,6</text>
+<path d="M 340 306 L 200 306 L 200 372" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="208" y="298" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#047857" text-anchor="start">是，库一致</text>
+<path d="M 500 338 L 500 372" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="508" y="360" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#b45309" text-anchor="start">没有发言</text>
+<path d="M 660 306 L 800 306 L 800 372" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="700" y="298" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#b45309" text-anchor="start">库为另一种语言</text>
+<rect x="40" y="372" width="300" height="190" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">自动——宫殿自行决定</text>
+<rect x="60" y="404" width="258" height="66" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="189" y="433" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">将对话语言写入配置</text>
+<text x="189" y="450" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">仅在有人的发言为依据时</text>
+<rect x="60" y="484" width="258" height="60" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="189" y="501.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">面板提示依据</text>
+<text x="189" y="518.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">已设定</text>
+<text x="189" y="535.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">「重启后生效」</text>
+<rect x="340" y="372" width="320" height="250" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="360" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">询问——没有依据</text>
+<rect x="360" y="404" width="280" height="72" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="500" y="428.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">面板根部的窗口</text>
+<text x="500" y="445.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">ZH / EN / RU / 其他语言；预置值</text>
+<text x="500" y="460.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">——Windows 区域设置</text>
+<rect x="360" y="490" width="280" height="92" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="500" y="517" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">所选以语言代码写入</text>
+<text x="500" y="534" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">ZH、EN、RU 原样；「其他语言」——</text>
+<text x="500" y="549" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">真实的区域代码（fr），而不是</text>
+<text x="500" y="564" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">英语替代品</text>
+<rect x="680" y="372" width="280" height="250" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="700" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">不一致</text>
+<rect x="700" y="404" width="240" height="72" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="820" y="436" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">窗口：对话为 X，库为 Y</text>
+<text x="820" y="453" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">预置值——对话语言</text>
+<rect x="700" y="490" width="240" height="92" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="820" y="524.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">同一个选择窗口</text>
+<text x="820" y="541.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">一次安装不能同时使用</text>
+<text x="820" y="556.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">两种语言</text>
+<path d="M 200 562 L 200 640 L 500 640" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 500 582 L 500 640" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 820 622 L 820 640 L 500 640" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="340" y="640" width="320" height="46" rx="10" fill="#4338ca" stroke="#4338ca" stroke-width="2"/>
+<text x="500" y="666.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#ffffff" text-anchor="middle">重启插件——语言生效</text>
+<text x="40" y="690" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#991b1b" text-anchor="start">在任何一步都不会转换记忆和向量：语言是开关，不是转换</text>
+</svg><figcaption>图 2. 首次启动。只有一个分叉：配置中是否已设置语言。若未设置，宫殿会查看人的言语和库标记，窗口只在无从判断或信号相互矛盾时出现。</figcaption></figure>
+
+<h3>什么才算人的发言</h3>
+<p>发言只取自<em>当前</em>会话，且只取 <code>source.kind === 'user'</code> 的那些。这比看起来更重要：同一批事件里还会进来英文的服务性文本——运行时快照、技能目录、代理指令、其他插件的插入内容。在实机检查中，宫殿正是因此在这一点上错过一次：「对话语言」变成了英语，因为服务性文本被当成了言语。修正后，一切不熟悉的内容都不再计入：往「询问」的方向错，比指派一门外语更安全。</p>
+
+<p>启动时不读取会话日志。这不是谨慎，而是补救：日志是整份读取的，在真实数据上，每次宿主启动都要花掉数百兆内存——宿主曾因此崩溃过一次。当前会话的发言本来就在进程内存里。</p>
+
+<h3>阈值：何时认定语言已确定</h3>
+<p>样本中至少需要 40 个字母，且主导语言的占比不低于 0,6。仅凭「你好」和「ok」不会判定语言——否则宫殿会因为一句偶然的话就切换。划分依据文字系统：西里尔字母为俄语，汉字为中文，拉丁字母为英语。像「ok, 谢谢」这样的混合发言完全不算作依据。</p>
+
+<h3>面板看到的三种情形</h3>
+<table>
+<tr><th>情形</th><th>何时</th><th>宫殿的做法</th></tr>
+<tr><td><code>auto</code></td><td>识别出人的言语，库为同一语言，或尚无库</td><td>自行写入对话语言，面板提示依据为何</td></tr>
+<tr><td><code>ask</code></td><td>没有发言或发言太少</td><td>在窗口中询问；预置值为 Windows 区域设置</td></tr>
+<tr><td><code>mismatch</code></td><td>对话为一种语言，库标记为另一种（或各库标记的语言不同）</td><td>显示不一致，并引导至同一个选择窗口</td></tr>
+</table>
+
+<h3>为何区域设置原样采用</h3>
+<p>机器的区域设置并不限于我们这三种语言。给法国人提供的是「其他语言」，而不是冒充其母语的英语——因为拿外语顶替不是帮助，而是欺骗，一周后就会暴露。如果区域设置读取失败，不会提交「其他语言」：会告知用户代码未能确定，并请其从宫殿的语言中选择一种。</p>
+
+<div class="note"><b>语言写入是启动后的单独一拍</b>
+在正在启动的 fiber 上修改配置会走常规路径（在应用设置过程中重新挂载），因此写入被推迟到下一拍，并走「实时」路径：值在运行中改变，插件不重新加载。只有依据对话作出的决定才会被写入；区域设置和界面 preference 对此来说太弱。</div>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c3"><span class="num">3.</span>切换宫殿语言：一个合并后的条件</h2>
+
+<p>记忆宫殿的语言切换不是「旁边又多了一个设置」。它改变的是宫殿此后写入所用的语言，因此它与库的重算绑在一起——是一个动作，而不是两个相邻的动作。而且它只能被有意识地启动：三个条件按「与」叠加。</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="560" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">宫殿语言切换：一个拼齐的条件，不是三个独立按钮</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">条件未完全拼齐前，不向配置写入任何内容</text>
+<rect x="40" y="120" width="300" height="70" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="190" y="151" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">1. 已选择另一个宫殿语言</text>
+<text x="190" y="168" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">人，不是自动机制</text>
+<rect x="40" y="214" width="300" height="70" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="190" y="245" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">2. 联锁保险已解除</text>
+<text x="190" y="262" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">同一表单中的复选框</text>
+<rect x="40" y="308" width="300" height="70" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="190" y="339" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">3. 已点击「执行」</text>
+<text x="190" y="356" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">只有它才发送请求</text>
+<path d="M 340 155 L 400 240" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 340 249 L 400 249" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 340 343 L 400 258" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="400" y="196" width="220" height="106" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="510" y="237.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">与：三个条件全部</text>
+<text x="510" y="254.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">以一个请求发往服务器</text>
+<text x="510" y="269.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">并一起校验</text>
+<path d="M 620 249 L 676 249" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="676" y="196" width="300" height="106" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="826" y="237.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">库重算已启动</text>
+<text x="826" y="254.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">语言切换与向量转换是一件事</text>
+<text x="826" y="269.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">一个动作，不是两个相邻动作</text>
+<rect x="40" y="420" width="936" height="58" rx="10" fill="#fef2f2" stroke="#f87171" stroke-width="1.5"/>
+<text x="508" y="445" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#991b1b" text-anchor="middle">30 秒窗口是设置 palaceChangeWindowSec，不是常量</text>
+<text x="508" y="462" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b91c1c" text-anchor="middle">计时从三个事件中的第一个开始，且存在于表单本身：这是人的同意，不是后台任务</text>
+<rect x="40" y="490" width="936" height="52" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="508" y="512" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">窗口过期——选择回落到库当前所用的语言，联锁保险自动复位</text>
+<text x="508" y="529" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">无需回退：点击「执行」之前什么都没写入，表单只是忘掉未拼齐的选择</text>
+</svg><figcaption>图 3. 拼齐的条件。语言已选、联锁保险已解除、按钮已点击——只有这时才发出一个请求，由服务器整体校验。窗口过期——选择回落到原处，没有任何写入。</figcaption></figure>
+
+<h3>为什么是三个条件而不是一个按钮</h3>
+<p>委托方的表述很直接：「用户只能有意识地启动转换：选择另一种语言、取消复选框、按下按钮——全部按「与」组合，且所有动作都发生在一分钟内。一分钟过去——一切回到原来的状态。」这不是防代码出错，而是防手一挥：宫殿语言不能「随手看看」改掉然后忘掉。</p>
+
+<h3>窗口是三十秒，而且它是设置项</h3>
+<p>窗口长度存放在插件设置里（<code>palaceChangeWindowSec</code>），而不是代码中的常量：改它不需要重新构建。计时从三个事件中<em>第一个</em>开始——语言切换或解除联锁保险，哪个先发生算哪个。窗口存在于表单本身，不在服务器上：这是人的同意，不是后台任务。两个标签页各有自己的表单，不能用另一个标签页里的动作把条件在一处拼齐——本就该如此。</p>
+
+<div class="warnbox"><b>点击「执行」之前，不向配置写入任何内容</b>
+因此「窗口过去了」的意思是「表单忘掉了未拼齐的选择」，而不是「回退了已写入的内容」。没有可回退的东西。选择回到库当前所用的语言（取自标记），联锁保险自行复位。</div>
+
+<h3>一个请求，不是三个</h3>
+<p>发往服务器的是一个带有全部三个条件的请求，也由它来做校验。否则分散在不同时间的调用可能事后拼成一个许可：「昨天换了语言、今天取消勾选、明天按了按钮」——于是产生一个并非此人拼齐的动作。</p>
+
+<h3>实现方式</h3>
+<p>条件校验是一个纯函数（<code>src/registry/palace-change.ts</code>），两侧都按它计算：面板决定显示什么，服务器决定是否接受请求。校验三件事：语言——是已存在的语言代码且不是同一个；窗口起点——是当前时间，不来自未来；窗口未过期。拒绝时用文字说明原因（「窗口已过期」、「选择的仍是同一语言」），而不是错误码。</p>
+<p>「执行」发送一个 <code>POST palace-change</code> 请求，也由它把事情做完：把语言写入配置、把库的标记改写为新语言、重算向量。刻意没有单独的「先语言、后库」——「语言是新的、库是旧的」这种中间状态会被人看到，且看不懂。</p>
+<p>按钮也保留给不换语言的作业：当所选语言与当前语言一致时不需要窗口，按钮只打标记或补算向量。否则要修复带有无向量记忆的库，就只能「换语言再换回来」。</p>
+
+<h3>现在已经可以验证什么</h3>
+<p>联锁保险与计时的机制可用维护卡片里的「面板测试」按钮验证：同一个窗口在测试模式下打开，不碰配置，窗口过期时显示粉色气泡「联锁保险已复位，选择已重置」。是粉色而非红色：什么都没坏，事件是自己发生的。</p>
+
+<div class="note"><b>这些今天在面板里已经有哪些</b>
+宫殿语言切换器于 22.10 出现，并在「22–23.10 已完成的内容」一节（第 12 章）中描述：在维护卡片里是「宫殿语言」区块——选择、联锁保险和「执行」在同一行。同一个按钮不换语言也能用：所选语言与当前语言一致时不需要窗口，它只打标记或补算向量。至今仍然没有的是——界面语言与宫殿语言不一致的单独指示：把界面切过去「看看」的人，看不到宫殿还停在另一种语言上。</div>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c4"><span class="num">4.</span>库标记与语言注册表：语言即数据</h2>
+
+<p>为了让宫殿知道库停在哪种语言上，会往库里写一行——<code>meta</code> 表中的标记：</p>
+<pre><code>key = model_label
+value = ru-minilm-l12</code></pre>
+<p>标记是我们写入别人库里的唯一内容。没有维度、没有时间、没有版本：维度可由模型目录按模型名推得，而副本会成为第二个真相来源，早晚与第一个不一致。</p>
+
+<h3>谁在什么时候打标记</h3>
+<p>标记不会一有机会就问人，但也不会「以防万一」就写上。规则只有一条——<code>src/registry/base-state.ts</code> 中的 <code>labelToStamp</code>，它在打开库时生效，早于任何按钮：</p>
+<ul>
+  <li><strong>库为空</strong>——立刻打上标记：之后就用那个模型写入，没有可争的。</li>
+  <li><strong>库没有标记，但数据已经在目标模型上</strong> — 会打上标记：这只是一条标注，不是转换，向量不动。</li>
+  <li><strong>库没有标记，而数据在别的模型上或处于混杂状态</strong> — 不打标记：那里需要重算，标注会撒谎。这样的库会一直显示为「没有标记」，直到人采取动作。</li>
+  <li><strong>标记已经存在</strong> — 不动它：即使它说的是别的模型，那也是关于数据的事实，不是重写的理由。</li>
+  <li><strong>库读取失败</strong>（文件损坏、被写入者占用）— 不打标注：看起来空的库可能其实是别人的，只是此刻读不出来。读取或写入错误不妨碍打开 — 库只是没有标记，日志里会说明这一点。</li>
+</ul>
+<p>规则和按钮那条一样：标记没有第二个真相来源。区别只在于，按钮一次遍历所有库并且会重算，而打开时的标注不会。</p>
+
+<h3>如何从标记读取语言</h3>
+<p>语言是标记在<em>第一个</em>连字符之前的部分。之所以按第一个切，是因为模型名里也有连字符（<code>minilm-l12</code>），语言子标签里也有：<code>zh-Hans-minilm-l12</code> 得到 <code>zh</code>，而不是「没有标记」。模型名永远不算语言 — 这条规则不得不单独加，因为「按模型猜语言」的诱惑很大，而且永远是错的。</p>
+
+<h3>语言代码不再是封闭列表</h3>
+<p>以前允许的取值是代码里的一行字符串。现在它们是文件 <code>registry/languages.json</code>。该文件有用户层（<code>&lt;dbDir&gt;/registry/languages.json</code>）：新语言在数据旁用一行声明，无需改动包 — 该行替换随包提供的同名行，而不需要重复整个列表。语言以同样的方式进入两个切换器：服务器通过单独的路由返回面板词典，客户端向宿主声明语言并注册文本。</p>
+<pre><code>{ "formatVersion": 1,
+  "languages": [
+    { "code": "zh", "label": "中文",    "builtin": true  },
+    { "code": "en", "label": "English", "builtin": true  },
+    { "code": "ru", "label": "Русский", "builtin": false }
+  ] }</code></pre>
+<ul>
+  <li><code>label</code> — 语言在选择列表里对人怎么称呼（以前面板显示 <code>ZH</code>，现在是 <code>中文</code>）。</li>
+  <li><code>builtin</code> — 插件有没有内置文本集。内置的有两套：<code>zh</code>（作者自己的）和 <code>en</code>（完整性样本）。其余的都来自文件。</li>
+</ul>
+<p><code>builtin</code> 这个标志不是为了好看：没有它就无法区分「语言存在但还没有译文」和「根本没有这门语言」。面板用与库状态同一个响应从服务器拿到语言列表：客户端构建里的那份三元组副本已删除，否则通过文件添加的语言会出现在服务器上，却不在选择列表里。</p>
+
+<div class="dec"><b>第四个选项传递真实代码</b>
+「其他语言」不再变成英语。给记忆宫殿写入的是原样的区域代码 — 例如 <code>fr</code>。带这种语言的记忆宫殿可以工作：服务性文本取英语（<code>fr</code> 没有内置集），记忆能理解，而一旦出现 <code>&lt;dbDir&gt;/i18n/fr.txt</code> — 它就会说法语。用 <code>en</code> 顶替则意味着把别人的语言当成「你的」。</div>
+
+<h3>这对作者意味着什么</h3>
+<p>新增一门语言只需三份数据：<code>languages.json</code> 里的一行、词典文件，以及 <code>bindings.json</code> 里的一行（用哪个模型来对应这门语言）。不用改一行 TypeScript，也不用重新构建。正因如此，语言列表是文件而不是常量：否则「再支持一门语言」就意味着「发布插件的新版本」。</p>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c5"><span class="num">5.</span>词典：什么留在代码里，什么以文件形式提供</h2>
+
+<p>界面和服务消息的译文存在于两处，这不是重复，而是不同的用途。代码里是那些必须始终存在、不依赖文件的东西：两套集合，英语（完整性样本和键的来源）和中文（作者的措辞）。文件里是其余一切，包括俄语。</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 620" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1000" height="620" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">词典：什么留在作者的代码里，什么以文件形式提供</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">英语和中文是内置集合。俄语及任何后续语言都是文件，无需改 TypeScript</text>
+<rect x="40" y="92" width="440" height="236" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">构建内（随包提供，代码）</text>
+<rect x="60" y="124" width="400" height="58" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+<text x="260" y="141.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#4c1d95" text-anchor="middle">src/i18n/catalog/*.ts — 服务端消息</text>
+<text x="260" y="158.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">en — 完整性样本和键的来源，zh — 作者的</text>
+<text x="260" y="173.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">措辞</text>
+<rect x="60" y="194" width="400" height="58" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+<text x="260" y="211.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#4c1d95" text-anchor="middle">src/client/locales/*.ts — 面板文本</text>
+<text x="260" y="228.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">en、zh、ru：界面标签，随语言一起切换</text>
+<text x="260" y="243.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">DSH</text>
+<rect x="60" y="264" width="400" height="50" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="260" y="285" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">在这里修改需要重新构建并发布</text>
+<text x="260" y="302" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">所以凡是要在不重建的情况下修改的，都放在文件里</text>
+<rect x="520" y="92" width="440" height="236" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="540" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">文件形式（数据，dbDir）</text>
+<rect x="540" y="124" width="400" height="58" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="740" y="149" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">i18n/ru.txt — 485 条文本</text>
+<text x="740" y="166" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">随包提供的服务端消息译文</text>
+<rect x="540" y="194" width="400" height="58" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="740" y="219" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">&lt;dbDir&gt;/i18n/ru.txt — 用户层</text>
+<text x="740" y="236" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">优先于随包提供；重装后仍保留</text>
+<rect x="540" y="264" width="400" height="50" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="740" y="285" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">&lt;dbDir&gt;/i18n/panel.ru.txt</text>
+<text x="740" y="302" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">面板同理：另一个文件，同一格式</text>
+<path d="M 260 328 L 260 360" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 740 328 L 740 360" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="140" y="360" width="240" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="260" y="383" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">服务端部分</text>
+<text x="260" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">message(language, key)</text>
+<rect x="620" y="360" width="240" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="740" y="383" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">面板</text>
+<text x="740" y="400" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">t(key)</text>
+<rect x="140" y="444" width="720" height="66" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="500" y="473" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">回退顺序：文件词典 → 内置集合 → 英语原文</text>
+<text x="500" y="490" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">没有文件时文本不是空的：会保留英语字符串，因此可以在翻译之前就添加语言</text>
+<rect x="140" y="530" width="720" height="62" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="500" y="557" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">新语言靠数据添加，而不是靠代码</text>
+<text x="500" y="574" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">文件 &lt;dbDir&gt;/i18n/fr.txt + registry/bindings.json 里的行；面板从 registry/languages.json 得知它</text>
+</svg><figcaption>图 4. 文本的两个来源。内置集合留在作者的代码里；俄语及任何后续语言以文件形式进入数据目录，且文件优先于随包提供。</figcaption></figure>
+
+<h3>词典的键是英语字符串</h3>
+<p>词典不是按键名，而是按英语文本：左边英语字符串，右边译文，分隔符是制表符。这样可以在不了解代码的情况下修改译文，而且键改名后也不会失效。代价是英语措辞成了契约的一部分：如果改动代码里的文本，译文就找不到了。所以文本很少改动，这是为了「无需重建即可修改」而做的自觉取舍。</p>
+
+<h3>两套集合，两个文件</h3>
+<table>
+<tr><th>集合</th><th>随包文件</th><th>用户层</th></tr>
+<tr><td>服务端消息（工具、提示词、警告的文本）</td><td><code>i18n/&lt;语言&gt;.txt</code></td><td><code>&lt;dbDir&gt;/i18n/&lt;语言&gt;.txt</code></td></tr>
+<tr><td>面板文本</td><td><code>i18n/panel.&lt;语言&gt;.txt</code></td><td><code>&lt;dbDir&gt;/i18n/panel.&lt;语言&gt;.txt</code></td></tr>
+</table>
+<p>两套条目不会混用：相同的英文字符串在两者中含义不同，因此「模型与词典」在面板里和在消息里是两个不同的译法。两者的格式、层级和解析规则是共通的。</p>
+
+<h3>回退顺序</h3>
+<p>文件词典 → 内置条目 → 英文原文。文件缺失不是错误，也不是空标签：会保留英文字符串。正因如此，新语言可以在翻译就绪之前先声明：记忆宫殿照常工作，文本则逐步翻译。</p>
+
+<h3>从面板编辑译文</h3>
+<p>维护卡片里有词典界面：一张「英文字符串 — 译文」表格，保存到用户层（随包提供的部分属于发行版，不予修改），以及 <b>「翻译」</b>按钮。它只把没有译文的单元格发给工作模型，不重写已有译文；返回的译文进入面板草稿，再由「保存」写入文件。清空单元格是撤销修改，而不是写入空字符串；只保存改动过的内容，以免编辑一个单元格时抹掉其余内容。</p>
+
+<h3>词典与程序的核对</h3>
+<p>词典界面不仅回答「这里写了什么」，还回答「它与程序是否一致」。表格上方有四个数字，每次打开时都会计算，而不是按按钮才算：</p>
+<table>
+<tr><th>数字</th><th>含义</th></tr>
+<tr><td><code>程序中的键数</code></td><td>代码本身声明了多少行——用于核对的基准</td></tr>
+<tr><td><code>词典中的行数</code></td><td>人的文件里有多少行，包括未翻译的占位条目</td></tr>
+<tr><td><code>未翻译</code></td><td>程序里的键没有可显示的内容：用户编辑和随包提供的部分都没有文本——它们会以英文输出</td></tr>
+<tr><td><code>无键</code></td><td>文件中左半部分在程序里已不存在的行：键被重命名或删除，译文却留了下来</td></tr>
+</table>
+<p>这些数字各自独立计算，前两个相等并不能说明什么：键可能恰好一一错开。因此旁边放的是发现项，每一项都可点击——「未翻译」和「无键」会筛选表格。无键的行不能简单丢弃：保存时它不会丢失，否则第一次编辑就会抹掉程序目前还无从挂靠的译文。</p>
+<p>由此得到的第二点：「创建」按钮不再写空占位文件。它会生成包含程序全部键、右半部分为空的文件——占位内容一眼就能看到全貌，「未翻译」的数量也如实等于键的数量。文件本身仍然有效：右半部分为空是占位，不是损坏。</p>
+
+<h3>发给模型的内容，以免术语不一致</h3>
+<p>请求不是字符串列表，而是一个带两个键的对象：<code>strings</code>（要翻译什么）和 <code>glossary</code>（同一词典中已经确定的配对）。术语表由该条目集中已翻译的字符串汇总而成——短标签排在前面——并在处理过程中不断补充，因此同一个概念不会在相邻批次里得到不同的词。指令明确要求：<code>glossary</code> 中的词不重写，一个概念在整个回答中只用一个准确术语，不得使用有歧义的词、逐字直译和已确定术语的同义词；而且这些是标签，不是句子。</p>
+
+<h3>批次为什么是这个大小</h3>
+<p>工作模型的推理和回答共用同一份输出 token。在现用模型上的实测（法语，面板条目集）显示出完整性在哪里结束：</p>
+<table>
+<tr><th>批次</th><th>输出 token</th><th>耗时</th><th>已翻译</th><th>重复时相同的词</th></tr>
+<tr><td>10</td><td>696</td><td>3.8 秒</td><td>10/10</td><td>10/10</td></tr>
+<tr><td>20</td><td>2 619</td><td>20.5 秒</td><td>20/20</td><td>19/20</td></tr>
+<tr><td>30</td><td>3 244</td><td>13.3 秒</td><td>30/30</td><td>27/30</td></tr>
+<tr><td>40</td><td>4 415</td><td>28.0 秒</td><td>40/40</td><td>32/40</td></tr>
+<tr><td>60</td><td>5 807</td><td>30.7 秒</td><td>59/60</td><td>50/59</td></tr>
+</table>
+<p>在原先 4096 token 的输出上限下，四十个术语的批次会在中途被截断，回答中只有一部分配对能被救回——「只填了一半」的抱怨就来自这里。由此确定的设置是：每批 30 行，输出上限 16 384 token（为浮动的推理长度留出余量），批次长度上限 2400 字符，等待时间 180 秒。</p>
+
+<h3>法语：完整走通全流程，不转换数据库</h3>
+<p>已在现用数据目录上验证：语言 <code>fr</code> 在注册表中声明，创建了空的 <code>i18n/fr.txt</code> 和 <code>i18n/panel.fr.txt</code>，用与按钮相同的代码由工作模型填充，并在启动时向宿主声明——该语言同时出现在记忆宫殿和界面这两个切换器中。此过程没有触发向量重算：引入语言无需改动数据库。</p>
+<p>那次运行的结果：消息词典中 <b>481 行里有 468 行</b>，面板词典中 <b>493 行里有 478 行</b>。剩余部分是逐一分析过的，而不是归咎于「模型做不到」。消息条目集里有十三行只由占位符构成的占位项（「{reason} {count}」「, 」「—」）：里面没有可翻译的内容，如今它们根本不会进入请求。其余十二个是在法语中与英语写法相同的词（<code>Provenance</code>、<code>messages</code>、<code>base</code>、<code>Pause</code>、<code>Concepts</code>、<code>contradiction</code>、<code>Adjacent</code>、<code>consolidation</code>、<code>Jev</code>）：译文会与原文相同，而按规则相同即表示「没有译文」——这是对的，法语用户看到的就是同一个词。</p>
+<p>截至 23.10 的状态（现用数据目录）：<code>fr.txt</code> 中有 460 对，右半部分没有一个为空，<code>panel.fr.txt</code> 中有 480 对。此后键集增长到 488，因此法语词典里又出现了「未翻译」的行——这是正常状态，不是故障：新键以英文进入，直到有人用同一个按钮把它们翻译出来。词典与程序的核对正是为这种情况而出现的（见上文）。</p>
+<p>术语并非直译：<i>Room</i> → <i>Salle</i>，<i>Corridor</i> → <i>Couloir</i>，<i>Placard</i> → <i>Cartel</i>（博物馆标牌，而非“placard”——柜子），<i>Memory Palace</i> → <i>Palais de mémoire</i>，<i>Tour</i> → <i>Visite</i>。</p>
+<p>运行之后有两处修改。第一：某个批次一对都没被接受（模型把整个上限都消耗在推理上）时，将其一分为二重新询问——否则填充会以「模型达到上限」错误中止——用户看到的便是半成品词典。第二：指令中补入了工具本身的含义（宫殿是记忆存储，房间是类别，走廊是关联，牌匾是记忆的标题，重复是间隔），因为像 <code>Pause</code> 或 <code>Capture</code> 这样的短标签，模型会以有歧义为由拒绝翻译。</p>
+
+<div class="note"><b>为什么俄语不在代码里</b>
+俄语是我们第一次「以数据承载语言」的实践，并且完整走通了：485 条文本放在一个文件里，修改无需重新构建，随包层与用户层，与键集合的一致性检查。第二次是法语：空词典，由模型翻译，两个切换器里都有该语言，没有为语言改动任何一行代码。这已不是假设，而是验证过的路径。</div>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c6"><span class="num">6.</span>模型、绑定与向量维度</h2>
+
+<p>模型不是在“设置里”选择，而是按宫殿的语言选择。规则只有一条：<code>bindings.json</code> 中的绑定 <code>语言 → 模型</code>，否则使用默认 <code>*</code>。单独的设置可以覆盖该选择，但这是有意的例外，不是常规路径。</p>
+
+<pre><code>// registry/models.json — что модель умеет
+{ "id": "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+  "label": "minilm-l12",          // короткое имя: попадает в метку базы
+  "pooling": "mean", "dtype": "q8", "dimensions": 384 }
+
+// registry/bindings.json — какой моделью считать язык
+{ "bindings": { "zh": "Xenova/bge-small-zh-v1.5", "*": "Xenova/paraphrase-multilingual-MiniLM-L12-v2" },
+  "default": "en" }</code></pre>
+
+<h3>这里要注意什么</h3>
+<ul>
+  <li><strong>维度来自模型目录，而非代码。</strong><code>bge-small-zh</code> 是 512 个数，多语言的 <code>minilm-l12</code> 是 384。重算从那里取预期长度；转换器里不再有常量。</li>
+  <li><strong>模型的语言不是标志。</strong>中文模型并不意味着“中文库”：语言取自标记，模型取自绑定。同一个多语言模型可以服务俄语、英语和法语，而各库的标记会不同。</li>
+  <li><strong>维度对写入是硬条件，对读取是软条件。</strong>不能写入长度不符的向量：它无法与其他向量比较。可以读取长度不符的库——搜索会退化为按词搜索，但不会沉默，也不会丢失记忆。</li>
+  <li><strong>包的默认值</strong>（<code>default</code>）只有在发行版确实为其携带文本时才被接受。声明了但内容为空的语种比英语更糟。</li>
+  <li><strong>远程模型是单独的选择。</strong>如果设置里选了 OpenAI 兼容端点，本地行根本不会被选中，而维度由第一个向量得知：这类模型没有地方声明维度。库的标记仍按同样方式拼装——由语言和名称——否则库就没有可核对的对象。</li>
+</ul>
+
+<h3>行为中可见的阈值</h3>
+<table>
+<tr><th>阈值</th><th>值</th><th>决定什么</th></tr>
+<tr><td><code>MIN_COSINE</code></td><td>0,2</td><td>低于此值——记忆不进入语义搜索</td></tr>
+<tr><td><code>MERGE_COSINE</code></td><td>0,92</td><td>高于此值——记忆被视为同一条</td></tr>
+<tr><td><code>DEFER_COSINE</code></td><td>0,88</td><td>高于此值——合并推迟到再次检查</td></tr>
+<tr><td><code>CONTRADICTION_COSINE</code></td><td>0,88</td><td>主题相同时低于此值——记忆互相矛盾</td></tr>
+<tr><td><code>DIALOGUE_MIN_LETTERS</code></td><td>40</td><td>字母更少——对话语言无法判定</td></tr>
+<tr><td><code>DIALOGUE_SHARE</code></td><td>0,6</td><td>占比更低——对话语言无法判定</td></tr>
+</table>
+<p class="small">相似度阈值是作者设定的，我们没有改动。这里列出它们，是因为没有它们就不清楚为什么“重算向量”是必要的：余弦比较只在同一个模型内部有效。</p>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c7"><span class="num">7.</span>库的模式：处理器如何判断什么存放在哪里</h2>
+
+<p>带向量的表清单不应存在于代码中。否则作者新增的表会悄无声息地从我们所有操作中掉出：重算、修复、状态检查。因此它被声明为数据——文件 <code>registry/schema.json</code>——并按与模型目录相同的规则读取：随包提供是必须的，数据目录中的用户层会覆盖它。</p>
+
+<figure class="fig"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 800" width="100%" role="img">
+<defs>
+<marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+<marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker>
+<marker id="arwT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/></marker>
+</defs>
+<rect width="1040" height="800" fill="#ffffff"/>
+<text x="40" y="42" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a">库模式：处理器读什么、如何得出动作</text>
+<text x="40" y="68" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13" fill="#475569">表清单是数据而非代码。处理器取声明、检查库、决定动作</text>
+<rect x="360" y="104" width="340" height="66" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+<text x="530" y="133" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#4c1d95" text-anchor="middle">registry/schema.json</text>
+<text x="530" y="150" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#6d28d9" text-anchor="middle">随包提供；&lt;dbDir&gt;/registry/schema.json 层优先</text>
+<rect x="360" y="196" width="340" height="72" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="530" y="220.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">解析声明</text>
+<text x="530" y="237.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">role, properties.vector.text,</text>
+<text x="530" y="252.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">properties.vector.where</text>
+<rect x="360" y="294" width="340" height="62" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="530" y="321" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">VectorTableSpec[]</text>
+<text x="530" y="338" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">nodes 与 observations——「向量就存在这里」</text>
+<rect x="360" y="382" width="340" height="76" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="530" y="416" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">检查库：只读</text>
+<text x="530" y="433" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">PRAGMA table_info、行数、向量长度</text>
+<rect x="360" y="484" width="340" height="84" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="530" y="522" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="650" fill="#312e81" text-anchor="middle">judgeBase → 7 种状态 → 4 个动作</text>
+<text x="530" y="539" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#4f46e5" text-anchor="middle">规则读事实与预期，不改动库</text>
+<rect x="360" y="594" width="340" height="62" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+<text x="530" y="621" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#065f46" text-anchor="middle">按钮执行动作</text>
+<text x="530" y="638" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#047857" text-anchor="middle">write-label / convert / repair / 什么都不做</text>
+<path d="M 530 170 L 530 194" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 268 L 530 292" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 356 L 530 380" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 458 L 530 482" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<path d="M 530 568 L 530 592" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<rect x="40" y="92" width="290" height="400" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="60" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">声明里写了什么</text>
+<rect x="60" y="124" width="250" height="70" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="147.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">role: user | service</text>
+<text x="185" y="164.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">service（FTS 影子）被跳过，不</text>
+<text x="185" y="179.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">参与分析</text>
+<rect x="60" y="208" width="250" height="70" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="239" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">text——存放文本的字段</text>
+<text x="185" y="256" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">从中读取给模型用的字符串</text>
+<rect x="60" y="292" width="250" height="74" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="317.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">where——行条件</text>
+<text x="185" y="334.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">nodes: status = «active»;</text>
+<text x="185" y="349.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">observations：全部</text>
+<rect x="60" y="380" width="250" height="74" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="405.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">不声明向量字段</text>
+<text x="185" y="422.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">推导得出：行中唯一的 BLOB</text>
+<text x="185" y="437.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">字段</text>
+<path d="M 310 250 L 358 250" fill="none" stroke="#8b5cf6" stroke-width="1.6" marker-end="url(#arwA)"/>
+<text x="312" y="242" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#6d28d9" text-anchor="start">数据</text>
+<rect x="40" y="522" width="290" height="84" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="185" y="552.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">宫殿文件：&lt;dbDir&gt;/*.db</text>
+<text x="185" y="569.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">user.db、shared.db、project-&lt;hash&gt;.db——每个</text>
+<text x="185" y="584.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">作用域一个文件</text>
+<path d="M 330 546 L 358 460" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arw)"/>
+<text x="268" y="596" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="10.5" fill="#64748b" text-anchor="start">以同一份声明读取</text>
+<rect x="740" y="466" width="270" height="210" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="760" y="494" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">如果动作是重算</text>
+<rect x="760" y="490" width="230" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="875" y="513" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">计划：谁需要</text>
+<text x="875" y="530" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">向量为空或长度不符</text>
+<rect x="760" y="552" width="230" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="875" y="567.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">每批 16 条文本</text>
+<text x="875" y="584.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">模型上限不决定库的</text>
+<text x="875" y="599.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">命运</text>
+<rect x="760" y="614" width="230" height="54" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="875" y="637" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0f172a" text-anchor="middle">写入——经由存储</text>
+<text x="875" y="654" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#64748b" text-anchor="middle">每个库只有一个连接</text>
+<path d="M 700 625 L 738 625" fill="none" stroke="#10b981" stroke-width="1.6" marker-end="url(#arwT)"/>
+<rect x="740" y="92" width="270" height="350" rx="14" fill="#fbfbfe" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="760" y="120" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#7c3aed" text-anchor="start" font-weight="600">可见的状态</text>
+<text x="762" y="132" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· absent——库还不存在</text>
+<text x="762" y="162" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· empty——没有记忆</text>
+<text x="762" y="192" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· no-label——没有标记</text>
+<text x="762" y="222" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· other-model——标记属于他者</text>
+<text x="762" y="252" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· mixed-dims——向量长度不一</text>
+<text x="762" y="282" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· missing-vectors——有记忆没有向量</text>
+<text x="762" y="312" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="12" fill="#475569" text-anchor="start">· normal——一切就位</text>
+<text x="762" y="366" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#7c3aed" text-anchor="start">四个动作：none、write-label、</text>
+<text x="762" y="384" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#7c3aed" text-anchor="start">convert、repair。状态 → 动作是</text>
+<text x="762" y="402" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11" fill="#7c3aed" text-anchor="start">一条规则，而不是面板上的标注。</text>
+<path d="M 738 526 L 702 526" fill="none" stroke="#6366f1" stroke-width="1.6"/>
+<rect x="40" y="700" width="960" height="74" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="520" y="725.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#92400e" text-anchor="middle">无需我们代码的扩展</text>
+<text x="520" y="742.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">作者新增一张带向量的表——声明里多一行，状态检查、标记和重算就开始看到它；不必改 TypeScript，也</text>
+<text x="520" y="757.5" font-family="'Segoe UI', 'Noto Sans', Arial, sans-serif" font-size="11.5" fill="#b45309" text-anchor="middle">不必重新构建插件</text>
+</svg><figcaption>图 5. 从模式声明到对数据库执行动作的路径。处理器只读取声明，并不按名字认识表；规则把关于数据库的事实转成七种状态之一和四种动作之一。</figcaption></figure>
+
+<h3>声明什么，推导什么</h3>
+<ul>
+  <li><strong>声明：</strong>表的 <code>role</code>（<code>user</code> 或 <code>service</code>）、供模型使用的文本字段（<code>properties.vector.text</code>）以及行的参与条件（<code>properties.vector.where</code>）。</li>
+  <li><strong>推导：</strong>向量字段就是表行中唯一的 BLOB 类型字段。如果有两个 BLOB 字段，声明会被拒绝并给出异议：不清楚该往哪里写。</li>
+  <li><strong>完全不声明：</strong>维度。维度由标签从模型目录推出，而不是来自模式文件。</li>
+</ul>
+
+<pre><code>{ "formatVersion": 1, "schemaVersion": 13,
+  "tables": {
+    "nodes":        { "role": "user",
+                      "properties": { "vector": { "text": "content", "where": "status = 'active'" } },
+                      "fields": { "id": "TEXT", "content": "TEXT", "embedding": "BLOB", "...": "..." } },
+    "observations": { "role": "user",
+                      "properties": { "vector": { "text": "belief", "where": null } } },
+    "nodes_fts":    { "role": "service" }
+  } }</code></pre>
+
+<p>列出服务表是为了直观说明：遍历器会跳过带标记的对象而不分析内容——FTS 影子表不携带用户向量，试图处理它们会是错误。对 <code>observations</code> 来说，条件 <code>null</code> 表示「所有行都参与」：观察项的归档方式与记忆不同。</p>
+
+<h3>七种状态与四种动作</h3>
+<table>
+<tr><th>状态</th><th>看到什么</th><th>动作</th></tr>
+<tr><td><code>absent</code></td><td>数据库文件尚不存在（由作者代码创建）</td><td><code>none</code></td></tr>
+<tr><td><code>empty</code></td><td>文件存在，模式作用域内没有记录</td><td><code>none</code></td></tr>
+<tr><td><code>no-label</code></td><td>没有标记；模型按向量长度推断</td><td><code>write-label</code> 或 <code>convert</code></td></tr>
+<tr><td><code>other-model</code></td><td>有标记，但模型不是我们要写入的那个</td><td><code>convert</code></td></tr>
+<tr><td><code>mixed-dims</code></td><td>向量长度与标记不符</td><td><code>convert</code></td></tr>
+<tr><td><code>missing-vectors</code></td><td>部分记忆没有向量</td><td><code>repair</code></td></tr>
+<tr><td><code>normal</code></td><td>标记一致，所有向量都是该长度</td><td><code>none</code></td></tr>
+</table>
+<p>检查的顺序很重要且是固定的：在弄清这是谁的库之前，不能先报出不匹配——否则别人的模型看上去就像损坏的向量。规则是纯的：它接收关于数据库的事实与期望值，返回状态和动作。因此它可以用不带磁盘、不带 SQLite 的测试来验证，面板只是把它用文字说出来。</p>
+
+<h3>重算如何进行</h3>
+<ol>
+  <li><strong>计划阶段。</strong>一个单独的只读连接遍历声明中的表，选出该作用域内向量为空或长度不等于期望值的行。</li>
+  <li><strong>分批。</strong>文本按每批 16 条送入模型：模型的输出上限不应决定整个数据库的命运。</li>
+  <li><strong>写入。</strong>向量由存储层写入——数据库只有一个连接，它就活在那里。转换器只负责读取和计算。</li>
+  <li><strong>标记。</strong>重算成功后，数据库标记被改写为新的语言与模型。标记和向量在一次操作中变更，而不是两次。</li>
+</ol>
+<p>空文本不是故障，而是关于内容的事实：这一行没有可用来构建向量的东西。这类行会以单独的数字报出，既不会被静默跳过，也不会被混进总的错误计数。</p>
+
+<h3>修复：补算向量并重新标记，而不改变语言</h3>
+<p>状态 <code>missing-vectors</code> 指那些向量为空、而标记本身可能是正确的记忆。为了六行去跑整个数据库的重算既不必要也有害：其余的向量已经是对的。所以这个状态有自己的动作——<code>repair</code>，按钮会连续发出两个请求来执行它：<code>base-label</code> 补上缺失的标记，<code>base-convert</code> 补算缺少向量的部分。</p>
+<p>实际意义：带无向量记忆的数据库在点一次之后就不再被称为「需要修复」，而为此既不必改记忆宫殿的语言，也不必改模型。这样修复的代价恰好是对缺失部分做一次重算，而不是整个文件。</p>
+
+<h3>边界：我们有意不构建的东西</h3>
+<ul>
+  <li><strong>没有恢复机制。</strong>转换是人的一次性动作；不提供回退到先前状态。只需要一个检查点，让被中断的重算可以续跑：部分重算过的数据库处于 <code>mixed-dims</code> 状态，再次运行会把它跑完。</li>
+  <li><strong>重算直接在现用库上进行，</strong>没有临时副本：库不大，而副本会让空间和时间翻倍。备用途径是导出数据库，作者本来就有这个功能。</li>
+  <li><strong>无法转换的内容单独列出。</strong>重算失败的行不会丢失，也不会阻塞其他行：它会带着原因进入报告的单独列表。</li>
+</ul>
+
+<div class="warnbox"><b>重算不做什么</b>
+不改变记忆文本，不创建也不删除表，不碰服务表。计划阶段是只读的：如果没走到点击「执行」那一步，数据库里仍是同样的行、文本、向量和标记。这是测出来的，不是承诺的。</div>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c8"><span class="num">8.</span>人工维护的档案：规则为何单独成为一个包</h2>
+
+<p>记忆宫殿里有两类关于人的知识：推导出的档案（系统自己推导出来的东西）和人工维护的区块——人通过 <code>engram_profile_edit</code> 自己写下的规则。后者比前者更优先，而陷阱正在这里。</p>
+
+<h3>问题出在哪</h3>
+<p>人工维护的区块被插到会话开头，与推导出的档案和历史记忆混在一起，处在同一段记忆文本里。智能体在旁边读到「人维护的规则」和「可能不正确的记忆」，除了措辞之外没有任何办法区分它们。问题的另一半是记忆区块本身：里面会混进人并没有写过的内容，而它们看起来和规则一样。</p>
+
+<h3>做了什么</h3>
+<p>规则以单独的包 <code>&lt;engram_profile&gt;</code> 下发，并带有自己的指示性文件头：这是人的指令，必须执行并视为最高优先——与下面只是素材的记忆不同。之所以需要单独的标签，是为了让防替换检查能够把带标记的包与只是看起来像标记的文本区分开。</p>
+
+<div class="note"><b>两次尝试，第一次被取消</b>
+起初想做一个「廉价改动」：在已有的记忆块内部补一段头部。后来取消它，改做更贵但正确的事：头部放在共用文本里，并不能把规则和记忆分开，只会再加一种可能与内容混淆的表述。单独的包——单独的位置、单独的标签、单独的校验。</div>
+
+<h3>这带来了什么</h3>
+<ul>
+  <li>人的规则能单独看见，不与系统的结论混在一起——对人、对智能体、对安全检查都是如此。</li>
+  <li>块不会被「稀释」：不是人写的东西不会混进去。</li>
+  <li>编辑、回滚和版本历史都在同一处，并带乐观锁：一次编辑不会无声地覆盖别人的编辑。</li>
+</ul>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c9"><span class="num">9.</span>过程中我们修了什么，为什么</h2>
+
+<p>工作不是绕开作者的代码进行的，而是穿过它进行的：做多语言的过程中，一些妨碍推进的缺陷浮了出来。下面是顺手修掉的部分。这不是「顺便重写」：每一条都曾经造成过阻碍，不处理它，下一步就走不下去。</p>
+
+<h3>界面</h3>
+<ul>
+  <li><strong>面板菜单不再跟着滚走。</strong>菜单和标签页原本是滚动内容的一部分，于是页面会从它们下面「滑过去」，列表一长菜单就看不见了。现在菜单固定在顶部，不参与内容滚动。同一原因下也重做了层：词典编辑的全屏界面原本「在点击处」打开，卡片一长就落到下边缘之外——从外面看就像「点了没反应」。现在层位于可滚动区域之外。</li>
+  <li><strong>词典界面的按钮活了过来。</strong>保存、取消和用模型填充原先只是没有处理器的标记：界面能打开，之后就什么也不发生。现在只保存改动过的内容，空格子会撤销编辑，而填充写入的是草稿，不是文件。</li>
+  <li><strong>面板语言跟随宿主。</strong>原先面板保留自己的选择，可能在宿主已切到另一种语言时仍说着上一种。现在来源是 DSH 的设置，而手动选择面板语言仍是有意的覆盖。</li>
+  <li><strong>维护卡片的文案来自面板内置的词典。</strong>卡片原先读的是服务端语言文件，因此它的标签不会随界面一起切换，可能停在人没料到的语言上。</li>
+  <li><strong>完整的模型标识已从选择行里移除</strong>（<code>Xenova/paraphrase-multilingual-MiniLM-L12-v2</code> 取代了短名，占满整行并把其余内容挤走）。标识保留在悬停提示中。</li>
+  <li><strong>面板的校验窗口：</strong>按钮靠右，关闭会告知面板（否则窗口只能打开一次——面板以为它还开着），文字更大、对比更强：这个窗口里灰色的 11–12 px 根本读不清。</li>
+</ul>
+
+<h3>记忆与宿主</h3>
+<ul>
+  <li><strong>会话日志不在启动时读取。</strong>完整读取一份日志在每次启动时要花几百兆内存；在真实数据上宿主因此崩溃。对话回合取自当前会话，日志只在明确请求历史填充时才读。磁盘上的日志本身没有人删除：它们留着，删除是另一个带确认的动作。</li>
+  <li><strong>对话语言只认人亲手输入的内容。</strong>实测表明：「对话语言」被判成英语，因为英文的服务性文本（运行时快照、技能目录、指令）被当成了人的话语。现在凡是没有人类回合标记的内容，一概不计入。</li>
+  <li><strong>嵌入器会正确关闭，</strong>否则重载模型之后资源会一直挂着。</li>
+</ul>
+
+<h3>数据与向量</h3>
+<ul>
+  <li><strong>维度在写入时是硬条件，在读取时降级。</strong>原先维度不匹配只是一条警告：库里会被悄悄塞满与任何东西都比不上的向量。现在写入会被明确拒绝，而读取继续以按词检索的方式工作——并用 <code>degraded</code> 标记说明这一点，而不是一言不发。</li>
+  <li><strong>库的维度取多数向量的维度，</strong>而不是随手取第一个：混杂不再冒充「常态」。</li>
+  <li><strong>声明格式版本不再是死字段：</strong><code>formatVersion</code> 会被核对，其他版本的声明不会被默默应用。</li>
+  <li><strong>迁移记录用文字呈现，</strong>而不是一段 JSON：人读的是结论，不是结构。</li>
+  <li><strong>记忆宫殿日志的清理按钮</strong>，带确认和清楚的结果说明。</li>
+</ul>
+
+<div class="note"><b>为什么文档里要有这份清单</b>
+因为这些改动有一半改变的是作者视为自己的行为。它们不能只是「知悉」，要么进上游，要么被有意识地拒绝。每个改动都是一个单独的提交，说明写在正文里，便于逐条拆开看。</div>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c10"><span class="num">10.</span>如何校验、如何交付</h2>
+
+<p>我们的校验不靠「目测」。共有六道门禁，只有六道全绿，交付才算成立。</p>
+
+<table>
+<tr><th>门禁</th><th>校验内容</th><th>状态</th></tr>
+<tr><td>类型（<code>tsc</code>）</td><td>整个包的 TypeScript 类型</td><td>116 个错误——这是<em>基线</em>：全部关于宿主包缺失的类型声明，我们的改动没有新增它们</td></tr>
+<tr><td>文案（<code>check-messages</code>）</td><td>代码请求的每个消息键都在集合中声明</td><td>代码请求了 488 个键；en 488 个键 / 485 条文案，zh 488 / 486，ru 485 条文案——没有关键性差异</td></tr>
+<tr><td>代码规则（<code>check-patterns</code>）</td><td>禁止的样板：语言列表的本地副本、绕过打包等</td><td>43 项检查，0 项失败</td></tr>
+<tr><td>钩子顺序（<code>check-hook-order</code>）</td><td>插件的钩子按声明顺序排列，而不是随机顺序</td><td>干净，已检查 5 个文件</td></tr>
+<tr><td>测试（<code>vitest</code>）</td><td>行为：存储、检索、重算、词典、注册表、语言轴、档案、安全</td><td>49 个文件（48 个通过，1 个跳过）；700 个测试——699 个通过，1 个跳过</td></tr>
+<tr><td>构建（<code>tsdown</code>）</td><td>两个包都会构建——服务端和客户端</td><td><code>lib/index.js</code> 825 645 B, <code>lib/client.js</code> 329 050 B</td></tr>
+</table>
+
+<h3>新增内容中具体覆盖了哪些</h3>
+<ul>
+  <li><strong>语言注册表：</strong>文件解析、没有文件时的内置集合、损坏的 JSON 不会让插件失去语言、空列表不等于「没有语言」而是文件损坏。</li>
+  <li><strong>库标记：</strong><code>fr-minilm-l12</code> 读作语言 <code>fr</code>，<code>zh-Hans-minilm-l12</code> 读作 <code>zh</code>，两个不同的标记会得到 <code>mixed</code>。</li>
+  <li><strong>轴：</strong>界面的 preference 不构成记录记忆宫殿语言的依据；对话语音优先于界面；模型按记忆宫殿语言选择；改变记忆宫殿语言会把库转为「外来模型」，但不重写标记和内容；重算计划是读取。</li>
+  <li><strong>打开时的标记：</strong>空库会获得标记，目标模型上没有标记的库也会，外来模型和向量错序则不会，已存在的标记不会被重写（<code>tests/base-state.spec.ts</code>）。</li>
+  <li><strong>词典：</strong>内置集合中没有的语言，其文件按普通层读取；没有文件时消息保持英文，而不是空的；「创建」写入带键的文件，空的单元格会取消修改，而不是写入空字符串。</li>
+  <li><strong>重算：</strong>在真实的 SQLite 文件上——哪些行进入计划、空文本单独计算、单批失败不会带走其余部分。</li>
+  <li><strong>维度：</strong>不匹配会拒绝该记忆，且不丢失按词检索。</li>
+</ul>
+
+<h3>交付方式</h3>
+<p>构建两个文件——服务端和客户端包——并放入 DSH 档案（<code>node_modules/@kenz1117/dsh-engram/lib/</code>），与词典和注册表放在一起。版本号是 <code>package.json</code> 里的一行；目前是 <code>0.9.8-dsv.27</code>。服务端那一半只有在重启 DSH 之后才会被加载，客户端那一半在页面刷新之后：它们是交付物的两半，版本不一致时面板会用横幅提示，而不是崩溃。现用记忆宫殿位于 <code>C:Usersdsv.dshengram</code>，模型位于 <code>...engrammodels</code>。</p>
+
+<h3>在真实数据上验证，而不只是测试</h3>
+<p>重算之前用 <code>VACUUM INTO</code> 命令对库做快照，快照会成为可复现的证据：从它可以看到当时的样子。第一次真实重算在 10 月 20 日进行：<code>user.db</code> 中修复了 10 条记忆，错误为零，运行之后全部六个库都是干净的——也就是标记与向量一致，且没有被遗漏向量的记忆。「之前」的快照位于 <code>_ops/fixtures/before-convert-2026-10-19</code>，至今仍能复现那 10 条损坏的记忆。到 10.23，<code>user.db</code> 中又出现了六条没有向量的记忆（95 条活跃，6 条无向量）：它们是 10.22 的观察项归并留下的——也就是说「干净」并非永久，正因如此状态才显示在卡片里，而原因则以 <code>vectors-missing</code> 行的形式出现在日志中。</p>
+
+<div class="warnbox"><b>在现用档案上发现的一个安装陷阱</b>
+文件 <code>registry/languages.json</code> 进入交付物比其他注册表晚，档案里就没有它：那里的安装是按文件复制，而不是从压缩包解压。没有它插件不会崩溃——会采用内置集合——但语言名称会以代码形式返回，而不是名称。它属于包的 <code>files</code> 列表，也属于 <code>registry/</code>，所以从压缩包解压一切正常；只有手动复制才会出现差异。</div>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c11"><span class="num">11.</span>维护：库状态、修复与日志</h2>
+
+<p>维护卡片连续回答三个问题：库现在怎么样、按下按钮后它们会怎样、以及上一次为什么结果就是这样。第三个问题以前没有答案——而且这一点很明显。</p>
+
+<h3>三个词代替七种状态</h3>
+<p>规则把库归入七种状态之一（第 7 章），但卡片前的人不需要七种：他只有一个按钮。所以卡片把状态归纳成三个词，而词是按按钮将要做什么来选的：</p>
+<table>
+<tr><th>卡片中的词</th><th>何时</th><th>「执行」会做什么</th></tr>
+<tr><td><code>库正常</code></td><td>所有库处于 <code>normal</code>、<code>absent</code> 或 <code>empty</code> 状态</td><td>什么也不做：没有可点的</td></tr>
+<tr><td><code>库需要修复</code></td><td>只需要标记和补算向量</td><td>修复：<code>base-label</code>，然后 <code>base-convert</code></td></tr>
+<tr><td><code>库需要转换</code></td><td>至少有一个库需要重算到另一个模型</td><td>用组装好的条件切换语言，或者按状态重算</td></tr>
+</table>
+<p>在卡片内部，每个库仍然标明它自己的状态——<code>无标记</code>、<code>另一个模型</code>、<code>向量错序</code>、<code>无向量的记忆</code>——否则就分不清六个库中该修哪个。汇总的词对所有库只有一个：按钮只有一个，它必须诚实地说明自己。</p>
+
+<h3>日志：此前没有的两条记录</h3>
+<p>Jev 的失败决策此前只活在进程内存的环形缓冲区里。缓冲区随重启一起消失，过了一天，日志里「记忆按干净规则通过」和「Jev 保持沉默」就再无法区分。现在每次失败都会写一行 <code>jev-fallback</code>：在哪里询问的（<code>band</code> 或 <code>contradiction</code>）、什么问题、什么原因、花了多久。记忆正文不会进入日志：日志不该成为他人记忆的第二份存储，而日志自身的错误也无权破坏记忆写入——所以它在那里被静默吞掉。</p>
+<p>第二行是 <code>vectors-missing</code>。当记忆合并（distill）已经完成、却没有东西可用来写入向量时，它就会出现：库里留下了没有向量的记忆。其中包含记忆数量和作用域。这正是之后显示为「库需要修复」的那种情况；以前原因会消失，人只看到后果。</p>
+<p>面板用俄语读这两行，而不是用服务名：操作列表里显示的是「Jev 决策失败」和「没有向量的记忆」，并在提示里给出解释。</p>
+
+<h3>Jev 检查行</h3>
+<p>「检查连接」按钮曾用浮层提示显示结果，而浮层提示只活几秒：过一分钟就既说不清检查发往哪里，也说不清它如何结束。现在表单上方有一行参数——地址、模型、超时，以及密钥的来源（「来自字段」「已保存」「未设置」）——下方是最近一次检查的结论：时间、响应耗时、ping 概率和 HTTP 状态码。</p>
+<p>失败有了名字。以前任何失败看起来都一样——「未说明」，人不知道要修密钥、网络、超时还是协议。现在失败的类别会说出来：<code>HTTP</code>（服务器回了，但回的不是那个）、<code>网络</code>（没打通）、<code>超时</code>（没来得及）、<code>协议</code>（响应到了，但没法解析）。错误全文放在提示里，免得这一行被撑开。</p>
+<p class="small">测量取自现用连接：这一行显示响应本身返回的耗时和概率，而不是最近一次已知的成功值，旁边还有 HTTP 状态码。其中的数字每次运行都会变——这正是它还活着的标志。</p>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c12"><span class="num">12.</span>遗留事项与对作者的请求</h2>
+
+<h3>我们尚未完成的工作</h3>
+<ol>
+  <li><strong>语言不一致指示器</strong>：界面语言与记忆宫殿语言之间的差异。把界面切过去「看看」的人应当看到宫殿还停在另一种语言上——否则他会把两者当成一回事。目前没有这样的指示器；不一致只在首次启动窗口和语言选择中可见。</li>
+  <li><strong>计划译文的同步</strong>（英文版和中文版落后于俄文版）。等措辞稳定后做一次，免得翻译两遍。</li>
+  <li><strong>代理说明的翻译</strong>成英文和中文：目前文本只有俄文，并标记为草稿——内容比它所用的语言更重要。</li>
+</ol>
+
+<h3>10 月 22–23 日关闭的事项</h3>
+<ul>
+  <li><strong>可用的语言切换器</strong>（见第 3 章）：「宫殿语言」区块——选择、联锁保险和「执行」在同一行；窗口长度成了设置 <code>palaceChangeWindowSec</code>（5–600 秒，默认 30），前后两半都按它计算。</li>
+  <li><strong>代理说明</strong>：文本随包提供（<code>docs/agent-language-guide.ru.md</code>），由工具 <code>engram_language_guide</code> 返回。</li>
+  <li><strong>打开库时的标记</strong>（第 4 章）：新库不再在第一次点击之前一直没有标记。</li>
+  <li><strong>不改语言的修复</strong>（第 7、11 章）：补算没有向量的记忆并补上缺失的标记，不动语言，也不动模型。</li>
+  <li><strong>词典与程序的核对</strong>（第 5 章）：四个数字和两项发现；「创建」会生成带键的文件，而不是空模板。</li>
+  <li><strong>Jev 检查行与日志中的痕迹</strong>（第 11 章）：失败有了类别，失败决策和丢失的向量也有了操作日志中的记录。</li>
+</ul>
+
+<h3>门已打开：两个 pull request 都已合并</h3>
+<p>#20（Jev 从宿主取提供者和模型）于 10 月 21 日合并，#21（把嵌入器作为部署属性、严格校验维度、多语言默认值）于 10 月 22 日合并。所以对作者的请求里不再有它们：现在谈的是我们的分支接下来怎么办，而不是要不要接受 PR。</p>
+
+<h3>我们请作者做什么</h3>
+<ol>
+  <li><strong>接受模式声明的形式</strong>（<code>registry/schema.json</code>），并用与真实库比对的测试把它覆盖起来。这个文件目前由我们维护；维护权归作者。</li>
+  <li><strong>说明他会引入什么表筛选依据</strong>来取代我们的 <code>role</code>：如果他有了自己的规则，我们的声明应当跟随它，而不是与它争执。</li>
+  <li><strong>确认或否决顺带的修改</strong>（第 9 章）。它们改变的是他视为自己的行为，不能悄悄合入。</li>
+  <li><strong>结清模型故障时写入的欠账</strong>——这是他的设计：模型不可用时记忆被拒绝，这是有意的决定，不是我们没做完。</li>
+</ol>
+
+<h3>我们没有答案的问题</h3>
+<ul>
+  <li>说明只承诺选择语言，还是完整引入一门新语言（词典、绑定、库转换）？我们的理解：引入语言正是我们在做的事，没有别处可以拿到单独的手续。</li>
+  <li>语言不一致应当显示在哪里——「今天」标签页还是维护页？</li>
+  <li>第四个选项是否需要英语的「替代」语言，还是真正的 locale 代码总是够用？目前用的是真正的代码。</li>
+</ul>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="c13"><span class="num">13.</span>与工作计划的对应关系</h2>
+
+<p>工作计划是另一份文档，是我们自己的，也由我们自己修改。这里只是一个快照：哪些已关闭，哪些带保留地关闭，哪些还留着。</p>
+
+<table>
+<tr><th>区块</th><th>内容</th><th>状态</th></tr>
+<tr><td>A</td><td>模型选择：模型目录、绑定、多语言模型、远程嵌入器</td><td>已初步关闭（尚未做过度复杂分析）</td></tr>
+<tr><td>B</td><td>库转换：标记、模式声明、重算、状态</td><td>标记、模式、重算、修复和卡片的三种状态都能工作；还剩报告和作者欠账方面的尾巴</td></tr>
+<tr><td>C</td><td>语言切换与联锁保险</td><td>语言判定、选择窗口、语言注册表、各轴测试、可用的切换器和对代理的说明——已完成；还剩语言不一致指示器</td></tr>
+<tr><td>D</td><td>与已实现部分的核对：Jev、档案、文档</td><td>档案已作为单独的包完成；Jev 已合并（#20，21.10），多语言已合并（#21，22.10）；文档就是本文档和计划</td></tr>
+</table>
+
+<div class="dec"><b>我们遵循的规则</b>
+计划不是常量。它是写下那一刻的知识快照：它随决定改写，而不是拿来抵挡事实。所以里面标注什么已做、什么还留着，也不另开一份「实际是这样的」文档。</div>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="appA"><span class="num">A.</span>提交编年史</h2>
+<p class="small">下面部分是我们从作者的标签 <code>v0.9.3</code>（<code>1aa2e82</code>）起的提交；上面部分是升级到 <code>v0.9.8</code> 的提交。新的在上面。</p>
+<table>
+<tr><th>提交</th><th>做了什么</th></tr>
+<tr><td><code>b3df0d7</code></td><td>补回第一轮丢掉的内容：0.9.8-dsv.27 标记、文件语言的客户端一半、Jev 失败种类、我们的断言、docs/author</td></tr>
+<tr><td><code>70682fe</code></td><td>语言说明文件未进仓库——你的修复</td></tr>
+<tr><td><code>0694dc5</code></td><td>打包（i18n、registry、说明文件）与两个类型错误——你的修复</td></tr>
+<tr><td><code>223c122</code></td><td>注册表、数据库状态、词典与宫殿语言的检查</td></tr>
+<tr><td><code>a815123</code></td><td>数据库维护、宫殿语言切换与面板词典</td></tr>
+<tr><td><code>26f8e71</code></td><td>词典改为文件、数据注册表、按语言选择模型</td></tr>
+<tr><td><code>33c40af</code></td><td>维护检查结果在日志中以俄语显式呈现</td></tr>
+<tr><td><code>d733ed6</code></td><td>Jev 决策失败会在操作日志里留下痕迹</td></tr>
+<tr><td><code>49d2b81</code></td><td>Jev 检查行、打开时的库标记，以及丢失向量的日志</td></tr>
+<tr><td><code>fca4f5c</code></td><td>带键的词典草稿，以及程序与文件的词典核对</td></tr>
+<tr><td><code>44ffefc</code></td><td>库的三种状态、不改语言即可修复，以及通用行里的语言块</td></tr>
+<tr><td><code>aba4cbf</code></td><td>客户端能容忍比自己更旧的服务器——版本不一致时卡片不会崩</td></tr>
+<tr><td><code>1d94abe</code></td><td>窗口计时器放在提前返回之前，否则面板会以 #310 崩掉</td></tr>
+<tr><td><code>66e1f55</code></td><td>库立即按新语言计算，而不必等到重启之后</td></tr>
+<tr><td><code>db97ae1</code></td><td>用收集好的条件切换语言（C.11），以及给代理的说明（C.08）</td></tr>
+<tr><td><code>380ec81</code></td><td>翻译提示词里的工具上下文，以及拒收没有标记的行</td></tr>
+<tr><td><code>ba53a18</code></td><td>撞到输出上限的批次对半拆分后重新请求</td></tr>
+<tr><td><code>939840a</code></td><td>语言从文件送入两个切换器；用工作模型翻译词典，请求里带上术语表</td></tr>
+<tr><td><code>74c3faf</code></td><td>各轴测试「界面 ↔ 宫殿语言 ↔ 数据」（C.10）</td></tr>
+<tr><td><code>7dd9afa</code></td><td>检查窗口可重复打开，按钮在右侧，文字更大更清晰</td></tr>
+<tr><td><code>9cbdccd</code></td><td>语言列表由服务器提供；「其他语言」传递真实的区域设置代码</td></tr>
+<tr><td><code>c85ba57</code></td><td>「面板测试」按钮、联锁保险倒计时、粉色重置气泡</td></tr>
+<tr><td><code>3b7a642</code></td><td>宫殿语言取自注册表，而不是代码里写死的三选一</td></tr>
+<tr><td><code>fcd112d</code></td><td>档案规则作为单独的包 <code>&lt;engram_profile&gt;</code> 发出</td></tr>
+<tr><td><code>166a7e0</code></td><td>只有人亲手输入的内容才算对话语言</td></tr>
+<tr><td><code>e4d0ee1</code></td><td>「库语言按标记判定」这条规则移到了标记格式那边</td></tr>
+<tr><td><code>553eab7</code></td><td>宫殿语言选择窗口，按区域设置预选，以及三种判定情形</td></tr>
+<tr><td><code>2ecd8ee</code></td><td>启动时不读会话日志，在 fiber 启动后再写入语言，关闭嵌入器</td></tr>
+<tr><td><code>c7021fa</code></td><td>从维护卡片重算向量、选择语言、默认启用联锁保险</td></tr>
+<tr><td><code>1410313</code></td><td>完整模型标识已从选择行移除；联锁保险会锁住按钮</td></tr>
+<tr><td><code>eae8191</code></td><td>宫殿语言在首次启动时判定，并写入配置</td></tr>
+<tr><td><code>618eb38</code></td><td>维护卡片：模型、区域设置、按钮联锁保险</td></tr>
+<tr><td><code>dbd73ea</code></td><td>作者的 v0.9.3 进入我们的线（导入、俄语文本进词典）</td></tr>
+<tr><td><code>0e1e8f7</code>, <code>c8b644e</code>, <code>d518218</code></td><td>测试：测试类型不带多余参数、维度不匹配不会丢掉按词检索、远程嵌入器的 mock 测试</td></tr>
+<tr><td><code>23152ca</code></td><td>版本 0.9.2-dsv.11</td></tr>
+<tr><td><code>7e77b27</code></td><td>面板语言跟随宿主，手动选择即为覆盖</td></tr>
+<tr><td><code>5dd5b20</code></td><td>维护卡片从面板内置的词典里取文本</td></tr>
+<tr><td><code>7d5f0f5</code></td><td>按 <code>role</code>（user / service）对模式表分类</td></tr>
+<tr><td><code>2e11616</code></td><td>菜单脱离滚动区，模型回复的解析更稳</td></tr>
+<tr><td><code>f3f6056</code></td><td>词典页的按钮接通：保存、取消、用模型填充</td></tr>
+<tr><td><code>c8469c9</code></td><td>词典编辑页覆盖在窗口之上打开，而不是在点击处展开</td></tr>
+<tr><td><code>df1591d</code></td><td>维护里的词典编辑页</td></tr>
+<tr><td><code>be7e2ae</code></td><td>把模型标记写进库，以及只有一个按钮的「宫殿的库」卡片</td></tr>
+<tr><td><code>933d722</code></td><td><code>dist/</code> 写进 <code>.gitignore</code></td></tr>
+<tr><td><code>9590400</code></td><td>迁移记录用文字显示，而不是 JSON</td></tr>
+<tr><td><code>d7fd40f</code></td><td>库的维度按多数向量确定</td></tr>
+<tr><td><code>761bd38</code></td><td>库标记——语言加模型短名</td></tr>
+<tr><td><code>4354a10</code></td><td>面板词典独立成文件；「模型与词典」卡片</td></tr>
+<tr><td><code>8c8c751</code></td><td>用于库记录的模型短名</td></tr>
+<tr><td><code>1e2ce3c</code></td><td>包的默认值——绑定里的服务字段 <code>default</code></td></tr>
+<tr><td><code>97677df</code></td><td>维度不匹配：写入时拒绝，读取时降级</td></tr>
+<tr><td><code>7d235b7</code></td><td>向量维度是硬性条件，不是警告</td></tr>
+<tr><td><code>1e46d7d</code></td><td>注册表格式版本核对</td></tr>
+<tr><td><code>8eb0082</code></td><td>模型与绑定注册表——用随包提供的数据取代写死的参数</td></tr>
+<tr><td><code>e012e9b</code></td><td>嵌入器可配置：本地模型、池化、兼容 OpenAI 的远程端点</td></tr>
+<tr><td><code>3295f0d</code>, <code>80367bf</code></td><td>翻译词典独立成文件——按作者键集组织的 <code>ru.txt</code></td></tr>
+</table>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+
+<h2 id="appB"><span class="num">B.</span>文件：新增了什么、改动了什么</h2>
+
+<h3>注册表数据（新文件）</h3>
+<table>
+<tr><th>文件</th><th>里面是什么</th></tr>
+<tr><td><code>registry/models.json</code></td><td>模型目录：标识符、短名、池化、类型、维度</td></tr>
+<tr><td><code>registry/bindings.json</code></td><td>「语言 → 模型」绑定、包的默认值</td></tr>
+<tr><td><code>registry/languages.json</code></td><td>宫殿语言：代码、给人看的名称、是否带内置文本集</td></tr>
+<tr><td><code>registry/schema.json</code></td><td>数据模式声明：表、角色、文本字段、行条件</td></tr>
+<tr><td><code>i18n/ru.txt</code></td><td>服务器消息的俄语译文（485 条文本，文件 501 行）</td></tr>
+<tr><td><code>i18n/panel.ru.txt</code></td><td>面板文本的俄语译文</td></tr>
+</table>
+
+<h3>代码（主要部分）</h3>
+<table>
+<tr><th>模块</th><th>用途</th></tr>
+<tr><td><code>src/i18n/language.ts</code></td><td>语言代码作为代码而不是三选一成员：形式、回退、输出语言选择</td></tr>
+<tr><td><code>src/i18n/palace-language.ts</code></td><td>宫殿语言判定的纯规则：信号权重、阈值、三种情形</td></tr>
+<tr><td><code>src/language-signals.ts</code></td><td>读取信号来源（当前会话的发言、区域设置、preference）</td></tr>
+<tr><td><code>src/registry/languages.ts</code></td><td>语言注册表解析与内置集合</td></tr>
+<tr><td><code>src/registry/vector-schema.ts</code></td><td>模式声明解析：声明什么、推导什么</td></tr>
+<tr><td><code>src/registry/base-state.ts</code></td><td>规则「事实 + 期望 → 七种状态与四个动作」，它也决定打开时打哪个标记（<code>labelToStamp</code>）</td></tr>
+<tr><td><code>src/registry/palace-change.ts</code></td><td>对已组装条件的校验：语言、窗口起点、窗口期限——面板与服务器共用一个公式</td></tr>
+<tr><td><code>src/registry/base-census.ts</code></td><td>检查数据库：行数、向量长度、标记</td></tr>
+<tr><td><code>src/registry/convert.ts</code></td><td>重算计划与分批运行</td></tr>
+<tr><td><code>src/registry/registry-file.ts</code></td><td>读取数据注册表：叠加各层，以问题清单代替异常</td></tr>
+<tr><td><code>src/i18n/dictionary-file.ts</code></td><td>读取词典：先随包提供的部分，再用户层</td></tr>
+<tr><td><code>src/i18n/dictionary-edit.ts</code></td><td>从面板编辑词典，生成带键的草稿，并将程序与文件核对：只取改动过的，空单元格即撤销</td></tr>
+<tr><td><code>src/i18n/dictionary-ai.ts</code></td><td>用工作模型分批转换缺失的行，请求中附带术语词典</td></tr>
+<tr><td><code>src/flywheel/distill.ts</code></td><td>把记忆归并为观察项；统计有多少观察项仍没有向量</td></tr>
+<tr><td><code>src/write-disposition.ts</code></td><td>写入规则（合并、跳过、延后）以及日志中 Jev 决定被中断的痕迹</td></tr>
+<tr><td><code>src/security/sanitize.ts</code></td><td>注入 <code>&lt;engram_profile&gt;</code> 包，防止标记被替换</td></tr>
+<tr><td><code>src/client/EngramPanel.tsx</code></td><td>面板：标签页、维护卡片、语言选择窗口、Jev 检查、词典界面</td></tr>
+<tr><td><code>src/client/locales/*.ts</code></td><td>面板文本的三种语言版本</td></tr>
+</table>
+
+<h3>校验工具（在包外，<code>_ops</code> 目录）</h3>
+<ul>
+  <li><code>convert-embeddings.mjs</code> — 按模式声明重算，支持 <code>--dry-run</code> 与 <code>--dir</code>；</li>
+  <li><code>snapshot-bases.mjs</code> — 通过 <code>VACUUM INTO</code> 为现用库做快照；</li>
+  <li><code>state-preview.mjs</code> — 不启动插件时维护卡片会显示什么；</li>
+  <li><code>census-tables.mjs</code>、<code>count-broken.mjs</code>、<code>dump-vector-schema.mjs</code> — 表清点、损坏向量计数、字段导出；</li>
+  <li><code>check-svg-overlap.mjs</code> — 插入文档前检查图表的几何布局；</li>
+  <li><code>make-language-axes.mjs</code>、<code>make-description-html.mjs</code> — 生成图表与本文档。</li>
+</ul>
+
+<div class="note"><b>本文档中哪些经过验证，哪些没有</b>
+代码与数字来自仓库和实际运行（门禁、测试、打包体积）。决策的表述来自我们自己的决策记录，是我们的，不是作者的。界面的实机检查（按钮、窗口、倒计时、面板语言切换）在运行中的 DSH 上完成——这些当中哪些已经由人实际见过、哪些还没有，只有他本人知道；正文中不作此断言。</div>
+<p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
+</div>
+</body>
+</html>

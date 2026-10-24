@@ -11,7 +11,7 @@
 
 /** Оригинальные формулировки автора. */
 export const zh = {
-  // ---- Профиль сессии (renderProfileDetailed / renderProfileWithCurated) ----
+  // ---- Профиль сессии (renderProfileDetailed / renderProfileParts) ----
   'core.profileHeader': 'User memory profile (dsh-engram, cross-session) — Grand Hall (always present):',
   'core.profileFooter': 'Use engram_search to recall details (pass room to search inside one room); use engram_save to persist new facts.',
   'core.curatedHeader': 'Curated profile (user-maintained via engram_profile_edit; authoritative over derived facts):',
@@ -63,6 +63,7 @@ export const zh = {
   'core.warnDecayPeriodicFailed': '[dsh-engram] 周期衰减调度失败（跳过）：',
   'core.warnConsolidationFailed': '[dsh-engram] 闭馆整理失败（不影响对话）：',
   'core.warnEmbedderUnavailable': '[dsh-engram] 嵌入器不可用，检索降级为纯关键词模式：',
+  'core.warnLabelStampFailed': '[dsh-engram] 打开 {file} 时未能写入模型标记——该库保持无标记：',
   'core.warnRoomFull': '[dsh-engram] 房间已满，自动开新房「{room}」（可在管理面板翻新清单中人工拆分/命名）',
   'core.warnJevLegacyFields': '[dsh-engram] {where} 中的 jev.{field} 已不再读取：令牌与地址现取自 jev.provider 所指的 DSH 提供商——请把密钥迁入该提供商的密钥库，并删除这个字段',
   'core.warnSlotsBackfilled': '[dsh-engram] 存量记忆排桩完成：{count} 条已钉入宫殿（{path}）',
@@ -75,7 +76,7 @@ export const zh = {
 
 /** Английский набор — образец полноты. */
 export const en = {
-  // ---- Session profile (renderProfileDetailed / renderProfileWithCurated) ----
+  // ---- Session profile (renderProfileDetailed / renderProfileParts) ----
   'core.profileHeader': 'User memory profile (dsh-engram, cross-session) — Grand Hall (always present):',
   'core.profileFooter': 'Use engram_search to recall details (pass room to search inside one room); use engram_save to persist new facts.',
   'core.curatedHeader': 'Curated profile (user-maintained via engram_profile_edit; authoritative over derived facts):',
@@ -127,6 +128,7 @@ export const en = {
   'core.warnDecayPeriodicFailed': '[dsh-engram] Periodic decay scheduling failed (skipped):',
   'core.warnConsolidationFailed': '[dsh-engram] Closing-time consolidation failed (conversation unaffected):',
   'core.warnEmbedderUnavailable': '[dsh-engram] Embedder unavailable; retrieval degrades to keyword-only mode:',
+  'core.warnLabelStampFailed': '[dsh-engram] Could not write the model label when opening {file} — the base stays unlabeled:',
   'core.warnRoomFull': '[dsh-engram] Room full; opening a new room “{room}” automatically (split or rename it by hand in the panel’s slot-list view)',
   'core.warnJevLegacyFields': '[dsh-engram] jev.{field} in {where} is no longer read: the token and endpoint now come from the DSH provider named by jev.provider — move the key into that provider’s credential store and delete the field',
   'core.warnSlotsBackfilled': '[dsh-engram] Existing memories slotted: {count} pinned into the palace ({path})',
@@ -135,68 +137,4 @@ export const en = {
   'core.warnDecayArchived': '[dsh-engram] Decay scheduling: {label} archived {count} low-value memories (verify with engram_review)',
   'core.decayTargetProject': 'project “{title}”',
   'core.backfillBusy': 'A backfill job is already running; pause it or wait for it to finish first',
-} as const
-
-/** Русский набор. */
-export const ru = {
-  // ---- Профиль сессии (renderProfileDetailed / renderProfileWithCurated) ----
-  'core.profileHeader': 'Профиль памяти пользователя (dsh-engram, межсессионный) — Большой зал (присутствует всегда):',
-  'core.profileFooter': 'Для подробностей используйте engram_search (room ищет внутри одной комнаты); для сохранения новых фактов — engram_save.',
-  'core.curatedHeader': 'Курируемый профиль (ведётся пользователем через engram_profile_edit; главнее выведенных фактов):',
-  'core.observationsHeader': 'Устоявшиеся убеждения (выведены из множества сохранённых воспоминаний; перед важными решениями сверяйтесь с источниками):',
-  'core.observationItem': '- {belief} (источников: {count})',
-  'core.reviewDue': '\nСегодня пора вспомнить: {count}{plus} воспоминаний во дворце. Используйте engram_review_queue для активного припоминания (припоминание сильнее перечитывания).',
-  'core.compressSystem': 'Сожми каждую запись памяти в более короткую однострочную формулировку (не более 40 символов на запись), сохранив ключевую информацию, пригодную для повторного использования между сессиями (факты, предпочтения, решения, методы).\nВыведи только один JSON-массив, каждый элемент вида {"id": "id, возвращённый как есть", "content": "сжатая формулировка"}; число элементов и id должны взаимно однозначно соответствовать входу.\nНе выводи ничего, кроме JSON.',
-
-  // ---- Обоснование отбора (selection-rationale) ----
-  'core.rationaleHeader': 'В этом профиле всего {count} воспоминаний; причины отбора:',
-  'core.rationaleFooter': 'Если какая-то причина неверна, сообщите через engram_report — чем точнее профиль, тем лучше он вам помогает.',
-  'core.reasonBase': 'базовый отбор',
-  'core.reasonRecent': 'недавно посещалось',
-  'core.reasonBright': 'яркий ориентир',
-  'core.reasonCorridorHit': 'завсегдатай коридора',
-  'core.reasonStrongEvidence': 'подтверждено куратором',
-
-  // ---- Предложение экскурсии (tour-proposal) ----
-  'core.tourEmpty': '[{scope}] Дворец пока пуст. Совет: положите первое воспоминание (например, факт или предпочтение), чтобы следующим сессиям было за что зацепиться.',
-  'core.tourGreeting': '[{scope}] Во дворце сейчас {count} активных воспоминаний. Предлагаемый маршрут на открытие: {stops}.',
-  'core.tourStop': 'остановка {index} «{preview}»',
-
-  // ---- Образцы памяти (palace-sample) ----
-  'core.samplePreference': 'Предпочитаю лаконичный интерфейс командной строки и работу с клавиатуры, а не клики мышью.',
-  'core.samplePreferenceCaption': 'бамбуковые дощечки перелистываются',
-  'core.samplePreferenceTag0': 'запах бумаги',
-  'core.samplePreferenceTag1': 'деревянный стол',
-  'core.sampleFact': 'По умолчанию macOS, оболочка zsh + oh-my-zsh, редактор Neovim.',
-  'core.sampleFactCaption': 'матовый алюминиевый корпус',
-  'core.sampleFactTag0': 'холод металла',
-  'core.sampleFactTag1': 'щёлканье клавиш',
-  'core.sampleDecision': 'С 2024 года все личные проекты — на TypeScript + рабочих пространствах pnpm: один репозиторий с множеством пакетов — самый надёжный вариант.',
-  'core.sampleDecisionCaption': 'доска под белым лаком',
-  'core.sampleDecisionTag0': 'прохлада глазури',
-  'core.sampleEpisode': 'Первый раз прочитал книгу «Дворец памяти» целиком — дочитал в углу библиотеки ещё в школе, за окном шёл дождь.',
-  'core.sampleEpisodeCaption': 'бронзовый колокольчик у дождливого окна',
-  'core.sampleEpisodeTag0': 'звон колокола',
-  'core.sampleEpisodeTag1': 'сырость',
-
-  // ---- Диагностика (console) ----
-  'core.warnReplayPendingFailed': '[dsh-engram] Не удалось повторить отложенное извлечение (pending сохранён, диалог не затронут):',
-  'ingest.replayKeyFailed': '[dsh-engram] Не удалось повторить один pending (сохранён, повтор в следующей сессии):',
-  'ingest.replayAbandoned': '[dsh-engram] Устаревший pending снят с очереди (сессия старше 14 дней, всё ещё падает):',
-  'core.warnIngestPreviousFailed': '[dsh-engram] Автоматическое извлечение этого хода не удалось (пропущено, диалог не затронут):',
-  'core.warnHistoryBackfillFailed': '[dsh-engram] Заполнение истории не удалось:',
-  'core.warnDisposeFinalFailed': '[dsh-engram] Ошибка завершающей обработки при закрытии сессии (диалог не затронут):',
-  'core.warnReflectFailed': '[dsh-engram] Ошибка закрепления убеждений при закрытии сессии ({scope}, диалог не затронут):',
-  'core.warnDecayStartupFailed': '[dsh-engram] Не удалось запустить затухание при старте (пропущено):',
-  'core.warnDecayPeriodicFailed': '[dsh-engram] Периодическое затухание не удалось (пропущено):',
-  'core.warnConsolidationFailed': '[dsh-engram] Закрытие зала не удалось (диалог не затронут):',
-  'core.warnEmbedderUnavailable': '[dsh-engram] Встраиватель недоступен, поиск деградирует до режима «только ключевые слова»:',
-  'core.warnRoomFull': '[dsh-engram] Комната заполнена, автоматически открывается новая «{room}» (её можно вручную разделить или переименовать в списке обновления панели)',
-  'core.warnJevLegacyFields': '[dsh-engram] jev.{field} в {where} больше не читается: ключ и адрес берутся у провайдера DSH, названного в jev.provider — перенесите ключ в хранилище секретов этого провайдера и удалите поле',
-  'core.warnSlotsBackfilled': '[dsh-engram] Разметка существующих воспоминаний завершена: {count} закреплено во дворце ({path})',
-  'core.logReflectDone': '[dsh-engram] Закрепление убеждений завершено ({scope}): создано {formed}, уточнено {refined}, подтверждено {confirmed}, опровергнуто {refuted}',
-  'core.logConsolidationDone': '[dsh-engram] Закрытие зала завершено: архивировано {archived}, объединено {merged}, пропущено {skipped} ({ms} ms)',
-  'core.warnDecayArchived': '[dsh-engram] Затухание: в базе {label} архивировано {count} малоценных воспоминаний (проверить можно через engram_review)',
-  'core.decayTargetProject': 'проект «{title}»',
-  'core.backfillBusy': 'Задача заполнения уже выполняется; сначала приостановите её или дождитесь завершения',
 } as const

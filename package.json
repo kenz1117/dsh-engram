@@ -36,7 +36,10 @@
     "cordis.patch.yml",
     "icon.svg",
     "icon-256.svg",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "i18n/",
+    "registry/",
+    "docs/agent-language-guide.ru.md"
   ],
   "dsh": {
     "bundle": {
@@ -54,6 +57,7 @@
     "bundle": "tsdown",
     "watch": "tsdown --watch",
     "test": "vitest run",
+    "check:hooks": "node scripts/check-hook-order.mjs",
     "typecheck": "tsc --noEmit",
     "backfill": "node scripts/backfill-embeddings.mjs"
   },

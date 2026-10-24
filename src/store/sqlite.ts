@@ -27,7 +27,7 @@ import type {
   TimelineQuery, UpdateInput, WriteInput,
   EpisodeTimelineQuery, EpisodeTimelineResult,
 } from '../types.ts'
-import type { EngramStore, RoomState } from './interface.ts'
+import type { EngramStore, RoomState, VectorTarget } from './interface.ts'
 
 /** 当前 schema 版本；结构性变更必须 +1。可空列与伴随表走增量迁移（见 openEngramStore 的迁移段）。
  *  v12→v13 是纯数据迁移（历史房名归一化），但同样借版本号作为「只跑一次」的开关。 */
@@ -508,13 +508,27 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
    * 打开时读一次，且两张带向量的表一起读：记忆与信念彼此比较，任何一边对不上
    * 都会让语义检索失真。库里还没有向量时维度未知——由第一次写入定下来，在那之前
    * 没有可拒绝的东西。
+   *
+   * 维度取占多数的那一批，而不是任意一行：库里混进过别的模型的向量时（换过模型、
+   * 从备份恢复过、旧模型的归档残留），任意一行会把整库的维度判给少数派，此后
+   * 正常模型的写入全部被拒，而原因（少数几行异维数据）在错误里看不见。多数派
+   * 保证「这库现在算谁的库」由库里的多数回答；少数派只是被晾在一边，不参与比较。
+   * 表格平局时取较小的维度：写入被拒是响的，静默沿用大维度才是危险的。
+   *
+   * 长度不是 4 的倍数的 BLOB 跳过：那是损坏的行，按它定维会得到 153.25 这样的
+   * 小数，此后每一次写入都被拒绝，而真正的原因（一行坏数据）却看不见。
    */
-  const storedDimRow = db.prepare(`SELECT LENGTH(embedding) AS bytes FROM nodes WHERE embedding IS NOT NULL
-    UNION ALL SELECT LENGTH(embedding) AS bytes FROM observations WHERE embedding IS NOT NULL LIMIT 1`)
-    .get() as unknown as { bytes: number } | undefined
-  let storedDim = storedDimRow === undefined ? undefined : storedDimRow.bytes / Float32Array.BYTES_PER_ELEMENT
+  const computeStoredDim = (): number | undefined => {
+    const dims = db.prepare(`SELECT dim, COUNT(*) AS rows FROM (
+      SELECT LENGTH(embedding) / ${Float32Array.BYTES_PER_ELEMENT} AS dim FROM nodes WHERE embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0
+      UNION ALL
+      SELECT LENGTH(embedding) / ${Float32Array.BYTES_PER_ELEMENT} AS dim FROM observations WHERE embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0
+    ) GROUP BY dim ORDER BY rows DESC, dim ASC`).all() as unknown as { dim: number; rows: number }[]
+    return dims.length === 0 ? undefined : dims[0]!.dim
+  }
+  let storedDim = computeStoredDim()
 
-  /** 降级为关键词检索的告警只打一次：同一个进程里重复刷同一句没有信息量。 */
+  /** 维度不符导致读取降级时只提醒一次：检索是高频路径，逐次告警会淹掉日志。 */
   let warnedDegradedRead = false
 
   /**
@@ -553,6 +567,11 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlHasAudit = db.prepare('SELECT 1 AS x FROM op_log WHERE op = ? AND detail = ? LIMIT 1')
   const sqlListAudit = db.prepare('SELECT detail FROM op_log WHERE op = ? AND detail IS NOT NULL ORDER BY seq')
   const sqlClearAudit = db.prepare('DELETE FROM op_log WHERE op = ? AND detail = ?')
+  const sqlLogSize = db.prepare(`SELECT COUNT(*) AS rows,
+    COALESCE(SUM(LENGTH(COALESCE(detail, '')) + LENGTH(COALESCE(target_id, ''))), 0) AS bytes FROM op_log`)
+  const sqlLogCount = db.prepare('SELECT COUNT(*) AS n FROM op_log')
+  // 基底事实（这库站在哪个模型上）住在 meta：不是操作日志，考古时不进 op_log。
+  const sqlWriteMeta = db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
   const sqlOpLogById = db.prepare('SELECT at, op, target_id, detail FROM op_log WHERE target_id = ? ORDER BY seq DESC LIMIT ?')
   const sqlGetManyByIds = db.prepare('SELECT * FROM nodes WHERE id IN (SELECT value FROM json_each(?))')
   const sqlNeighborsBounded = db.prepare(`SELECT * FROM nodes WHERE id IN (
@@ -589,6 +608,24 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
   const sqlImportContentMatch = db.prepare('SELECT id FROM nodes WHERE content = ? LIMIT 1')
   const sqlImportAttachEmbedding = db.prepare('UPDATE nodes SET embedding = ? WHERE id = ?')
+  // Пересчёт векторов (перевод базы, ремонт): таблица и поле приходят из объявления
+  // схемы, поэтому подготовка запроса — по паре имён, а не заранее. Имя проверяется
+  // на «простое» и берётся в кавычки: объявление — данные, и SQL из него не собирается.
+  const vectorStatements = new Map<string, ReturnType<typeof db.prepare>>()
+  const statementForVector = (table: string, vector: string): ReturnType<typeof db.prepare> => {
+    const key = `${table}.${vector}`
+    const cached = vectorStatements.get(key)
+    if (cached !== undefined) return cached
+    const simple = (name: string): string => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        throw new EngramError('VECTOR_TARGET_BAD_NAME', `недопустимое имя таблицы или поля: ${name}`)
+      }
+      return `"${name}"`
+    }
+    const statement = db.prepare(`UPDATE ${simple(table)} SET ${simple(vector)} = ? WHERE id = ?`)
+    vectorStatements.set(key, statement)
+    return statement
+  }
   const sqlImportEntityAliases = db.prepare('UPDATE entities SET aliases_json = ?, updated_at = ? WHERE id = ?')
   const sqlDecay = db.prepare(`UPDATE nodes SET status = 'archived'
     WHERE status = 'active' AND importance < ? AND last_accessed_at < ? AND next_review_at IS NULL`)
@@ -1487,6 +1524,20 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       return attached
     },
 
+    async rewriteVectors(targets: readonly VectorTarget[]): Promise<number> {
+      let written = 0
+      withTransaction(() => {
+        for (const target of targets) {
+          const result = statementForVector(target.table, target.vector).run(vecToBlob(target.embedding), target.id)
+          written += Number(result.changes)
+        }
+      })
+      // 转换后库里已经是新维度：缓存必须跟着重算，否则后续写入会拿旧维度去对，
+      // 把「刚转成 384 维的库」判成 512 维的库并拒绝写入（EMBEDDER_DIMENSION_MISMATCH）。
+      storedDim = computeStoredDim()
+      return written
+    },
+
     async decay(options: DecayOptions) {
       const cutoff = Date.now() - options.olderThanDays * 86_400_000
       const result = sqlDecay.run(options.importanceBelow, cutoff)
@@ -1801,6 +1852,38 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
 
     async clearAudit(op: string, detail: string) {
       sqlClearAudit.run(op, detail)
+    },
+
+    async logSize() {
+      const row = sqlLogSize.get() as { rows: number; bytes: number }
+      return { rows: Number(row.rows), bytes: Number(row.bytes) }
+    },
+
+    async clearLog(keepOps: readonly string[]) {
+      const before = Number((sqlLogCount.get() as { n: number }).n)
+      if (keepOps.length === 0) {
+        sqlPurgeLog.run()
+      } else {
+        // Список опов фиксирован вызывающим (не пользовательский ввод), поэтому
+        // подстановка плейсхолдеров по длине безопасна.
+        const placeholders = keepOps.map(() => '?').join(', ')
+        db.prepare(`DELETE FROM op_log WHERE op NOT IN (${placeholders})`).run(...keepOps)
+      }
+      const deleted = before - Number((sqlLogCount.get() as { n: number }).n)
+      // Место освобождает только VACUUM: без него файл остаётся прежнего размера.
+      // Занятая другим процессом база просто не сожмётся — размер покажет панель.
+      let vacuumed = false
+      try {
+        db.exec('VACUUM')
+        vacuumed = true
+      } catch {
+        vacuumed = false
+      }
+      return { deleted, vacuumed }
+    },
+
+    async writeMeta(key: string, value: string) {
+      sqlWriteMeta.run(key, value)
     },
 
     async purge() {

@@ -87,9 +87,10 @@ describe('EngramStore (sqlite)', () => {
     expect(result.hits.length).toBe(1)
   })
 
-  // 维度不一致不该连关键词检索一起打掉（作者对 PR #21 的要求）：旧库配新模型时
-  // 用户仍要能按词搜索，并被明确告知语义一路没参与；写入则照旧被拒绝。
-  it('维度不一致：检索降级为关键词并标记 degraded，写入被拒绝', async () => {
+  // Мисматч размерности — не повод терять keyword-поиск (запрос автора по PR #21):
+  // база со старыми векторами обязана отдавать найденное по словам и говорить,
+  // что семантическая дорога не участвовала. Запись при этом отвергается осознанно.
+  it('мисматч размерности: поиск keyword-only с degraded, запись отвергается', async () => {
     await store.write({ scope: 'user', kind: 'fact', content: 'alpha 512', embedding: new Float32Array(512).fill(0.1) })
     const result = await store.search({ text: 'alpha', scopes: ['user'] }, new Float32Array(384).fill(0.1))
     expect(result.degraded).toBe(true)
@@ -99,7 +100,7 @@ describe('EngramStore (sqlite)', () => {
     await expect(store.write({
       scope: 'user',
       kind: 'fact',
-      content: '新模型写旧库',
+      content: 'новая модель, старая база',
       embedding: new Float32Array(384).fill(0.1),
     })).rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
   })
@@ -129,6 +130,35 @@ describe('EngramStore (sqlite)', () => {
       .rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
     const same = await store.write({ scope: 'user', kind: 'fact', content: '同维度的写回', embedding: new Float32Array(384).fill(0.1) })
     expect(same.id).toBeTruthy()
+  })
+
+  it('库的维度由多数派向量决定，少量异维残留不定库', async () => {
+    // 三条 384 的记忆，再把最早的一条直接改成 512：这就是换模型后留下的孤儿行的样子
+    // （写入路径拒收异维，所以只有直接写文件才造得出来）。
+    const stray = await store.write({ scope: 'user', kind: 'fact', content: '将来变成孤儿的条目', embedding: new Float32Array(384).fill(0.1) })
+    await store.write({ scope: 'user', kind: 'fact', content: '多数派二', embedding: new Float32Array(384).fill(0.2) })
+    await store.write({ scope: 'user', kind: 'fact', content: '多数派三', embedding: new Float32Array(384).fill(0.3) })
+    await store.close()
+    const raw = new DatabaseSync(join(dir, 'user.db'))
+    raw.prepare('UPDATE nodes SET embedding = ? WHERE id = ?')
+      .run(new Uint8Array(new Float32Array(512).fill(0.4).buffer), stray.id)
+    raw.close()
+    store = await openEngramStore(join(dir, 'user.db'))
+    // 若库的维度取「随便读到的一行」（第一条正是孤儿行），384 的写入会被误拒。
+    const same = await store.write({ scope: 'user', kind: 'fact', content: '同维度写回', embedding: new Float32Array(384).fill(0.5) })
+    expect(same.id).toBeTruthy()
+    await expect(store.write({ scope: 'user', kind: 'fact', content: '异维写入', embedding: new Float32Array(512).fill(0.5) }))
+      .rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
+  })
+
+  it('转换向量后维度缓存跟着重算：新维度的写入不再被旧维度挡住', async () => {
+    // 转换（rewriteVectors）把库里向量换成新维度后，维度缓存必须跟着重算。
+    // 否则缓存里还是旧维度，后续写入会以「库里是 512 维」为由拒掉 384 维的写入——
+    // 错误信息还会说反话：库里其实已经是 384 维了。
+    const before = await store.write({ scope: 'user', kind: 'fact', content: '转换前', embedding: new Float32Array(512).fill(0.5) })
+    await store.rewriteVectors([{ table: 'nodes', vector: 'embedding', id: before.id, embedding: new Float32Array(384).fill(0.5) }])
+    const after = await store.write({ scope: 'user', kind: 'fact', content: '转换后', embedding: new Float32Array(384).fill(0.5) })
+    expect(after.id).toBeTruthy()
   })
 
   it('update 建立 supersedes 链且旧条目退出检索', async () => {
