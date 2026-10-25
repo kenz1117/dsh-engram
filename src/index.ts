@@ -40,7 +40,7 @@ import { interfacePreference, writePalaceLanguage, writePalaceLanguageWithRetry,
 import { message, messageIn, setMessageDictionary, setMessageLanguage } from './i18n/messages.ts'
 import { setExtraRedactWords } from './i18n/patterns.ts'
 import { roomLabel } from './i18n/rooms.ts'
-import { createEmbedder, resolveLocalModel } from './embedder/select.ts'
+import { createEmbedder, resolveBaseTarget, resolveLocalModel } from './embedder/select.ts'
 import type { LocalModelChoice } from './embedder/select.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import { FINAL_INGEST_TIMEOUT_MS, ensureSessionSummary, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, lastTurnNumber, replayPendingIngests, userTexts } from './ingest/hook.ts'
@@ -59,7 +59,7 @@ import type { BaseConvertResult, BaseLabelResult, BaseView, DictionarySaveResult
 import { judgeBase, labelToStamp, languageOfLabels, MODEL_LABEL_KEY } from './registry/base-state.ts'
 import type { CatalogModel } from './registry/base-state.ts'
 import { readBaseCensus } from './registry/base-census.ts'
-import { planBaseVectors, runVectorConvert } from './registry/convert.ts'
+import { planBaseVectors, runVectorConvert, vectorConversionComplete } from './registry/convert.ts'
 import { PalaceGuard } from './registry/palace-guard.ts'
 import { loadVectorSchema } from './registry/vector-schema.ts'
 import { migrateProjectDb, migrationWarning, resolveProjectIdentity } from './project/identity.ts'
@@ -842,14 +842,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   const baseTargetNow = (): {
     readonly label: string | undefined
     readonly model: { readonly id: string, readonly label: string | undefined, readonly dimensions: number | undefined } | undefined
-  } => {
-    const model = resolveLocalModel(registry, basesLanguage, resolved.embedder.localModel, resolved.embedder.localPooling)
-    const record = model === undefined ? undefined : registry.models.get(model.id)
-    return {
-      label: model?.label,
-      model: model === undefined ? undefined : { id: model.id, label: record?.label, dimensions: record?.dimensions },
-    }
-  }
+  } => resolveBaseTarget(registry, basesLanguage, resolved.embedder)
   // Слова пользователя для вычистки секретов. Действуют поверх языковых наборов и
   // независимо от языка: пользователь добавляет их как раз потому, что пакета не хватило
   // (см. src/i18n/patterns.ts, настройка redactWords).
@@ -1306,6 +1299,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
         const outcome = await runVectorConvert({
           plan,
           embedder: active,
+          dimensions,
           write: targets => store.rewriteVectors(targets),
         })
         result.converted += outcome.converted
@@ -1313,10 +1307,10 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
         for (const failure of outcome.failed) {
           result.failed.push({ file: base.file, table: failure.table, error: failure.error })
         }
-        // Метка после пересчёта: база теперь стоит на целевой модели, и запись об этом
-        // должна это называть. Если пересчёт ничего не сделал, метку не меняем — она
-        // всё ещё описывает то, что в базе лежит.
-        if (base.targetLabel !== null && base.targetLabel !== base.label && (outcome.converted > 0 || plan.rows.length === 0)) {
+        // Метка после полного пересчёта: частичный успех, пустой текст или проблема
+        // чтения означает, что старую метку надо сохранить до следующего полного прохода.
+        if (base.targetLabel !== null && base.targetLabel !== base.label
+          && vectorConversionComplete(plan, outcome) && (outcome.converted > 0 || plan.rows.length === 0)) {
           await store.writeMeta(MODEL_LABEL_KEY, base.targetLabel)
           result.written.push({ file: base.file, label: base.targetLabel })
         }

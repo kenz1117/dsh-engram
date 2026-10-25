@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
-import { planBaseVectors, runVectorConvert } from '../src/registry/convert.ts'
+import { planBaseVectors, runVectorConvert, vectorConversionComplete } from '../src/registry/convert.ts'
 import type { VectorTableSpec } from '../src/registry/vector-schema.ts'
 import type { EngramEmbedder } from '../src/embedder/interface.ts'
 import type { VectorTarget } from '../src/store/interface.ts'
@@ -131,6 +131,7 @@ describe('пересчёт: партии, запись и честный отк�
     const result = await runVectorConvert({
       plan,
       embedder,
+      dimensions: 384,
       write: async targets => { written.push(...targets); return targets.length },
       batch: 2,
     })
@@ -157,12 +158,41 @@ describe('пересчёт: партии, запись и честный отк�
     const result = await runVectorConvert({
       plan,
       embedder: broken,
+      dimensions: 384,
       write: async targets => { written.push(...targets); return targets.length },
     })
 
     expect(result.converted).toBe(0)
     expect(written).toEqual([])
     expect(result.failed.map(row => row.id)).toEqual(['n1', 'n2'])
+  })
+
+  it('смешанные размерности в ответе — вся партия не пишется, ошибка у конкретной строки', async () => {
+    const path = fixture([
+      { id: 'n1', status: 'active', text: 'раз', dims: null },
+      { id: 'n2', status: 'active', text: 'два', dims: null },
+    ])
+    const plan = await planBaseVectors({ path, specs: SPECS, targetBytes: TARGET_BYTES })
+    const broken: EngramEmbedder = {
+      model: 'broken-dimensions',
+      async embed(): Promise<Float32Array[]> { return [new Float32Array(384), new Float32Array(512)] },
+      async close(): Promise<void> {},
+    }
+    const written: VectorTarget[] = []
+
+    const result = await runVectorConvert({
+      plan,
+      embedder: broken,
+      dimensions: 384,
+      write: async targets => { written.push(...targets); return targets.length },
+    })
+
+    expect(result.converted).toBe(0)
+    expect(written).toEqual([])
+    expect(result.failed.map(row => row.id)).toEqual(['n1', 'n2'])
+    expect(result.failed[0]?.error).toContain('смешанные размерности')
+    expect(result.failed[1]?.error).toContain('512 измерений вместо 384')
+    expect(vectorConversionComplete(plan, result)).toBe(false)
   })
 
   it('сбой записи партии не уносит остальные', async () => {
@@ -177,6 +207,7 @@ describe('пересчёт: партии, запись и честный отк�
       plan,
       embedder: fakeEmbedder(),
       batch: 1,
+      dimensions: 384,
       write: async targets => {
         if (targets[0]?.id === 'n2') throw new Error('база занята')
         return targets.length

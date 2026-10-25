@@ -12,7 +12,7 @@ import { isAbsolute, join, relative } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, ExportData, ListFilter, MemoryRecord, ObservationStatus } from './types.ts'
+import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, EpisodeTimelineAroundResponse, EpisodeTimelineGroupsResponse, ExportData, ListFilter, MemoryRecord, ObservationStatus } from './types.ts'
 import { asMemoryId } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
 import { embedImportedRecords, parseImportData, parseMarkdownExport } from './store/import.ts'
@@ -845,8 +845,13 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const store = await storeFor(scope)
             if (around !== undefined && around !== '') {
               const result = await store.episodeTimeline({ scopes: [scope], around: around as never, proximityMs: windowMinutes * 60_000, limit })
-              const view = result.around!
-              json(res, 200, {
+              const view = result.around
+              if (view === undefined) {
+                json(res, 404, { error: message('store.anchorNotFound', { id: around }) })
+                return
+              }
+              // 形状与客户端共用（src/types.ts）：邻近模式的载荷外层就是 `around`。
+              const payload: EpisodeTimelineAroundResponse = {
                 around: {
                   anchor: {
                     id: view.anchor.id, kind: view.anchor.kind, content: view.anchor.content, createdAt: view.anchor.createdAt,
@@ -855,7 +860,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                     id: record.id, kind: record.kind, content: record.content, createdAt: record.createdAt,
                   })),
                 },
-              })
+              }
+              json(res, 200, payload)
               return
             }
             const result = await store.episodeTimeline({
@@ -865,7 +871,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               ...(sessionId === undefined || sessionId === '' ? {} : { sessionId }),
               limit,
             })
-            json(res, 200, {
+            const groupsPayload: EpisodeTimelineGroupsResponse = {
               groups: result.groups.map(group => ({
                 sessionId: group.sessionId,
                 ...(group.summary === undefined ? {} : { summary: group.summary }),
@@ -875,7 +881,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                   id: record.id, kind: record.kind, content: record.content, createdAt: record.createdAt,
                 })),
               })),
-            })
+            }
+            json(res, 200, groupsPayload)
             return
           }
           if (req.method === 'GET' && route === 'timeline') {
@@ -941,10 +948,12 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 fileBytes: dbFileBytes(target.path),
                 rows: size.rows,
                 bytes: size.bytes,
-                ...(cleared === undefined ? {} : { deleted: cleared.deleted, vacuumed: cleared.vacuumed }),
+                ...(cleared === undefined ? {} : { deleted: cleared.deleted, vacuumed: cleared.vacuumed, checkpointed: cleared.checkpointed }),
               })
             }
             const sum = (key: string): number => parts.reduce((total, part) => total + Number(part[key] ?? 0), 0)
+            // Флаги очистки по всем базам: «true» значит, что сжатие/чекпоинт состоялись везде.
+            const allTrue = (key: string): boolean => parts.length > 0 && parts.every(part => part[key] === true)
             json(res, 200, {
               dir: deps.dbDir,
               keepOps: LOG_KEEP_OPS,
@@ -953,7 +962,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 fileBytes: sum('fileBytes'),
                 rows: sum('rows'),
                 bytes: sum('bytes'),
-                ...(clear ? { deleted: sum('deleted') } : {}),
+                ...(clear ? { deleted: sum('deleted'), vacuumed: allTrue('vacuumed'), checkpointed: allTrue('checkpointed') } : {}),
               },
             })
             return

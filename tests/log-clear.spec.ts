@@ -1,4 +1,5 @@
 import { mkdtemp } from 'node:fs/promises'
+import { statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -10,6 +11,17 @@ const KEEP = ['ingest-done', 'ingest-pending', 'ingest-skip', 'ingest-nothing', 
 
 let dir: string
 let store: EngramStore
+
+/** Сколько места на диске занимает база вместе с sidecar-файлами (как считает панель). */
+function diskBytes(path: string): number {
+  return [path, `${path}-wal`, `${path}-shm`].reduce((total, file) => {
+    try {
+      return total + statSync(file).size
+    } catch {
+      return total
+    }
+  }, 0)
+}
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'engram-log-'))
@@ -40,6 +52,8 @@ describe('журнал дворца: размер и очистка', () => {
 
     const result = await store.clearLog(KEEP)
     expect(result.deleted).toBe(2)
+    // Что-то удалили — вакуум должен состояться (иначе файл остался бы прежнего размера).
+    expect(result.vacuumed).toBe(true)
     expect(await store.hasAudit('ingest-done', 'sess:1')).toBe(true)
     expect(await store.hasAudit('reflect-pending', 'ключ')).toBe(true)
     expect(await store.hasAudit('ingest-request', 'AUX')).toBe(false)
@@ -59,8 +73,22 @@ describe('журнал дворца: размер и очистка', () => {
     await store.clearLog(KEEP)
     const again = await store.clearLog(KEEP)
     expect(again.deleted).toBe(0)
-    // Сжатие может не состояться (база занята), но факт попытки сообщается булевым полем.
-    expect(typeof again.vacuumed).toBe('boolean')
+    // Удалять нечего — вакуум не гоняем (он только раздувает WAL); чекпоинт всё равно
+    // освобождает место, поэтому флаг честный: сжатия не было, усечение — было.
+    expect(again.vacuumed).toBe(false)
+    expect(typeof again.checkpointed).toBe('boolean')
+  })
+
+  it('очистка освобождает место на диске: сумма db+wal+shm не растёт', async () => {
+    const path = join(dir, 'user.db')
+    for (let i = 0; i < 400; i += 1) await store.audit('write', `node-${i}`, 'x'.repeat(400))
+    const before = diskBytes(path)
+    const result = await store.clearLog(KEEP)
+    const after = diskBytes(path)
+    expect(result.deleted).toBe(400)
+    // Регресс: в WAL-режиме VACUUM писал пересобранную базу в -wal, а главный файл
+    // не усекал — сумма файлов на диске после «очистки» только РАСТОЛА.
+    expect(after).toBeLessThan(before)
   })
 
   it('журнал после очистки продолжает писаться', async () => {

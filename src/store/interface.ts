@@ -260,8 +260,13 @@ export interface EngramStore {
    * Перечисленные — не журнал, а состояние (ключи повторной загрузки и очереди): их
    * удаление заставило бы загрузчик заново перерабатывать уже обработанные ходы.
    * После удаления база по возможности сжимается — иначе файл остался бы прежнего размера.
+   *
+   * `vacuumed` — состоялся ли VACUUM (его делаем только когда что-то удалили);
+   * `checkpointed` — состоялся ли TRUNCATE-checkpoint, который возвращает
+   * освобождённые страницы в главный файл и обнуляет WAL (без него сумма
+   * db+wal+shm на диске не падает, а в WAL-режиме даже растёт).
    */
-  clearLog(keepOps: readonly string[]): Promise<{ deleted: number; vacuumed: boolean }>
+  clearLog(keepOps: readonly string[]): Promise<{ deleted: number; vacuumed: boolean; checkpointed: boolean }>
   /** 物理清除本库全部数据（节点、边、FTS、操作日志）。 */
   purge(): Promise<void>
   /** 关闭数据库句柄。 */

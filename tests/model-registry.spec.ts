@@ -9,7 +9,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { isLanguageCode, pickLanguage, systemLanguage } from '../src/i18n/language.ts'
-import { resolveLocalModel } from '../src/embedder/select.ts'
+import { resolveBaseTarget, resolveLocalModel } from '../src/embedder/select.ts'
+import type { ResolvedEmbedderConfig } from '../src/config.ts'
 import { bindingLabel, parseBindings, parseModels } from '../src/registry/models.ts'
 import type { LoadedRegistry } from '../src/registry/registry-file.ts'
 import { loadRegistry } from '../src/registry/registry-file.ts'
@@ -184,6 +185,36 @@ describe('метка базы: язык и имя модели', () => {
   it('у модели вне каталога метки нет: имени неоткуда взять', () => {
     const registry = starRegistry()
     expect(resolveLocalModel(registry, 'ru', 'Xenova/unknown', undefined)?.label).toBeUndefined()
+  })
+
+  function remoteConfig(model: string): ResolvedEmbedderConfig {
+    return {
+      kind: 'remote',
+      localModel: undefined,
+      localPooling: undefined,
+      remote: { model, baseUrl: 'http://127.0.0.1:1', apiKey: undefined, apiKeyEnv: undefined, batchSize: 32, timeoutMs: 30000 },
+    }
+  }
+
+  it('remote выбирает свою строку каталога, а не локальную привязку', () => {
+    const local = starRegistry()
+    const registry: LoadedRegistry = {
+      ...local,
+      models: new Map([...local.models, ['remote/embed', {
+        id: 'remote/embed', label: 'remote-embed', pooling: 'mean' as const, dtype: 'q8' as const, dimensions: 1536, languages: [],
+      }]]),
+    }
+    expect(resolveBaseTarget(registry, 'ru', remoteConfig('remote/embed'))).toEqual({
+      label: 'ru-remote-embed',
+      model: { id: 'remote/embed', label: 'remote-embed', dimensions: 1536 },
+    })
+  })
+
+  it('remote вне каталога остаётся неизвестным и не наследует локальную модель', () => {
+    expect(resolveBaseTarget(starRegistry(), 'ru', remoteConfig('remote/unknown'))).toEqual({
+      label: undefined,
+      model: { id: 'remote/unknown', label: undefined, dimensions: undefined },
+    })
   })
 
   it('собирается одной строкой', () => {

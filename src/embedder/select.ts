@@ -11,8 +11,9 @@
  * @module @kenz1117/dsh-engram/embedder/select
  */
 
-import type { ResolvedEngramConfig } from '../config.ts'
+import type { ResolvedEmbedderConfig, ResolvedEngramConfig } from '../config.ts'
 import { message } from '../i18n/messages.ts'
+import type { BaseTarget } from '../registry/base-state.ts'
 import { bindingLabel } from '../registry/models.ts'
 import type { LoadedRegistry } from '../registry/registry-file.ts'
 import { EngramError } from '../types.ts'
@@ -91,6 +92,32 @@ export function resolveLocalModel(
     source,
     pooling: poolingOverride ?? row.pooling,
     dtype: row.dtype,
+  }
+}
+
+/**
+ * Целевая модель базы — всегда та, которая реально пишет векторы.
+ * Remote не использует локальные привязки: без строки каталога его измерение и метка
+ * остаются неизвестными, а не заимствуются у локальной модели.
+ */
+export function resolveBaseTarget(
+  registry: LoadedRegistry,
+  language: string,
+  embedder: ResolvedEmbedderConfig,
+): BaseTarget {
+  const remote = embedder.remote
+  if (remote !== undefined) {
+    const record = registry.models.get(remote.model)
+    return {
+      label: record?.label === undefined ? undefined : bindingLabel(language, record.label),
+      model: { id: remote.model, label: record?.label, dimensions: record?.dimensions },
+    }
+  }
+  const model = resolveLocalModel(registry, language, embedder.localModel, embedder.localPooling)
+  const record = model === undefined ? undefined : registry.models.get(model.id)
+  return {
+    label: model?.label,
+    model: model === undefined ? undefined : { id: model.id, label: record?.label, dimensions: record?.dimensions },
   }
 }
 

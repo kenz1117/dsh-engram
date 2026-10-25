@@ -126,7 +126,10 @@ export async function readBaseCensus(input: {
   if (!checkable) {
     problems.push({
       kind: 'schema-version',
-      detail: `база v${String(baseVersion)}, объявление под v${String(input.schemaVersion)}`,
+      // Формат — машиночитаемый, без слов: панель показывает эту строку человеку
+      // на своём языке, и русская фраза здесь всплывала бы посреди китайского
+      // интерфейса. Версии — единственное, что в ней было.
+      detail: `v${String(baseVersion)}→v${String(input.schemaVersion)}`,
     })
   }
 

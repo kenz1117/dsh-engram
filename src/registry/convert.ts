@@ -129,18 +129,24 @@ export async function planBaseVectors(input: {
   return { rows, empty, problems }
 }
 
+/** Метку целевой модели можно писать только после полного, безошибочного пересчёта. */
+export function vectorConversionComplete(plan: VectorPlan, outcome: ConvertResult): boolean {
+  return plan.problems.length === 0 && outcome.empty === 0 && outcome.failed.length === 0
+}
+
 /**
  * Пересчитать векторы по плану.
  *
  * Партиями, а не одним вызовом: вывод модели растёт вместе со входом, и один
  * сбой эмбеддера не должен уносить весь пересчёт. Сбой партии попадает в `failed`
  * построчно, остальные партии продолжаются — это ремонт, а не миграция «всё или ничего».
- * @param input - план, эмбеддер, запись векторов и (для тестов) размер партии.
+ * @param input - план, эмбеддер, ожидаемая размерность, запись и (для тестов) размер партии.
  * @returns сколько получило вектор, сколько пропущено и что не далось.
  */
 export async function runVectorConvert(input: {
   readonly plan: VectorPlan
   readonly embedder: EngramEmbedder
+  readonly dimensions: number
   readonly write: (targets: readonly VectorTarget[]) => Promise<number>
   readonly batch?: number
 }): Promise<ConvertResult> {
@@ -163,6 +169,18 @@ export async function runVectorConvert(input: {
       // приписать чужой вектор строке хуже, чем оставить её без вектора.
       const reason = `эмбеддер вернул ${vectors.length} векторов на ${slice.length} текстов`
       for (const row of slice) failed.push({ table: row.table, id: row.id, error: reason })
+      continue
+    }
+    if (vectors.some(vector => vector.length !== input.dimensions)) {
+      // Даже одна чужая размерность останавливает всю партию: rewriteVectors намеренно
+      // обходит обычный guard текущей базы, поэтому целевая длина проверяется здесь.
+      for (const [index, row] of slice.entries()) {
+        const actual = vectors[index]!.length
+        const reason = actual === input.dimensions
+          ? `смешанные размерности в партии; запись отменена (ожидалось ${input.dimensions})`
+          : `эмбеддер вернул ${actual} измерений вместо ${input.dimensions}; запись отменена`
+        failed.push({ table: row.table, id: row.id, error: reason })
+      }
       continue
     }
     const targets: VectorTarget[] = slice.map((row, index) => ({
