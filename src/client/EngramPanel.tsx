@@ -12,7 +12,7 @@ import { createPortal } from 'react-dom'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
 import { KIND_KEY, NS, en, ru, zh, type EngramKey } from './locales/index.ts'
-import { CorridorMap, FloorplanMap, KIND_PALETTE } from './CorridorMap.tsx'
+import { CorridorMap, EDGE_STYLE, FloorplanMap, KIND_PALETTE } from './CorridorMap.tsx'
 import { SpiralMap, type SpiralRecord } from './SpiralMap.tsx'
 import spiralStyles from './spiral.module.css'
 import { useToast, type ToastController } from './Toast.tsx'
@@ -23,6 +23,12 @@ import { IMPORT_BODY_LIMIT_BYTES } from '../body-limits.ts'
 import { needsTranslation, splitDictionaryPatch, splitFillBatch } from '../i18n/dictionary-limits.ts'
 import { windowLeft } from '../registry/palace-change.ts'
 import pluginPackageJson from '../../package.json' with { type: 'json' }
+import type {
+  EpisodeTimelineAround,
+  EpisodeTimelineAroundResponse,
+  EpisodeTimelineGroupsResponse,
+  EpisodeTimelineRow,
+} from '../types.ts'
 
 /** 客户端 bundle 版本：单一来源 = package.json（构建时内联）。版本握手横幅用（审计 F8）。 */
 const CLIENT_VERSION: string = pluginPackageJson.version
@@ -420,13 +426,22 @@ interface LogStoragePart {
   readonly deleted?: number
   /** Сжался ли файл после очистки (VACUUM). */
   readonly vacuumed?: boolean
+  /** Освободились ли страницы в главный файл (TRUNCATE-checkpoint: WAL обнулён). */
+  readonly checkpointed?: boolean
 }
 
 /** Отчёт о журнале: где лежит, сколько занимает, сколько в нём строк. */
 interface LogStorageInfo {
   readonly dir: string
   readonly parts: readonly LogStoragePart[]
-  readonly totals: { readonly fileBytes: number; readonly rows: number; readonly bytes: number; readonly deleted?: number }
+  readonly totals: {
+    readonly fileBytes: number
+    readonly rows: number
+    readonly bytes: number
+    readonly deleted?: number
+    readonly vacuumed?: boolean
+    readonly checkpointed?: boolean
+  }
 }
 
 /** host 项目宫殿清单的行（GET /api/engram/workspaces）。 */
@@ -1248,26 +1263,38 @@ function LoadFailedLine({ t, msg, onRetry }: { t: T; msg: string; onRetry: () =>
 /** 视图级错误边界（审计 §1.1）：单个页签渲染异常降级为错误卡 + 重载按钮，
  *  不再放大成宿主 slot 错误边界那种「整面板白屏且无恢复 UI」。
  *  key=activeTab：切页签即换边界实例，错误不跨页签扩散；重试经 remount 重新拉取。
- *  注意这只是兜底：新增响应字段仍必须可选 + 兜底（见 CONTRIBUTING 契约约定）。 */
+ *  注意这只是兜底：新增响应字段仍必须可选 + 兜底（见 CONTRIBUTING 契约约定）。
+ *
+ *  兜底卡里带组件栈：错误消息只说「哪里错了」（「Cannot read properties of
+ *  undefined (reading 'id')」），组件栈才说「哪个视图错了」——反馈时带上它，
+ *  一次就能定位到具体组件，不必再复现一遍。 */
 class ViewErrorBoundary extends Component<{
   children: React.ReactNode
   retryLabel: string
   hintLabel: string
-}, { error: Error | null; tick: number }> {
-  override state: { error: Error | null; tick: number } = { error: null, tick: 0 }
-  static getDerivedStateFromError(error: Error): { error: Error | null; tick: number } {
-    return { error, tick: 0 }
+}, { error: Error | null; tick: number; stack: string }> {
+  override state: { error: Error | null; tick: number; stack: string } = { error: null, tick: 0, stack: '' }
+  static getDerivedStateFromError(error: Error): { error: Error | null; tick: number; stack: string } {
+    return { error, tick: 0, stack: '' }
+  }
+  override componentDidCatch(error: Error, info: { componentStack?: string | null }): void {
+    const stack = info.componentStack ?? ''
+    this.setState({ stack })
+    console.error('[engram] 视图渲染失败', error, stack)
   }
   private readonly handleRetry = (): void => {
-    this.setState(previous => ({ error: null, tick: previous.tick + 1 }))
+    this.setState(previous => ({ error: null, tick: previous.tick + 1, stack: '' }))
   }
   override render(): React.ReactNode {
-    const { error, tick } = this.state
+    const { error, tick, stack } = this.state
     if (error !== null) {
       return (
         <div className={styles.tabPanel}>
           <div className={styles.panelCard}>
             <EmptyState title={this.props.hintLabel} hint={error.message} />
+            {stack !== '' && (
+              <pre className={styles.crashStack}>{stack.trim().split('\n').slice(0, 12).join('\n')}</pre>
+            )}
             <div className={styles.expandLoading}>
               <button type="button" className={styles.button} onClick={this.handleRetry}>{this.props.retryLabel}</button>
             </div>
@@ -1284,11 +1311,13 @@ class ViewErrorBoundary extends Component<{
  * （时间 · 操作 · 宫殿 · 摘要），可按操作类别筛选；不再限高裁切，供逐条审计。
  * user 侧照旧合并，project 侧跟随项目宫殿选择器（api 的 forceProject）。
  */
-function LogPanel({ t, telemetry, project }: {
+function LogPanel({ t, telemetry, project, onCleared }: {
   t: T
   telemetry: TelemetrySnapshot | null
   /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
   project: string | null
+  /** 清理成功后回调：让总览遥测（瓦片计数）跟着重取，否则它显示的是清理前的旧值。 */
+  onCleared?: (() => void) | undefined
 }): React.ReactElement {
   const [rows, setRows] = useState<ActivityRow[] | null>(null)
   const [filter, setFilter] = useState<LogFilter>('all')
@@ -1321,6 +1350,9 @@ function LogPanel({ t, telemetry, project }: {
         setNotice(t('logClearDone', { n: data.totals.deleted ?? 0, size: formatBytes(data.totals.fileBytes) }))
         setConfirmClear(false)
         setReloadTick(tick => tick + 1)
+        // Счётчики-瓦плики берутся из telemetry всего обзора: без этого они остались бы
+        // от предыдущей (до очистки) загрузки — показали бы уже удалённые строки.
+        onCleared?.()
       })
       .catch((error: Error) => { setStorageFailed(error.message); setConfirmClear(false) })
       .finally(() => { setClearing(false) })
@@ -1677,6 +1709,10 @@ function CorridorPanel({ t, scope, project, onSelect, onOpenRoom }: {
     for (const n of graph.nodes) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1)
     return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([kind, count]) => ({ kind, count }))
   }, [graph])
+  // 自环边（from === to）不是「两条记忆之间的关系」，画不出线也进不了图例：
+  // 存量库里存在这类历史脏行（早期写入路径未挡自己），这里直接剔除，
+  // 让关系图与图例说的是实话（没有真关系就显示「还没有关系边」）。
+  const edges = useMemo(() => (graph === null ? [] : graph.edges.filter(e => e.from !== e.to)), [graph])
   useEffect(() => {
     let cancelled = false
     api<CorridorGraph>(`corridor?status=active,archived&scope=${scope}`)
@@ -1707,51 +1743,91 @@ function CorridorPanel({ t, scope, project, onSelect, onOpenRoom }: {
         ? (
           <div className={styles.floorplanGrid}>
             <FloorplanMap nodes={graph.nodes} onOpenRoom={onOpenRoom} t={t} />
-            <aside className={styles.roomIndex}>
-              <div className={styles.roomIndexStat}>
-                <b>{graph.nodes.length}</b> {t('corridorIndexStaying')} · {t('corridorIndexRooms', { n: roomCounts.length })}
-              </div>
-              {roomCounts.map(room => (
-                <button key={room.kind} type="button" className={styles.roomIndexRow}
-                  onClick={() => onOpenRoom(room.kind)}>
-                  <span className={styles.roomSwatch} style={{ background: KIND_PALETTE[room.kind] ?? '#7d8590' }} aria-hidden="true" />
-                  <span className={styles.roomIndexName}>{kindLabel(t, room.kind)}</span>
-                  <span className={styles.roomIndexMeta}>
-                    <span className={styles.roomBar} aria-hidden="true">
-                      <span className={styles.roomBarFill}
-                        style={{ width: `${String(Math.min(100, Math.round((room.count / 9) * 100)))}%`, background: KIND_PALETTE[room.kind] ?? '#7d8590' }} />
-                    </span>
-                    <span className={styles.roomIndexCount}>{String(room.count)} / 9</span>
-                  </span>
-                </button>
-              ))}
-              <span className={styles.sectionHint}>{t('corridorFloorHint', { nodes: graph.nodes.length })}</span>
-            </aside>
+            <RoomIndexAside
+              t={t}
+              nodes={graph.nodes}
+              rooms={roomCounts}
+              onOpenRoom={onOpenRoom}
+              edges={null} />
           </div>
         )
-        : <CorridorMap scope={scope} nodes={graph.nodes} edges={graph.edges} onSelect={onSelect} t={t} />}
+        : (
+          <div className={styles.floorplanGrid}>
+            <CorridorMap scope={scope} nodes={graph.nodes} edges={edges} onSelect={onSelect}
+              onOpenRoom={onOpenRoom} t={t} />
+            <RoomIndexAside
+              t={t}
+              nodes={graph.nodes}
+              rooms={roomCounts}
+              onOpenRoom={onOpenRoom}
+              edges={edges} />
+          </div>
+        )}
     </div>
   )
 }
 
-/** GET /api/engram/episode-timeline 的情景行（host 已精简为四字段）。 */
-interface EpisodeRowView {
-  readonly id: string
-  readonly kind: string
-  readonly content: string
-  readonly createdAt: number
+/** 右侧房间索引条：房间驻留条（两模式共用）+ 关系图模式追加边类型图例。 */
+function RoomIndexAside({ t, nodes, rooms, onOpenRoom, edges }: {
+  t: T
+  nodes: ReadonlyArray<{ readonly kind: string }>
+  rooms: ReadonlyArray<{ readonly kind: string; readonly count: number }>
+  onOpenRoom: (kind: string) => void
+  /** 非 null = 关系图模式，追加边类型图例。 */
+  edges: ReadonlyArray<{ readonly type: string }> | null
+}): React.ReactElement {
+  return (
+    <aside className={styles.roomIndex}>
+      <div className={styles.roomIndexStat}>
+        <b>{nodes.length}</b> {t('corridorIndexStaying')} · {t('corridorIndexRooms', { n: rooms.length })}
+      </div>
+      {rooms.map(room => (
+        <button key={room.kind} type="button" className={styles.roomIndexRow}
+          onClick={() => onOpenRoom(room.kind)}>
+          <span className={styles.roomSwatch} style={{ background: KIND_PALETTE[room.kind] ?? '#7d8590' }} aria-hidden="true" />
+          <span className={styles.roomIndexName}>{kindLabel(t, room.kind)}</span>
+          <span className={styles.roomIndexMeta}>
+            <span className={styles.roomBar} aria-hidden="true">
+              <span className={styles.roomBarFill}
+                style={{ width: `${String(Math.min(100, Math.round((room.count / 9) * 100)))}%`, background: KIND_PALETTE[room.kind] ?? '#7d8590' }} />
+            </span>
+            <span className={styles.roomIndexCount}>{String(room.count)} / 9</span>
+          </span>
+        </button>
+      ))}
+      {edges !== null && edges.length > 0 && (
+        <div className={styles.edgeLegend}>
+          {([
+            ['other', t('edgeOther'), EDGE_STYLE.related!],
+            ['supersedes', t('edgeSupersedes'), EDGE_STYLE.supersedes!],
+            ['contradicts', t('edgeContradicts'), EDGE_STYLE.contradicts!],
+          ] as const).map(([type, label, style]) => {
+            const present = type === 'other'
+              ? edges.some(e => e.type !== 'supersedes' && e.type !== 'contradicts')
+              : edges.some(e => e.type === type)
+            if (!present) return null
+            return (
+              <span key={type} className={styles.edgeLegendItem}>
+                <svg width={20} height={6} aria-hidden="true">
+                  <line x1={0} y1={3} x2={20} y2={3} stroke={style.color} strokeWidth={style.width} strokeDasharray={style.dash} />
+                </svg>
+                <span>{label}</span>
+              </span>
+            )
+          })}
+        </div>
+      )}
+      <span className={styles.sectionHint}>
+        {edges === null ? t('corridorFloorHint', { nodes: nodes.length }) : t('corridorGraphHint', { nodes: nodes.length })}
+      </span>
+    </aside>
+  )
 }
 
-/** GET /api/engram/episode-timeline 的组模式返回（组头带摄取期生成的会话摘要）。 */
-interface EpisodeGroupsView {
-  readonly groups: ReadonlyArray<{
-    readonly sessionId: string | null
-    readonly summary?: string | undefined
-    readonly startedAt: number
-    readonly endedAt: number
-    readonly episodes: readonly EpisodeRowView[]
-  }>
-}
+/* 情景时间线的载荷形状与服务器共用（src/types.ts）：形状对不上是编译错误，
+   不会再变成「点「邻近」时视图崩掉」。 */
+type EpisodeRowView = EpisodeTimelineRow
+type EpisodeGroupsView = EpisodeTimelineGroupsResponse
 
 /** Memory Spiral 端点返回形状（与 routes.ts 的 GET /api/engram/timeline 对齐）。 */
 interface SpiralTimelineView {
@@ -1828,10 +1904,7 @@ function SpiralPanel({ t, scope, project, reloadTick }: {
 }
 
 /** 邻近扩展（around 模式）返回：锚点条目 + 窗口内的情景邻居。 */
-interface EpisodeAroundView {
-  readonly anchor: EpisodeRowView
-  readonly neighbors: readonly EpisodeRowView[]
-}
+type EpisodeAroundView = EpisodeTimelineAround
 
 /**
  * 情景时间线视图：按会话分组浏览 episode 往事，组头展示摄取期生成的一句话摘要；
@@ -1871,8 +1944,21 @@ function EpisodeTimelineView({ t, scope, project, reloadTick }: {
   /** 展开邻近扩展：以该条目为锚点查同库 ±60 分钟窗口内的情景（窗口由 host 缺省）。 */
   const openAround = (id: string): void => {
     setAroundBusy(true)
-    api<EpisodeAroundView>(`episode-timeline?scope=${scope}&around=${encodeURIComponent(id)}`)
-      .then(d => { setAround(d); setAroundBusy(false); setFailed(null) })
+    // 服务器的形状是 `{ around: { anchor, neighbors } }`（同一条路由在分组模式下回
+    // `{ groups }`），这里必须取出内层：直接当 `EpisodeAroundView` 用会得到
+    // `anchor === undefined`，渲染锚点行时读 `.id` 就把整个视图带崩了。
+    api<EpisodeTimelineAroundResponse>(`episode-timeline?scope=${scope}&around=${encodeURIComponent(id)}`)
+      .then(d => {
+        const view = d.around
+        if (view === undefined) {
+          setFailed(t('episodeAroundMissing'))
+          setAround(null)
+        } else {
+          setAround(view)
+          setFailed(null)
+        }
+        setAroundBusy(false)
+      })
       .catch((err: Error) => { setFailed(err.message); setAroundBusy(false) })
   }
 
@@ -1921,10 +2007,10 @@ function EpisodeTimelineView({ t, scope, project, reloadTick }: {
               {t('episodeClose')}
             </button>
           </header>
-          {renderRow(around.anchor)}
-          {around.neighbors.length === 0
+          {around.anchor !== undefined && renderRow(around.anchor)}
+          {(around.neighbors ?? []).length === 0
             ? <p className={styles.sectionHint}>{t('episodeAroundEmpty')}</p>
-            : around.neighbors.map(renderRow)}
+            : (around.neighbors ?? []).map(renderRow)}
         </section>
       )}
       {data === null && failed === null && <div className={styles.expandLoading}>{t('loading')}</div>}
@@ -2075,7 +2161,7 @@ function EntityView({ t, scope, project, reloadTick }: {
 
   return (
     <>
-      {/* v0.8.9 过滤区收进工具条卡:类别 chips + 搜索框 + 计数,一个容器。 */}
+      {/* 工具条：类别 chips（带色点，色码自解释）+ 搜索 + 计数，一个容器。 */}
       <div className={styles.toolbarCard}>
         {([
           ['all', t('entityKindAll')],
@@ -2084,6 +2170,9 @@ function EntityView({ t, scope, project, reloadTick }: {
           <button key={value} type="button" aria-pressed={kind === value}
             className={kind === value ? `${styles.chip} ${styles.chipOn}` : styles.chip}
             onClick={() => { setKind(value); setDetail(null); setFacts(null) }}>
+            {value !== 'all' && (
+              <span className={styles.chipDot} style={{ background: ENTITY_DOT[value] ?? '#7d8590' }} aria-hidden="true" />
+            )}
             {label}
           </button>
         ))}
@@ -2092,7 +2181,7 @@ function EntityView({ t, scope, project, reloadTick }: {
           <input className={`${styles.input} ${styles.search}`} placeholder={t('entitySearchPlaceholder')} value={q}
             onChange={event => { setQ(event.target.value); setDetail(null); setFacts(null) }} />
         </span>
-        {data !== null && <span className={styles.sectionHint}>{t('entityCount', { n: data.total })}</span>}
+        {data !== null && <span className={styles.toolbarCount}>{t('entityCount', { n: data.total })}</span>}
       </div>
       {failed !== null && <div className={styles.expandLoading}>{t('loadFailed', { msg: failed })}</div>}
       {detail !== null && (
@@ -2122,22 +2211,28 @@ function EntityView({ t, scope, project, reloadTick }: {
       )}
       {data === null && failed === null && <div className={styles.expandLoading}>{t('loading')}</div>}
       {data !== null && data.items.length === 0 && <EmptyState title={t('entityEmpty')} hint={t('emptyHint')} />}
-      {data !== null && data.items.map(item => (
-        <div key={item.entity.id} className={styles.entityRow} title={item.entity.id}>
-          <span className={styles.entityDot} style={{ background: ENTITY_DOT[item.entity.kind] ?? '#7d8590' }} aria-hidden="true" />
-          <span className={styles.entityMain}>
-            <span className={styles.entityName}>{item.entity.name}</span>
-            {item.entity.aliases.length > 0 && (
-              <span className={styles.entityAliases}>{item.entity.aliases.join('、')}</span>
-            )}
-          </span>
-          <span className={styles.episodeRowTime}>{t('entityMemories', { n: item.memoryCount })}</span>
-          <button type="button" className={styles.button} disabled={detailBusy}
-            onClick={() => { openDetail(item.entity.id) }}>
-            {t('entityOpen')}
-          </button>
+      {data !== null && data.items.length > 0 && (
+        <div className={styles.entityList}>
+          {data.items.map((item, index) => (
+            <button key={item.entity?.id ?? `entity-${String(index)}`} type="button" className={styles.entityRow}
+              title={item.entity?.id} disabled={detailBusy}
+              onClick={() => { if (item.entity !== undefined) openDetail(item.entity.id) }}>
+              <span className={styles.entityDot} style={{ background: ENTITY_DOT[item.entity?.kind ?? ''] ?? '#7d8590' }} aria-hidden="true" />
+              <span className={styles.entityMain}>
+                <span className={styles.entityName}>{item.entity?.name ?? '—'}</span>
+                {(item.entity?.aliases.length ?? 0) > 0 && (
+                  <span className={styles.entityAliases}>{item.entity?.aliases.join('、')}</span>
+                )}
+              </span>
+              <span className={styles.entityTag}>{entityKindLabel(t, item.entity?.kind ?? 'other')}</span>
+              <span className={styles.entityCount}>{t('entityMemories', { n: item.memoryCount })}</span>
+              <svg className={styles.entityChevron} viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          ))}
         </div>
-      ))}
+      )}
     </>
   )
 }
@@ -2313,9 +2408,10 @@ interface TelemetrySnapshot {
  * 一次并行拉齐，供今日速览、健康分构成与房间目录共用（同一路由不重复请求）。
  * @param scope - 当前观察的宫殿（跟随 Header 三宫格）。
  * @param project - 项目宫殿选择器（仅用于选择器变化时重载；实际注入在 api() 里做）。
+ * @param reloadTick - 外部重载信号（如日志清理后）：变化时重新取数，让遥测计数不再是旧值。
  * @returns 各段数据与取数失败原因（失败时保留上一次成功值）。
  */
-function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string | null): {
+function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string | null, reloadTick = 0): {
   stats: StatsPart['stats'] | null
   byKind: Readonly<Record<string, number>>
   telemetry: TelemetrySnapshot | null
@@ -2347,7 +2443,7 @@ function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string
         if (!cancelled) setState(current => ({ ...current, failed: error.message }))
       })
     return () => { cancelled = true }
-  }, [scope, project])
+  }, [scope, project, reloadTick])
   return state
 }
 
@@ -2925,7 +3021,12 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
 
   return (
     <div className={styles.backfill}>
-      <p className={styles.backfillIntro}>{t('backfillIntro')}</p>
+      {/* 解释性长文收进「说明」折叠里：运维页是工具页，正文第一屏应该先给控件，
+          想读的人点一下就在。 */}
+      <details className={styles.opsDetails}>
+        <summary>{t('opsMoreInfo')}</summary>
+        <p className={styles.backfillIntro}>{t('backfillIntro')}</p>
+      </details>
 
       {/* 导入规则：全部由用户选择（持久化，下次进来沿用）。 */}
       <div className={styles.backfillRules}>
@@ -2990,19 +3091,12 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
             ? <span className={styles.backfillMuted}>{estimate.unavailable}</span>
             : (
               <>
-                <div className={styles.logTiles}>
-                  <span className={styles.statTile}>
-                    <span className={styles.statTileLabel}>{t('backfillLabelCandidates')}</span>
-                    <b className={styles.statTileValue}>{estimate.candidates}</b>
-                  </span>
-                  <span className={styles.statTile}>
-                    <span className={styles.statTileLabel}>{t('backfillLabelPending')}</span>
-                    <b className={styles.statTileValue}>{estimate.pendingTurns}</b>
-                  </span>
-                  <span className={styles.statTile}>
-                    <span className={styles.statTileLabel}>{t('backfillLabelSkipped')}</span>
-                    <b className={styles.statTileValue}>{estimate.alreadyIngested}</b>
-                  </span>
+                {/* Оценка — теми же крупными метриками, что на главной: три числа
+                    видно сразу, а не нужно искать в трёх одинаковых коробках. */}
+                <div className={styles.heroMetrics}>
+                  <Metric label={t('backfillLabelCandidates')} value={estimate.candidates} />
+                  <Metric label={t('backfillLabelPending')} value={estimate.pendingTurns} />
+                  <Metric label={t('backfillLabelSkipped')} value={estimate.alreadyIngested} />
                 </div>
                 <div className={styles.backfillMuted}>
                   {t('backfillSkippedDetail', {
@@ -3018,6 +3112,7 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
             )}
       </div>
 
+      <div className={styles.cardDivider} />
       <div className={styles.backfillActions}>
         <button type="button" className={styles.button} disabled={busy} onClick={reload}>{t('backfillReestimate')}</button>
         <button type="button" className={`${styles.button} ${styles.primary}`}
@@ -3332,7 +3427,11 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
 
   return (
     <div className={styles.jev}>
-      <p className={styles.jevIntro}>{t('jevIntro')}</p>
+      {/* 解释性长文收进「说明」折叠里（同回填块）：工具页第一屏先给控件。 */}
+      <details className={styles.opsDetails}>
+        <summary>{t('opsMoreInfo')}</summary>
+        <p className={styles.jevIntro}>{t('jevIntro')}</p>
+      </details>
       <div className={styles.jevToggleRow}>
         <label className={styles.jevToggle}>
           <input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} />
@@ -3759,17 +3858,22 @@ function languageLabel(code: string, known: readonly PalaceLanguageOption[], loc
   return label === undefined || label === '' ? code.toUpperCase() : label
 }
 
-function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
+/**
+ * Блок «Язык дворца и базы»: состояние памяти (язык, модель, каждая база) и действия
+ * над ним — сменить язык, починить векторы.
+ *
+ * Отдельная карточка, а не половина одной общей: таблицы моделей и баз живут в широкой
+ * колонке, словари — в узкой. Снимок обслуживания приходит сверху, общий.
+ */
+function PalaceLanguageCard({ t, snapshot, onReload, blockRefs }: {
   readonly t: T
-  /** Якорь оверлеев панели (вне `.panel`): сюда порталом уходит экран правки словаря. */
-  readonly overlayHost: { readonly current: HTMLDivElement | null }
-  /** Открыть проверку окна первого запуска — без записи и без смены языка дворца. */
-  readonly onTestPanel?: () => void
-  /** Язык самой панели: он же умолчание для выбора языка в блоке «Язык Плагина». */
-  readonly lang: PanelLang
+  /** Снимок обслуживания: язык, модель, базы. */
+  readonly snapshot: RegistrySnapshot
+  /** Перечитать снимок (после починки или смены языка). */
+  readonly onReload: () => Promise<void>
+  /** Узел блока для верхней навигации по странице обслуживания. */
+  readonly blockRefs?: { readonly current: Record<string, HTMLElement | null> }
 }): React.ReactElement {
-  const [snapshot, setSnapshot] = useState<RegistrySnapshot | null>(null)
-  const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   /**
    * Замок на смену языка дворца: по умолчанию закрыт.
@@ -3778,7 +3882,7 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
    * ожила кнопка «Выполнить». Пока язык не изменён, кнопка молчит: пересчёт баз идёт
    * только вместе со сменой языка.
    *
-   * Состояние намеренно НЕ хранится между заходами: снятый замок, переживающий выход из
+   * Состояние намеренно НЕ хранится между заходами: снятый замок, переживший выход из
    * панели, оставлял бы дорогое действие открытым для случайного нажатия.
    */
   const [locked, setLocked] = useState(true)
@@ -3802,72 +3906,8 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
   const [startedAt, setStartedAt] = useState<number | null>(null)
   /** Остаток окна в секундах: подпись у предохранителя и признак «ещё можно». */
   const [left, setLeft] = useState(0)
-  /** Открыт ли экран правки словаря: он перекрывает окно плагина целиком. */
-  const [dictionaryOpen, setDictionaryOpen] = useState(false)
-  /**
-   * Язык, словари которого показывает блок «Язык Плагина».
-   *
-   * Умолчание — язык самой панели (тот, что стоит в верхнем переключателе): человек
-   * чаще всего смотрит переводы того языка, на котором читает интерфейс. Дальше это
-   * независимый выбор: он не переключает панель и ничего не пишет в настройки.
-   */
-  const [dictLanguage, setDictLanguage] = useState<string>(lang)
-  /** Счётчики словарей выбранного языка; null — ещё не прочитаны. */
-  const [dictStats, setDictStats] = useState<readonly DictStatView[] | null>(null)
-  /** Просьба перечитать счётчики: после заведения словаря язык тот же, а данные новые. */
-  const [dictReload, setDictReload] = useState(0)
-  /** Язык, выбранный справа в поле «Создать словарь» (подпись, а не код: так ищут глазами). */
-  const [createLanguage, setCreateLanguage] = useState<string>('')
-  const [dictError, setDictError] = useState<string | null>(null)
   const toast = useToast()
-
-  useEffect(() => {
-    let alive = true
-    void (async () => {
-      try {
-        const data = await api<RegistrySnapshot>('registry')
-        if (alive) setSnapshot(data)
-      } catch (cause) {
-        if (alive) setError(cause instanceof Error ? cause.message : String(cause))
-      }
-    })()
-    return () => { alive = false }
-  }, [])
-
-  /**
-   * Счётчики словарей выбранного языка: «всего строк / заполнено / откуда прочитано».
-   *
-   * Считаются по таблице правки (`GET dictionary?set=…&language=…`), а не по снимку
-   * обслуживания: снимок описывает язык, на котором плагин считает сейчас, а человек
-   * смотрит на язык, выбранный в блоке. Всего строк — это термины набора (строки
-   * таблицы), заполнено — те, у которых правая клетка непустая.
-   */
-  useEffect(() => {
-    let alive = true
-    void (async () => {
-      try {
-        const [messages, panel] = await Promise.all([
-          api<DictionarySetView>(`dictionary?set=messages&language=${encodeURIComponent(dictLanguage)}`),
-          api<DictionarySetView>(`dictionary?set=panel&language=${encodeURIComponent(dictLanguage)}`),
-        ])
-        if (!alive) return
-        setDictStats([
-          { set: 'messages', label: 'registryDictionaryMessages', view: messages },
-          { set: 'panel', label: 'registryDictionaryPanel', view: panel },
-        ])
-        setDictError(null)
-      } catch (cause) {
-        if (alive) setDictError(cause instanceof Error ? cause.message : String(cause))
-      }
-    })()
-    return () => { alive = false }
-  }, [dictLanguage, dictReload])
-
-  // Тексты карточки — из вшитых словарей панели (locales/*.ts): в них есть все
-  // ключи обслуживания, и они переключаются вместе с языком панели. Файловый
-  // словарь серверного языка выбранный язык больше не перекрывает.
   const tt = (key: EngramKey, params?: Record<string, string | number>): string => t(key, params)
-
   /**
    * Длина окна: считается по настройке, а не по константе — сервер проверяет тем же
    * числом. Читается из снимка, а снимка до загрузки ещё нет, поэтому здесь терпит
@@ -3916,11 +3956,6 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
    */
   const languages = snapshot?.languages ?? []
 
-  if (error !== null) {
-    return <div className={styles.empty}><b>{tt('registryFailed')}</b><span>{error}</span></div>
-  }
-  if (snapshot === null) return <div className={styles.expandLoading}>{tt('registryLoading')}</div>
-
   const resolvedLabel = snapshot.resolved === null
     ? tt('registryNone')
     : snapshot.resolved.label ?? snapshot.resolved.id
@@ -3952,7 +3987,7 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
     ?? currentLanguage.toUpperCase()
 
   // Состояние баз одной строкой для верхнего ряда: это индикатор, а не действие.
-  const actions = snapshot.bases.map(base => base.action)
+  const actions = (snapshot.bases ?? []).map(base => base.action)
   const todo: 'convert' | 'repair' | 'write-label' | 'none' = actions.includes('convert')
     ? 'convert'
     : actions.includes('repair') ? 'repair' : actions.includes('write-label') ? 'write-label' : 'none'
@@ -4080,7 +4115,7 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
         setPending(null)
         setStartedAt(null)
         setLocked(true)
-        setSnapshot(await api<RegistrySnapshot>('registry'))
+        await onReload()
       })
       .catch((changeError: Error) => { toast.push('error', changeError.message) })
       .finally(() => { setBusy(false) })
@@ -4139,7 +4174,7 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
         }
         steps.push(`${((Date.now() - began) / 1000).toFixed(1)} с`)
         setLastRepair(tt('baseRepairTrace', { steps: steps.join(' → ') }))
-        setSnapshot(await api<RegistrySnapshot>('registry'))
+        await onReload()
       })
       .catch((repairError: Error) => {
         steps.push(`ошибка: ${repairError.message}`)
@@ -4149,6 +4184,300 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
       .finally(() => { setBusy(false) })
   }
 
+  /** Язык диалогов с агентом: у сессии без реплик его ещё нет. */
+  /**
+   * Строка проблемы базы — словами панели.
+   *
+   * Сервер отдаёт `kind` машинным ключом и `detail` безъязыковым фактом
+   * (имя таблицы, версии `v11→v13`), а не готовой фразой: готовая фраза была
+   * зашита по-русски и в китайском интерфейсе вылезала посреди китайских строк.
+   * Неизвестный вид оставляем как есть — лучше сырой факт, чем пустота.
+   */
+  const baseProblemText = (problem: { readonly kind: string; readonly detail: string }): string => {
+    if (problem.kind === 'no-table') {
+      return tt('baseProblemNoTable', { table: problem.detail })
+    }
+    if (problem.kind === 'schema-version') {
+      const versions = [...problem.detail.matchAll(/v(\d+)/g)].map(match => match[1] ?? '')
+      const [found, expected] = versions
+      if (found !== undefined && expected !== undefined) {
+        return tt('baseProblemSchemaVersion', { found: `v${found}`, expected: `v${expected}` })
+      }
+    }
+    return problem.detail
+  }
+
+  const dialogueLabel = snapshot.palace?.dialogue == null
+    ? tt('palaceDialogueNone')
+    : snapshot.palace.dialogue.toUpperCase()
+
+  /** Язык, на котором стоят базы по меткам. */
+  const basesLabel = snapshot.palace?.bases == null
+    ? tt('palaceBasesNone')
+    : snapshot.palace.bases === 'mixed' ? tt('palaceBasesMixed') : snapshot.palace.bases.toUpperCase()
+
+  /**
+   * Метки языков у модели. Привязка `*` означает «все языки без явной привязки» — она
+   * и есть метка этой модели, поэтому показывается словом, а не звёздочкой.
+   */
+  const languagesOfModel = (modelId: string): string => {
+    const bound = snapshot.bindings.filter(row => row.model === modelId)
+    if (bound.length === 0) return tt('registryNone')
+    return bound.map(row => row.language === '*'
+      ? tt('registryAllLanguages')
+      : languages.find(option => option.code === row.language)?.label ?? row.language.toUpperCase())
+      .join(' · ')
+  }
+
+  return (
+      <div className={`${styles.panelCard} ${styles.opsBlock}`}
+        ref={element => { if (blockRefs !== undefined) blockRefs.current.palace = element }}>
+        <div className={styles.cardHead}>
+          <h3 className={styles.cardTitle}>{tt('palaceLanguageTitle')}</h3>
+        </div>
+        {/* Строка состояния — только чтение: чем дворец думает (словом), что стоит в
+            базах (буквами) и что с базами. */}
+        <div className={styles.palaceChangeRow}>
+          <span className={styles.regLabel}>{tt('palaceLanguageName')}</span>
+          <span className={styles.regValue}>{palaceLanguageName}</span>
+          <span className={styles.regLabel}>{tt('palaceBasesLine')}</span>
+          <span className={styles.regMono} title={tt('palaceBasesHint')}>{basesLabel}</span>
+          <span className={baseStateClass}>{baseStateText}</span>
+        </div>
+        {/* Что именно не так — словами, а не словом «конвертация»: иначе человек
+            видит красную метку и не знает, что с ней делать. */}
+        {baseKind === 'convert' && <p className={styles.regNote}>{tt('baseStateConvertHint')}</p>}
+        {baseKind === 'repair' && <p className={styles.regNote}>{tt('baseStateRepairHint')}</p>}
+        {/* Два факта о модели нужны всегда, а не только когда базы в разнобой:
+            какой моделью считают память и на каком языке с нами говорят. */}
+        <dl className={styles.regKV}>
+          <dt>{tt('palaceThoughtsModelLine')}</dt>
+          <dd>
+            {currentLanguage.toUpperCase()}
+            {' · '}
+            <span className={styles.regMono}>{resolvedLabel}</span>
+          </dd>
+        </dl>
+        <p className={styles.regNote}>{tt('palaceThoughtsModelHint')}</p>
+        <dl className={styles.regKV}>
+          <dt>{tt('palaceDialogueLine')}</dt>
+          <dd>
+            {dialogueLabel}
+            <span className={styles.regHint}>{tt('palaceDialogueHint')}</span>
+          </dd>
+        </dl>
+        {/* Действие — только когда есть что делать. */}
+            {baseKind === 'convert' && (<>
+              <div className={styles.palaceChangeRow}>
+                <span className={`${styles.regLabel} ${styles.regLangPush}`}>
+                  {tt('palaceLanguageChange')}
+                </span>
+                <select className={`${styles.input} ${styles.regLang}`}
+                  value={chosenLanguage} disabled={locked}
+                  aria-label={tt('palaceLanguageChange')}
+                  onChange={event => { pickLanguage(event.target.value) }}>
+                  {languageOptions.map(row => (
+                    <option key={row.code} value={row.code}>{row.label}</option>
+                  ))}
+                </select>
+              </div>
+              <p className={styles.regNote}>{tt('palaceChangeHint', { seconds: windowSec })}</p>
+            </>)}
+            {baseKind !== 'ok' && (
+              <div className={styles.baseRunRow}>
+                <label className={styles.regGuard}>
+                  <input type="checkbox" checked={locked}
+                    onChange={event => { toggleLock(event.target.checked) }} />
+                  <span>{tt('baseLock')}</span>
+                </label>
+                <button type="button" className={`${styles.button} ${styles.primary}`}
+                  disabled={busy || locked || (baseKind === 'convert'
+                    && (!languageChanged || startedAt === null || left <= 0))}
+                  onClick={baseKind === 'convert' ? applyChange : repairBases}>
+                  {busy ? tt('baseRunBusy') : tt('baseRun')}
+                </button>
+                <span className={styles.baseRunNote}>
+                  {baseKind === 'convert'
+                    ? (languageChanged ? tt('baseActionConvert') : tt('baseRunNeedLanguage'))
+                    : tt('baseActionRepair')}
+                </span>
+                {baseKind === 'repair' && (
+                  <span className={`${styles.baseRunNote} ${styles.baseRunScope}`}>
+                    {tt('baseActionRepairScope')}
+                  </span>
+                )}
+              </div>
+            )}
+            {baseKind === 'repair' && lastRepair !== null && (
+              <p className={styles.baseRunTrace}>{lastRepair}</p>
+            )}
+            {baseKind === 'convert' && languageChanged && (
+              <p className={styles.regNote}>
+                {tt('palaceChangeLeft', { seconds: left })}
+                {locked ? ` · ${tt('palaceChangeNeedAllow')}` : ''}
+              </p>
+            )}
+            {baseKind === 'convert' && chosenLanguage !== snapshot.language && (
+              <p className={styles.regNote}>{tt('palacePending', { running: snapshot.language.toUpperCase() })}</p>
+            )}
+        {/* Таблицы — всегда: карточка показывает состояние, а не одну кнопку.
+            Раньше они жили внутри «когда что-то сломалось» и в порядке дел
+            исчезали совсем. */}
+        <div className={styles.cardDivider} />
+              <p className={styles.regNote}>{tt('registryModelsHint')}</p>
+              <div className={styles.regTableWrap}>
+              <table className={styles.regTable}>
+                <thead>
+                  <tr>
+                    <th>{tt('registryColLanguage')}</th>
+                    <th>{tt('registryColLabel')}</th>
+                    <th>{tt('registryColId')}</th>
+                    <th>{tt('registryColDims')}</th>
+                    <th>{tt('registryColParams')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(snapshot.models ?? []).map(row => (
+                    <tr key={row.id} className={row.id === snapshot.resolved?.id ? styles.on : undefined}>
+                      <td className={styles.regMono}>{languagesOfModel(row.id)}</td>
+                      <td>{row.label ?? tt('registryNone')}</td>
+                      <td className={styles.regMono}>{row.id}</td>
+                      <td>{row.dimensions ?? tt('registryNone')}</td>
+                      <td>{row.pooling} · {row.dtype}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              </div>
+              {snapshot.remote && <p className={styles.regNote}>{tt('registryRemote')}</p>}
+              {snapshot.problems.length > 0 && (
+                <ul className={styles.regBad}>
+                  {snapshot.problems.map((problem, index) => (
+                    <li key={`${problem.file}-${String(index)}`}>
+                      {baseName(problem.file)}: {baseProblemText(problem)}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            {snapshot.bases.length === 0
+              ? <p className={styles.regNote}>{tt('baseNoSchema')}</p>
+              : (
+                <>
+                <p className={styles.regNote}>{tt('registryBasesHint')}</p>
+                <div className={`${styles.regTableWrap} ${styles.regTableScroll}`}>
+                <table className={styles.regTable}>
+                  <thead>
+                    <tr>
+                      <th>{tt('baseColBase')}</th>
+                      <th>{tt('baseColState')}</th>
+                      <th>{tt('baseColRows')}</th>
+                      <th>{tt('baseColMissing')}</th>
+                      <th>{tt('baseColForeign')}</th>
+                      <th>{tt('baseColDims')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(snapshot.bases ?? []).map((base, index) => (
+                      <tr key={base.file ?? base.title ?? String(index)}>
+                        <td className={styles.regMono} title={base.file}>{base.title ?? base.file}</td>
+                        <td>{base.state === null ? tt('baseStateUnchecked') : tt(BASE_STATE_KEY[base.state] ?? 'baseStateUnchecked')}</td>
+                        <td>{base.rows}</td>
+                        <td>{base.missing}</td>
+                        <td>{base.foreign}</td>
+                        <td className={styles.regMono}>{base.dims.length === 0 ? tt('registryNone') : base.dims.join(' · ')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                </div>
+                </>
+              )}
+            {snapshot.bases.some(base => !base.checked) && (
+              <ul className={styles.regBad}>
+                {snapshot.bases.filter(base => !base.checked).map(base => (
+                  <li key={base.file}>
+                    {base.file}: {base.problems.map(problem => baseProblemText(problem)).join('; ')}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {snapshot.pendingBases > 0 && (
+              <p className={styles.regNote}>{tt('basePending', { n: snapshot.pendingBases })}</p>
+            )}
+      </div>
+  )
+}
+
+/**
+ * Блок «Язык Плагина»: язык самой панели, её словари и заведение нового.
+ */
+function PluginLanguageCard({ t, snapshot, onReload, overlayHost, lang, onTestPanel, blockRefs }: {
+  readonly t: T
+  /** Снимок обслуживания: реестр языков и список моделей. */
+  readonly snapshot: RegistrySnapshot
+  /** Перечитать снимок (после заведения словаря список языков меняется). */
+  readonly onReload: () => Promise<void>
+  /** Якорь оверлеев панели (вне `.panel`): сюда порталом уходит экран правки словаря. */
+  readonly overlayHost: { readonly current: HTMLDivElement | null }
+  /** Язык самой панели: он же умолчание для выбора языка в блоке «Язык Плагина». */
+  readonly lang: PanelLang
+  /** Открыть проверку окна первого запуска — без записи и без смены языка дворца. */
+  readonly onTestPanel?: () => void
+  /** Узел блока для верхней навигации по странице обслуживания. */
+  readonly blockRefs?: { readonly current: Record<string, HTMLElement | null> }
+}): React.ReactElement {
+  /** Открыт ли экран правки словаря: он перекрывает окно плагина целиком. */
+  const [dictionaryOpen, setDictionaryOpen] = useState(false)
+  /**
+   * Язык, словари которого показывает блок «Язык Плагина».
+   *
+   * Умолчание — язык самой панели (тот, что стоит в верхнем переключателе): человек
+   * чаще всего смотрит переводы того языка, на котором читает интерфейс. Дальше это
+   * независимый выбор: он не переключает панель и ничего не пишет в настройки.
+   */
+  const [dictLanguage, setDictLanguage] = useState<string>(lang)
+  /** Счётчики словарей выбранного языка; null — ещё не прочитаны. */
+  const [dictStats, setDictStats] = useState<readonly DictStatView[] | null>(null)
+  /** Просьба перечитать счётчики: после заведения словаря язык тот же, а данные новые. */
+  const [dictReload, setDictReload] = useState(0)
+  /** Язык, выбранный справа в поле «Создать словарь» (подпись, а не код: так ищут глазами). */
+  const [createLanguage, setCreateLanguage] = useState<string>('')
+  const [dictError, setDictError] = useState<string | null>(null)
+  const toast = useToast()
+  const tt = (key: EngramKey, params?: Record<string, string | number>): string => t(key, params)
+  /**
+   * Языки реестра. Список терпит отсутствие поля: клиент и сервер плагина едут разными
+   * файлами, и сразу после обновления клиент может оказаться новее сервера.
+   */
+  const languages = snapshot.languages ?? []
+  /**
+   * Счётчики словарей выбранного языка: «всего строк / заполнено / откуда прочитано».
+   *
+   * Считаются по таблице правки (`GET dictionary?set=…&language=…`), а не по снимку
+   * обслуживания: снимок описывает язык, на котором плагин считает сейчас, а человек
+   * смотрит на язык, выбранный в блоке. Всего строк — это термины набора (строки
+   * таблицы), заполнено — те, у которых правая клетка непустая.
+   */
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const [messages, panel] = await Promise.all([
+          api<DictionarySetView>(`dictionary?set=messages&language=${encodeURIComponent(dictLanguage)}`),
+          api<DictionarySetView>(`dictionary?set=panel&language=${encodeURIComponent(dictLanguage)}`),
+        ])
+        if (!alive) return
+        setDictStats([
+          { set: 'messages', label: 'registryDictionaryMessages', view: messages },
+          { set: 'panel', label: 'registryDictionaryPanel', view: panel },
+        ])
+        setDictError(null)
+      } catch (cause) {
+        if (alive) setDictError(cause instanceof Error ? cause.message : String(cause))
+      }
+    })()
+    return () => { alive = false }
+  }, [dictLanguage, dictReload])
   /**
    * Языки для выбора в блоке «Язык Плагина»: те, что знает реестр языков, плюс язык
    * панели, если его там ещё нет. Своего списка клиент не держит намеренно — иначе
@@ -4191,29 +4520,6 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
   /** Заводить словарь можно ровно тому языку, который предложен в списке. */
   const canCreateDictionary = createCode !== undefined
 
-  /** Язык диалогов с агентом: у сессии без реплик его ещё нет. */
-  const dialogueLabel = snapshot.palace?.dialogue == null
-    ? tt('palaceDialogueNone')
-    : snapshot.palace.dialogue.toUpperCase()
-
-  /** Язык, на котором стоят базы по меткам. */
-  const basesLabel = snapshot.palace?.bases == null
-    ? tt('palaceBasesNone')
-    : snapshot.palace.bases === 'mixed' ? tt('palaceBasesMixed') : snapshot.palace.bases.toUpperCase()
-
-  /**
-   * Метки языков у модели. Привязка `*` означает «все языки без явной привязки» — она
-   * и есть метка этой модели, поэтому показывается словом, а не звёздочкой.
-   */
-  const languagesOfModel = (modelId: string): string => {
-    const bound = snapshot.bindings.filter(row => row.model === modelId)
-    if (bound.length === 0) return tt('registryNone')
-    return bound.map(row => row.language === '*'
-      ? tt('registryAllLanguages')
-      : languages.find(option => option.code === row.language)?.label ?? row.language.toUpperCase())
-      .join(' · ')
-  }
-
   /**
    * Завести словарь выбранного справа языка и сразу открыть его — то же, что «Открыть
    * словарь», только для только что созданного языка.
@@ -4239,7 +4545,7 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
         setCreateLanguage('')
         setDictLanguage(code)
         setDictionaryOpen(true)
-        setSnapshot(await api<RegistrySnapshot>('registry'))
+        await onReload()
         setDictReload(value => value + 1)
       })
       .catch((cause: Error) => { toast.push('error', tt('dictCreateFailed', { error: cause.message })) })
@@ -4247,47 +4553,50 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
 
   return (
     <>
-      {/* Блок первый: язык самой панели и служебных сообщений. Это такой же блок, как
-          «Догрузка» и «Jev», а не вложенная группа в общем разделе: у него своё имя, своя
-          рамка и тот же отступ заголовка, что у соседей по вкладке. Кнопка проверки
-          панели живёт при нём — она про язык панели, а не про базы. */}
-      <section className={styles.section}>
-        <div className={styles.sectionHead}>
-          <h4 className={styles.sectionTitle}>{tt('pluginLanguageTitle')}</h4>
+      <div className={`${styles.panelCard} ${styles.opsBlock}`}
+        ref={element => { if (blockRefs !== undefined) blockRefs.current.plugin = element }}>
+        <div className={styles.cardHead}>
+          <h3 className={styles.cardTitle}>{tt('pluginLanguageTitle')}</h3>
           {onTestPanel === undefined ? null : (
-            <button type="button" className={`${styles.button} ${styles.sectionAction}`}
+            <button type="button" className={styles.button}
               onClick={onTestPanel}>{tt('panelTestOpen')}</button>
           )}
         </div>
-        <div className={styles.panelCard}>
-            <div className={styles.palaceChangeRow}>
-              <span className={styles.regLabel}>{tt('pluginLanguageCurrent')}</span>
-              <select className={`${styles.input} ${styles.regLang}`} value={dictLanguage}
-                aria-label={tt('pluginLanguageCurrent')}
-                onChange={event => { setDictLanguage(event.target.value) }}>
-                {pluginLanguageOptions.map(row => (
-                  <option key={row.code} value={row.code}>{row.label}</option>
-                ))}
-              </select>
-              <button type="button" className={styles.button}
-                disabled={!canOpenDictionary}
-                onClick={() => { setDictionaryOpen(true) }}>{tt('dictOpenWord')}</button>
-              {/* Заведение словаря — справа, своим порядком: подпись, выбор языка, кнопка.
-                  Поле — с собственным списком, а не с `<datalist>`: родной список рисует
-                  сам браузер поверх окна, у него нет своей прокрутки, и в невысоком окне
+            {/* Две задачи — двумя группами, а не одним длинным рядом: «какой словарь сейчас»
+                и «завести новый» — разные дела, и в узкой колонке они встают друг на друга. */}
+            <div className={styles.opsFieldGrid}>
+              <div className={styles.opsField}>
+                <span className={styles.regLabel}>{tt('pluginLanguageCurrent')}</span>
+                <div className={styles.opsFieldRow}>
+                  <select className={`${styles.input} ${styles.regLang}`} value={dictLanguage}
+                    aria-label={tt('pluginLanguageCurrent')}
+                    onChange={event => { setDictLanguage(event.target.value) }}>
+                    {pluginLanguageOptions.map(row => (
+                      <option key={row.code} value={row.code}>{row.label}</option>
+                    ))}
+                  </select>
+                  <button type="button" className={styles.button}
+                    disabled={!canOpenDictionary}
+                    onClick={() => { setDictionaryOpen(true) }}>{tt('dictOpenWord')}</button>
+                </div>
+              </div>
+              {/* Заведение словаря — со своим списком языков, а не с `<datalist>`: родной список
+                  рисует сам браузер поверх окна, у него нет своей прокрутки, и в невысоком окне
                   его нижние строки срезаются краем приложения. Свой список живёт в слое
                   поверх страницы, прокручивается и сам встаёт в свободную сторону.
                   В списке языки, которые знают модели, у которых ещё нет ни вшитого
                   набора, ни файла словаря. */}
-              <div className={styles.rowEnd}>
+              <div className={styles.opsField}>
                 <span className={styles.regLabel}>{tt('dictCreateTitle')}</span>
-                <LanguagePicker value={createLanguage} options={createOptions}
-                  placeholder={tt('registryColLanguage')} label={tt('dictCreateTitle')}
-                  empty={tt('dictLangNoMatch')}
-                  onChange={setCreateLanguage} />
-                <button type="button" className={styles.button}
-                  disabled={!canCreateDictionary}
-                  onClick={createDictionary}>{tt('dictCreateNew')}</button>
+                <div className={styles.opsFieldRow}>
+                  <LanguagePicker value={createLanguage} options={createOptions}
+                    placeholder={tt('registryColLanguage')} label={tt('dictCreateTitle')}
+                    empty={tt('dictLangNoMatch')}
+                    onChange={setCreateLanguage} />
+                  <button type="button" className={styles.button}
+                    disabled={!canCreateDictionary}
+                    onClick={createDictionary}>{tt('dictCreateNew')}</button>
+                </div>
               </div>
             </div>
             {createOptions.length === 0 && (
@@ -4300,217 +4609,116 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
                 : dictStats.map(stat => {
                   const total = stat.view.rows.length
                   const filled = dictFilledOf(stat.view)
+                  const files = stat.view.files.read.length === 0
+                    ? tt('registryNone')
+                    : stat.view.files.read.map(baseName).join(', ')
                   return (
-                    <p key={stat.set} className={styles.regNote}>
-                      {tt(stat.label)}
-                      {' — '}
-                      {tt('dictTotal', { total })}
-                      {' · '}
-                      {tt('dictFilled')}{' '}
-                      <b className={filled < total ? styles.regFilledShort : undefined}>{filled}</b>
-                      {' · '}
-                      {tt('registryFiles')}: <span className={styles.regMono}>
-                        {stat.view.files.read.length === 0 ? tt('registryNone') : stat.view.files.read.map(baseName).join(', ')}
+                    <div key={stat.set} className={styles.opsDictRow}>
+                      <span className={styles.opsDictDot} aria-hidden="true" />
+                      <span className={styles.opsDictName}>{tt(stat.label)}</span>
+                      <span className={styles.opsDictFiles} title={files}>{files}</span>
+                      <span className={styles.opsDictCount}>
+                        <b className={filled < total ? styles.regFilledShort : undefined}>{String(filled)}</b>
+                        {` / ${String(total)}`}
                       </span>
-                      {' · '}
-                      {tt('registryProblems')}: {stat.view.problems.length === 0 ? tt('registryNoProblems') : stat.view.problems.length}
-                    </p>
+                      <span className={stat.view.problems.length === 0 ? styles.opsDictFiles : styles.opsDictBad}>
+                        {stat.view.problems.length === 0 ? tt('registryNoProblems') : String(stat.view.problems.length)}
+                      </span>
+                    </div>
                   )
                 })}
               {dictIncomplete && <p className={styles.regIncomplete}>{tt('dictIncomplete')}</p>}
             </div>
         </div>
-      </section>
-
-      {/* Блок второй: язык, на котором думает дворец, и язык, на котором лежат базы.
-          Раньше это были две рамки — «Язык мыслей» и «Язык в базах»; язык у дворца
-          один, и разводить его по двум рамкам значило спрашивать одно и то же дважды. */}
-      <section className={styles.section}>
-        <div className={styles.sectionHead}>
-          <h4 className={styles.sectionTitle}>{tt('palaceLanguageTitle')}</h4>
-        </div>
-        <div className={styles.panelCard}>
-            {/* Верхняя строка — только чтение: чем дворец думает (словом), что стоит в
-                базах (буквами) и что с базами. Действия в ней нет ни одного: выбор языка
-                уехал строкой ниже и стоит справа, а предохранитель — у кнопки. */}
-            <div className={styles.palaceChangeRow}>
-              <span className={styles.regLabel}>{tt('palaceLanguageName')}</span>
-              <span className={styles.regValue}>{palaceLanguageName}</span>
-              <span className={styles.regLabel}>{tt('palaceBasesLine')}</span>
-              <span className={styles.regMono} title={tt('palaceBasesHint')}>{basesLabel}</span>
-              <span className={baseStateClass}>{baseStateText}</span>
-            </div>
-            {/* Ниже первой строки видно только то, что нужно нынешнему состоянию баз.
-                В порядке — ничего: делать нечего, и рамка сжимается до одной строки.
-                Ремонт — таблица баз и кнопка. Конвертация — всё: она одна меняет язык,
-                а он тянет за собой модель, метки и пересчёт. */}
-            {baseKind === 'convert' && (<>
-              <div className={styles.palaceChangeRow}>
-                <span className={`${styles.regLabel} ${styles.regLangPush}`}>
-                  {tt('palaceLanguageChange')}
-                </span>
-                <select className={`${styles.input} ${styles.regLang}`}
-                  value={chosenLanguage} disabled={locked}
-                  aria-label={tt('palaceLanguageChange')}
-                  onChange={event => { pickLanguage(event.target.value) }}>
-                  {languageOptions.map(row => (
-                    <option key={row.code} value={row.code}>{row.label}</option>
-                  ))}
-                </select>
-              </div>
-              <p className={styles.regNote}>{tt('palaceChangeHint', { seconds: windowSec })}</p>
-              <dl className={styles.regKV}>
-                <dt>{tt('palaceThoughtsModelLine')}</dt>
-                <dd>
-                  {currentLanguage.toUpperCase()}
-                  {' · '}
-                  <span className={styles.regMono}>{resolvedLabel}</span>
-                </dd>
-              </dl>
-              <p className={styles.regNote}>{tt('palaceThoughtsModelHint')}</p>
-              <dl className={styles.regKV}>
-                <dt>{tt('palaceDialogueLine')}</dt>
-                <dd>
-                  {dialogueLabel}
-                  <span className={styles.regHint}>{tt('palaceDialogueHint')}</span>
-                </dd>
-              </dl>
-              <table className={styles.regTable}>
-                <thead>
-                  <tr>
-                    <th>{tt('registryColLanguage')}</th>
-                    <th>{tt('registryColLabel')}</th>
-                    <th>{tt('registryColId')}</th>
-                    <th>{tt('registryColDims')}</th>
-                    <th>{tt('registryColParams')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {snapshot.models.map(row => (
-                    <tr key={row.id} className={row.id === snapshot.resolved?.id ? styles.on : undefined}>
-                      <td className={styles.regMono}>{languagesOfModel(row.id)}</td>
-                      <td>{row.label ?? tt('registryNone')}</td>
-                      <td className={styles.regMono}>{row.id}</td>
-                      <td>{row.dimensions ?? tt('registryNone')}</td>
-                      <td>{row.pooling} · {row.dtype}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {snapshot.remote && <p className={styles.regNote}>{tt('registryRemote')}</p>}
-              {snapshot.problems.length > 0 && (
-                <ul className={styles.regBad}>
-                  {snapshot.problems.map((problem, index) => (
-                    <li key={`${problem.file}-${String(index)}`}>
-                      {baseName(problem.file)}: {problem.kind} — {problem.detail}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {/* Пустая строка между таблицами: модели и базы — разное, а две таблицы
-                  подряд читаются как одна. */}
-              <div className={styles.tableGap} />
-            </>)}
-            {baseKind !== 'ok' && (<>
-              {snapshot.bases.length === 0
-                ? <p className={styles.regNote}>{tt('baseNoSchema')}</p>
-                : (
-                  <table className={styles.regTable}>
-                    <thead>
-                      <tr>
-                        <th>{tt('baseColBase')}</th>
-                        <th>{tt('baseColState')}</th>
-                        <th>{tt('baseColRows')}</th>
-                        <th>{tt('baseColMissing')}</th>
-                        <th>{tt('baseColForeign')}</th>
-                        <th>{tt('baseColDims')}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {snapshot.bases.map(base => (
-                        <tr key={base.file}>
-                          <td className={styles.regMono} title={base.file}>{base.title ?? base.file}</td>
-                          <td>{base.state === null ? tt('baseStateUnchecked') : tt(BASE_STATE_KEY[base.state] ?? 'baseStateUnchecked')}</td>
-                          <td>{base.rows}</td>
-                          <td>{base.missing}</td>
-                          <td>{base.foreign}</td>
-                          <td className={styles.regMono}>{base.dims.length === 0 ? tt('registryNone') : base.dims.join(' · ')}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              {snapshot.bases.some(base => !base.checked) && (
-                <ul className={styles.regBad}>
-                  {snapshot.bases.filter(base => !base.checked).map(base => (
-                    <li key={base.file}>
-                      {base.file}: {base.problems.map(problem => `${problem.kind} — ${problem.detail}`).join('; ')}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {snapshot.pendingBases > 0 && (
-                <p className={styles.regNote}>{tt('basePending', { n: snapshot.pendingBases })}</p>
-              )}
-            </>)}
-            {/* Кнопка одна, а дел у неё два — по состоянию баз. При ремонте она чинит
-                строки и метки, не трогая ни языка, ни модели, и охраняет её один
-                предохранитель. При конвертации она меняет язык дворца вместе с
-                пересчётом, и там к окну добавляется требование выбранного языка.
-                Предохранитель стоит здесь, перед кнопкой: он охраняет нажатие, и
-                снимают его в ту же секунду, когда собираются нажать. */}
-            {baseKind !== 'ok' && (
-              <div className={styles.baseRunRow}>
-                <label className={styles.regGuard}>
-                  <input type="checkbox" checked={locked}
-                    onChange={event => { toggleLock(event.target.checked) }} />
-                  <span>{tt('baseLock')}</span>
-                </label>
-                <button type="button" className={`${styles.button} ${styles.primary}`}
-                  disabled={busy || locked || (baseKind === 'convert'
-                    && (!languageChanged || startedAt === null || left <= 0))}
-                  onClick={baseKind === 'convert' ? applyChange : repairBases}>
-                  {busy ? tt('baseRunBusy') : tt('baseRun')}
-                </button>
-                <span className={styles.baseRunNote}>
-                  {baseKind === 'convert'
-                    ? (languageChanged ? tt('baseActionConvert') : tt('baseRunNeedLanguage'))
-                    : tt('baseActionRepair')}
-                </span>
-                {/* Оговорка про язык и модель — не продолжение пояснения, а условие
-                    задачи: поэтому она своей строкой и от левого края, а не хвостом
-                    пояснения за кнопкой. */}
-                {baseKind === 'repair' && (
-                  <span className={`${styles.baseRunNote} ${styles.baseRunScope}`}>
-                    {tt('baseActionRepairScope')}
-                  </span>
-                )}
-              </div>
-            )}
-            {/* Перехват: что вызвано и что ответил сервер при последней починке.
-                Строка переживает тост и перезагрузку не переживает — этого хватает,
-                чтобы разобраться, не гоняя по кругу одно и то же нажатие. */}
-            {baseKind === 'repair' && lastRepair !== null && (
-              <p className={styles.baseRunTrace}>{lastRepair}</p>
-            )}
-            {baseKind === 'convert' && languageChanged && (
-              <p className={styles.regNote}>
-                {tt('palaceChangeLeft', { seconds: left })}
-                {locked ? ` · ${tt('palaceChangeNeedAllow')}` : ''}
-              </p>
-            )}
-            {/* Разошлись настройка и живой процесс — говорим об этом прямо: иначе человек
-                решит, что выбор не сработал, хотя он записан и ждёт перезапуска. */}
-            {baseKind === 'convert' && chosenLanguage !== snapshot.language && (
-              <p className={styles.regNote}>{tt('palacePending', { running: snapshot.language.toUpperCase() })}</p>
-            )}
-        </div>
-      </section>
-
       {dictionaryOpen && (
         <DictionaryEditor tt={tt} host={overlayHost} toast={toast} language={dictLanguage}
           onClose={() => { setDictionaryOpen(false) }} />
       )}
+    </>
+  )
+}
+
+/**
+ * Вкладка «Обслуживание»: четыре инструмента на двух колонках — как на главной.
+ *
+ * Слева (широкая колонка) то, чему нужна ширина: язык дворца с таблицами моделей и баз
+ * и догрузка истории. Справа (узкая, липкая) то, что помещается: словари панели и裁决.
+ * Снимок обслуживания один на обе карточки — читать его дважды незачем.
+ */
+function OpsTab({ t, overlayHost, lang, toast, onTestPanel }: {
+  readonly t: T
+  readonly overlayHost: { readonly current: HTMLDivElement | null }
+  readonly lang: PanelLang
+  readonly toast: ToastController
+  readonly onTestPanel: () => void
+}): React.ReactElement {
+  const [snapshot, setSnapshot] = useState<RegistrySnapshot | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  /** Узлы блоков: верхняя навигация прокручивает к ним. */
+  const blocks = useRef<Record<string, HTMLElement | null>>({})
+  const reload = useCallback(async (): Promise<void> => {
+    try {
+      setSnapshot(await api<RegistrySnapshot>('registry'))
+      setError(null)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }, [])
+  useEffect(() => { void reload() }, [reload])
+
+  const tt = (key: EngramKey, params?: Record<string, string | number>): string => t(key, params)
+  if (error !== null) {
+    return <div className={styles.empty}><b>{tt('registryFailed')}</b><span>{error}</span></div>
+  }
+  if (snapshot === null) return <div className={styles.expandLoading}>{tt('registryLoading')}</div>
+
+  return (
+    <>
+      <PageHeader title={tt('tabOps')} subtitle={tt('pageHeaderOpsSubtitle')} />
+      {/* Навигация по блокам: страница длинная, а добраться до нужного инструмента
+          по滚轮у — лотерея. */}
+      <nav className={styles.opsNav} aria-label={tt('tabOps')}>
+        {([
+          ['palace', tt('palaceLanguageTitle')],
+          ['plugin', tt('pluginLanguageTitle')],
+          ['backfill', tt('tabBackfill')],
+          ['jev', tt('tabJev')],
+        ] as const).map(([key, label]) => (
+          <button key={key} type="button" className={styles.chip}
+            onClick={() => {
+              const target = blocks.current[key]
+              if (target === null || target === undefined) return
+              target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            }}>
+            {label}
+          </button>
+        ))}
+      </nav>
+      <div className={styles.layout}>
+        <div className={styles.mainCol}>
+          <PalaceLanguageCard t={t} snapshot={snapshot} onReload={reload} blockRefs={blocks} />
+          <div className={`${styles.panelCard} ${styles.opsBlock}`} ref={element => { blocks.current.backfill = element }}>
+            <div className={styles.cardHead}>
+              <h3 className={styles.cardTitle}>{tt('tabBackfill')}</h3>
+              <span className={styles.sectionHint}>{tt('pageHeaderBackfillSubtitle')}</span>
+            </div>
+            <HistoryBackfillCard t={t} toast={toast} />
+          </div>
+        </div>
+        <div className={styles.sideCol}>
+          <PluginLanguageCard t={t} snapshot={snapshot} onReload={reload} overlayHost={overlayHost}
+            lang={lang} onTestPanel={onTestPanel} blockRefs={blocks} />
+          <div className={`${styles.panelCard} ${styles.opsBlock}`} ref={element => { blocks.current.jev = element }}>
+            <div className={styles.cardHead}>
+              <h3 className={styles.cardTitle}>{tt('tabJev')}</h3>
+              <span className={styles.sectionHint}>{tt('pageHeaderJevSubtitle')}</span>
+            </div>
+            <JevConfigCard t={t} toast={toast} />
+            <div className={styles.cardDivider} />
+            <JevObservationsCard t={t} toast={toast} />
+          </div>
+        </div>
+      </div>
     </>
   )
 }
@@ -5462,10 +5670,11 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   const pinnedMissing = projectMode !== 'follow'
     && !(workspaceList?.items ?? []).some(item => item.dbName === projectMode)
 
-  /** 今日速览、健康分构成与房间目录共用一份总览数据（同一路由不重复请求）。 */
-  const overview = usePalaceOverview(scope, projectSelector)
-
+  /** 面板级重载信号：清日志后总览遥测要跟着重取，否则瓦片计数停在清理前的旧值。 */
   const reload = useCallback((): void => { setReloadTick(tick => tick + 1) }, [])
+
+  /** 今日速览、健康分构成与房间目录共用一份总览数据（同一路由不重复请求）。 */
+  const overview = usePalaceOverview(scope, projectSelector, reloadTick)
 
   /** 失效选择器的自愈：同一轮只触发一次，回到 follow 后复位（见 api() 的 404 分支）。 */
   const healingRef = useRef(false)
@@ -6093,43 +6302,17 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
       {activeTab === 'log' && (
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabLog')} subtitle={t('pageHeaderLogSubtitle')} />
-          <LogPanel t={t} telemetry={overview.telemetry} project={projectSelector} />
+          <LogPanel t={t} telemetry={overview.telemetry} project={projectSelector} onCleared={reload} />
         </div>
       )}
 
       {activeTab === 'ops' && (
         <div className={styles.tabPanel}>
-          {/* ops tab 是三件工具的容器，不是独立页面：去掉 PageHeader，让每个 sectionHead
-              作为唯一标题层，与 library/corridor 等"单页面"tab 的视觉语言对齐。 */}
-          <section className={styles.section}>
-            <div className={styles.sectionHead}>
-              <h4 className={styles.sectionTitle}>{t('tabBackfill')}</h4>
-              <span className={styles.sectionHint}>{t('pageHeaderBackfillSubtitle')}</span>
-            </div>
-            <div className={styles.panelCard}>
-              <HistoryBackfillCard t={t} toast={toast} />
-            </div>
-          </section>
-          {/* Два блока про язык стоят здесь, между «Догрузкой» и «Jev»: это такие же
-              блоки вкладки, как соседи, и их место — в общем ряду, а не над ним. */}
-          <RegistryCard t={t} overlayHost={overlayHost} lang={lang} onTestPanel={() => { setPanelTest(true) }} />
-          <section className={styles.section}>
-            <div className={styles.sectionHead}>
-              <h4 className={styles.sectionTitle}>{t('tabJev')}</h4>
-              <span className={styles.sectionHint}>{t('pageHeaderJevSubtitle')}</span>
-            </div>
-            <div className={styles.panelCard}>
-              <JevConfigCard t={t} toast={toast} />
-            </div>
-          </section>
-          <section className={styles.section}>
-            <div className={styles.panelCard}>
-              <JevObservationsCard t={t} toast={toast} />
-            </div>
-          </section>
+          <OpsTab t={t} overlayHost={overlayHost} lang={lang} toast={toast}
+            onTestPanel={() => { setPanelTest(true) }} />
         </div>
       )}
-      </ViewErrorBoundary>
+    </ViewErrorBoundary>
       </div>
 
       {/* Toast 叠层（右上角，position:fixed 脱离 panel 容器）。 */}

@@ -9,7 +9,8 @@
  */
 
 import { createWriteStream } from 'node:fs'
-import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { gunzip, createGzip } from 'node:zlib'
 import { promisify } from 'node:util'
@@ -43,29 +44,49 @@ export interface BackupResult {
  */
 export async function createBackup(dbDir: string, pluginVersion: string): Promise<BackupResult> {
   await mkdir(dbDir, { recursive: true, mode: 0o700 })
-  const files = (await readdir(dbDir)).filter(name => name.endsWith('.db'))
-  // 局部可变数组构建，最终以只读契约（BackupMeta['scopes']）对外。
-  const scopes: { scope: EngramScope; recordCount: number; edgeCount: number }[] = []
-  const entries: { name: string; data: Buffer }[] = []
-  for (const name of files) {
-    const path = join(dbDir, name)
-    const statResult = await stat(path)
-    if (!statResult.isFile()) continue
-    entries.push({ name, data: await readFileBuffer(path) })
-    // 简化：仅记录文件名，不读取每条记录数（恢复端会自己 inspect）。
-    scopes.push({ scope: name === 'user.db' ? 'user' : 'project', recordCount: 0, edgeCount: 0 })
+  const tempDir = await mkdtemp(join(dbDir, '.backup-tmp-'))
+  try {
+    const files = (await readdir(dbDir)).filter(name => name.endsWith('.db'))
+    // 局部可变数组构建，最终以只读契约（BackupMeta['scopes']）对外。
+    const scopes: { scope: EngramScope; recordCount: number; edgeCount: number }[] = []
+    const entries: { name: string; data: Buffer }[] = []
+    for (const name of files) {
+      const path = join(dbDir, name)
+      const statResult = await stat(path)
+      if (!statResult.isFile()) continue
+      const snapshot = join(tempDir, name)
+      await snapshotDatabase(path, snapshot)
+      entries.push({ name, data: await readFileBuffer(snapshot) })
+      // 简化：仅记录文件名，不读取每条记录数（恢复端会自己 inspect）。
+      scopes.push({ scope: name === 'user.db' ? 'user' : 'project', recordCount: 0, edgeCount: 0 })
+    }
+    const meta: BackupMeta = {
+      schemaVersion: BACKUP_SCHEMA_VERSION,
+      pluginVersion,
+      exportedAt: Date.now(),
+      scopes,
+    }
+    entries.push({ name: '_meta.json', data: Buffer.from(JSON.stringify(meta, null, 2), 'utf8') })
+    const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
+    const archivePath = join(dbDir, `palace-backup-${stamp}.tar.gz`)
+    await writeTarGz(archivePath, entries)
+    return { archivePath, meta, bytes: (await stat(archivePath)).size }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true })
   }
-  const meta: BackupMeta = {
-    schemaVersion: BACKUP_SCHEMA_VERSION,
-    pluginVersion,
-    exportedAt: Date.now(),
-    scopes,
+}
+
+/** VACUUM INTO 生成含 WAL 已提交内容的单文件一致性快照，不复制正在变化的 sidecar。 */
+async function snapshotDatabase(source: string, destination: string): Promise<void> {
+  const { DatabaseSync } = await import('node:sqlite')
+  let db: InstanceType<typeof DatabaseSync> | undefined
+  try {
+    db = new DatabaseSync(source, { readOnly: true })
+    db.exec('PRAGMA busy_timeout = 5000')
+    db.prepare('VACUUM INTO ?').run(destination)
+  } finally {
+    db?.close()
   }
-  entries.push({ name: '_meta.json', data: Buffer.from(JSON.stringify(meta, null, 2), 'utf8') })
-  const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
-  const archivePath = join(dbDir, `palace-backup-${stamp}.tar.gz`)
-  await writeTarGz(archivePath, entries)
-  return { archivePath, meta, bytes: (await stat(archivePath)).size }
 }
 
 /** 异步读文件为 Buffer（小文件路径，备份场景可接受）。 */
@@ -107,8 +128,8 @@ export interface RestoreResult {
  * 任何前置校验失败抛错，原 dbDir 不变。
  */
 export async function restoreBackup(archivePath: string, dbDir: string, options: RestoreOptions = {}): Promise<RestoreResult> {
-  const tempDir = join(dbDir, `.restore-tmp-${Date.now()}`)
-  await mkdir(tempDir, { recursive: true, mode: 0o700 })
+  await mkdir(dbDir, { recursive: true, mode: 0o700 })
+  const tempDir = await mkdtemp(join(dbDir, '.restore-tmp-'))
   try {
     await untarGz(archivePath, tempDir)
     const metaRaw = await readFileBuffer(join(tempDir, '_meta.json')).then(buf => buf.toString('utf8'))
@@ -119,22 +140,79 @@ export async function restoreBackup(archivePath: string, dbDir: string, options:
     if (typeof meta.pluginVersion !== 'string' || meta.pluginVersion === '') {
       throw new Error(message('store.backupMetaMissingPluginVersion'))
     }
-    const restored: string[] = []
-    if (options.keepCurrent !== false) {
-      const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
-      for (const name of (await readdir(dbDir)).filter(n => n.endsWith('.db'))) {
-        const path = join(dbDir, name)
-        await rename(path, `${path}.before-restore-${stamp}`)
-      }
-    }
+
+    const incoming: string[] = []
     for (const name of (await readdir(tempDir)).filter(n => n.endsWith('.db'))) {
-      const target = join(dbDir, name)
-      await rename(join(tempDir, name), target)
-      restored.push(target)
+      const path = join(tempDir, name)
+      if (!(await stat(path)).isFile()) continue
+      await validateDatabase(path, name)
+      incoming.push(name)
     }
-    return { restored, archiveMeta: meta }
+    if (incoming.length === 0) throw new Error(message('store.backupNoDatabases'))
+
+    // keepCurrent=false 只表示成功后不保留旧副本；替换期间仍须可回滚。
+    const stamp = `${new Date().toISOString().replaceAll(':', '-').slice(0, 19)}-${randomUUID()}`
+    const current: { readonly path: string; readonly backup: string }[] = []
+    for (const name of await readdir(dbDir)) {
+      if (!/\.db(?:-wal|-shm|-journal)?$/.test(name)) continue
+      const path = join(dbDir, name)
+      if (!(await stat(path)).isFile()) continue
+      const backup = options.keepCurrent === false
+        ? join(tempDir, `.current-${name}`)
+        : `${path}.before-restore-${stamp}`
+      current.push({ path, backup })
+    }
+
+    const moved: { readonly path: string; readonly backup: string }[] = []
+    const installed: string[] = []
+    try {
+      for (const item of current) {
+        await rename(item.path, item.backup)
+        moved.push(item)
+      }
+      for (const name of incoming) {
+        const target = join(dbDir, name)
+        await rename(join(tempDir, name), target)
+        installed.push(target)
+      }
+      return { restored: installed, archiveMeta: meta }
+    } catch (error) {
+      const rollbackErrors: unknown[] = []
+      for (const target of installed.reverse()) {
+        try { await rm(target, { force: true }) } catch (rollbackError) { rollbackErrors.push(rollbackError) }
+      }
+      for (const item of moved.reverse()) {
+        try { await rename(item.backup, item.path) } catch (rollbackError) { rollbackErrors.push(rollbackError) }
+      }
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError([error, ...rollbackErrors], 'restore failed and rollback was incomplete')
+      }
+      throw error
+    }
   } finally {
     await rm(tempDir, { recursive: true, force: true })
+  }
+}
+
+/** 覆盖前只读验证 SQLite 完整性和 Engram 最小结构，不在暂存库上执行迁移。 */
+async function validateDatabase(path: string, name: string): Promise<void> {
+  const { DatabaseSync } = await import('node:sqlite')
+  let db: InstanceType<typeof DatabaseSync> | undefined
+  try {
+    db = new DatabaseSync(path, { readOnly: true })
+    const integrity = db.prepare('PRAGMA integrity_check').all() as unknown as { integrity_check: string }[]
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('meta', 'nodes')").all() as unknown as { name: string }[]
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') {
+      throw new Error(integrity.map(row => row.integrity_check).join('; ') || 'integrity_check returned no result')
+    }
+    if (!tables.some(row => row.name === 'meta') || !tables.some(row => row.name === 'nodes')) {
+      throw new Error('required tables meta/nodes are missing')
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(message('store.backupInvalidDatabase', { name, reason }), { cause: error })
+  } finally {
+    try { db?.close() } catch { /* 只读校验连接的关闭失败不覆盖原始错误。 */ }
   }
 }
 

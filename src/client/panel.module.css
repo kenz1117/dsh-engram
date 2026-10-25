@@ -221,6 +221,8 @@ button:focus-visible, a:focus-visible,
 .searchBox { position: relative; display: inline-flex; align-items: center; flex: 1 1 240px; min-width: 220px; }
 .searchBox svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; fill: none; stroke: var(--dsw-alias-label-tertiary); stroke-width: 1.75; stroke-linecap: round; pointer-events: none; }
 .searchBox .input { width: 100%; padding-left: 30px; }
+/* 工具条右端的计数：不是脚注，是「现在有多少」——给它一枚药丸，别让它漂在边上。 */
+.toolbarCount { margin-left: auto; padding: 3px 10px; border-radius: 999px; background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 10%, transparent); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* 表单网格（回填/裁决）限宽,字段不再一排四个拉满整卡。 */
 .formGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 260px)); gap: var(--space-3); }
 /* 通用 stat 瓦片（回填估算/日志计数共用一族）。 */
@@ -270,7 +272,9 @@ select.input { padding-right: 28px; appearance: none; }
 .toolbarRow .search { flex: 1; min-width: 180px; }
 .chipRow { display: flex; flex-wrap: wrap; gap: var(--space-1); }
 .toolbarRow + .chipRow { margin-bottom: var(--space-3); }
-.chip { padding: 4px 12px; border-radius: 999px; border: 1px solid transparent; background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 6%, var(--dsw-alias-bg-layer-1)); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); letter-spacing: 0.02em; cursor: pointer; transition: background var(--dur-fast) var(--ease-spring), border-color var(--dur-fast) var(--ease-spring), color var(--dur-fast) var(--ease-spring); }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 999px; border: 1px solid transparent; background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 6%, var(--dsw-alias-bg-layer-1)); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); letter-spacing: 0.02em; cursor: pointer; transition: background var(--dur-fast) var(--ease-spring), border-color var(--dur-fast) var(--ease-spring), color var(--dur-fast) var(--ease-spring); }
+/* chip 里的色点：色码自解释——chip 上的颜色就是这一类在图上的颜色。 */
+.chipDot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .chip:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 6%, var(--dsw-alias-bg-layer-1)); color: var(--dsw-alias-label-secondary); }
 .chipOn { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, var(--dsw-alias-bg-layer-1)); border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 38%, transparent); color: var(--dsw-alias-label-primary); }
 .chipOn:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 20%, var(--dsw-alias-bg-layer-1)); }
@@ -435,14 +439,12 @@ select.input { padding-right: 28px; appearance: none; }
 .benchContent { margin: var(--space-2) 0; color: var(--dsw-alias-label-primary); font-size: var(--fs-body); line-height: 1.55; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .benchId { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ---------- 走廊鸟瞰图（中度版：拖拽 + hover 高亮 + tooltip + 响应式 viewBox） ---------- */
+/* ---------- 走廊鸟瞰图（两模式共用同一张建筑底图：平面图看房间，关系图看边） ---------- */
 .mapWrap { display: flex; flex-direction: column; gap: var(--space-3); }
 .map { width: 100%; height: auto; display: block; background: color-mix(in srgb, var(--dsw-alias-bg-base) 70%, transparent); border-radius: var(--radius-control); border: 1px solid var(--dsw-alias-border-l2); user-select: none; }
-/* 平面图专用：SVG 不随卡片拉伸到巨物（设计稿比例 720×380,限宽居中）。 */
+/* 平面图与关系图同一尺寸（设计稿比例 720×380,限宽居中）——两模式切换不跳版。 */
 .mapFloorplan { max-width: 680px; margin: 0 auto; }
-/* 关系图专用：同样限宽,房间带与节点标签保持可读比例。 */
-.mapGraph { max-width: 860px; margin: 0 auto; }
-/* 走廊页平面模式：左平面图 + 右房间索引条（v0.8.7）。 */
+/* 走廊页两模式：左地图 + 右房间索引条（v0.8.7；关系图沿用同一骨架）。 */
 .floorplanGrid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: var(--space-5); align-items: start; }
 @media (max-width: 960px) {
   .floorplanGrid { grid-template-columns: 1fr; }
@@ -457,12 +459,17 @@ select.input { padding-right: 28px; appearance: none; }
 .roomIndexCount { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
 .roomBar { position: relative; width: 64px; height: 4px; border-radius: 2px; background: var(--dsw-alias-border-l1); overflow: hidden; }
 .roomBarFill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px; }
-.node { cursor: grab; transition: transform var(--dur-fast) var(--ease-spring); }
-.node:active { cursor: grabbing; }
+.node { cursor: pointer; transition: transform var(--dur-fast) var(--ease-spring); }
 .tooltip { pointer-events: none; }
+/* 崩溃兜底卡里的组件栈：反馈时带上它，一次就能定位到具体组件。 */
+.crashStack { margin: var(--space-3) 0 0; padding: var(--space-2) var(--space-3); background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--radius-control); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-micro); line-height: 1.5; color: var(--dsw-alias-label-tertiary); white-space: pre-wrap; overflow-x: auto; max-height: 180px; }
+
 .legend { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
 .legendItem { display: inline-flex; align-items: center; gap: var(--space-1); }
 .legendDot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+/* 关系图：边类型图例（放在右侧索引条里，与房间条同栏）。 */
+.edgeLegend { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-2); padding-top: var(--space-3); border-top: 1px solid var(--dsw-alias-border-l1); }
+.edgeLegendItem { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
 
 /* ---------- 走廊鸟瞰 scope 切换过渡----------
    父 svg 通过 key={scope} 重挂载，节点 / 边各自带 stagger-delay，让整图错峰淡入。
@@ -814,13 +821,23 @@ select.input { padding-right: 28px; appearance: none; }
 .profileDiffDel { padding: 0 var(--space-2); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent); color: var(--dsw-alias-label-tertiary); text-decoration: line-through; white-space: pre-wrap; word-break: break-word; }
 .profileDiffSame { padding: 0 var(--space-2); color: var(--dsw-alias-label-tertiary); white-space: pre-wrap; word-break: break-word; }
 
-/* 实体卡行（v0.8.8）：色点 + 名称/别名两行 + 计数 + 查看。 */
-.entityRow { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-card); margin-bottom: var(--space-2); transition: border-color var(--dur-fast) var(--ease-spring), background var(--dur-fast) var(--ease-spring); }
-.entityRow:hover { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, var(--dsw-alias-border-l2)); }
+/* 实体列表（v0.11）：一张卡里一列紧凑行——色点 + 名称/别名 + 类别 + 关联数 + 箭头。
+   整行可点（行本身是按钮），不再给每行挂一个「查看」按钮：按钮重复九遍是噪音，
+   而行内的箭头已经说明了「点进去会展开」。 */
+.entityList { display: flex; flex-direction: column; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-card); overflow: hidden; }
+.entityRow { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto 14px; align-items: center; gap: var(--space-3); width: 100%; padding: var(--space-3) var(--space-4); background: transparent; border: 0; border-top: 1px solid var(--dsw-alias-border-l1); text-align: left; cursor: pointer; transition: background var(--dur-fast) var(--ease-spring); }
+.entityRow:first-child { border-top: 0; }
+.entityRow:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, var(--dsw-alias-bg-layer-1)); }
+.entityRow:disabled { cursor: default; opacity: 0.6; }
 .entityDot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
-.entityMain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.entityMain { min-width: 0; display: flex; align-items: baseline; gap: var(--space-2); }
 .entityName { font-size: var(--fs-body); font-weight: 500; color: var(--dsw-alias-label-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.entityAliases { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entityAliases { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* 类别标签：色点只说明「哪一类」，字才说明「是什么类」。 */
+.entityTag { font-size: var(--fs-micro); color: var(--dsw-alias-label-secondary); padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 12%, transparent); white-space: nowrap; }
+.entityCount { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.entityChevron { width: 14px; height: 14px; fill: none; stroke: var(--dsw-alias-label-tertiary); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; opacity: 0.6; }
+.entityRow:hover .entityChevron { opacity: 1; stroke: var(--dsw-alias-brand-primary); }
 
 /* 情景时间线视图（episodes tab）：过滤行 + 会话组卡 + 邻近扩展卡。 */
 .episodeRangeSep { color: var(--dsw-alias-label-tertiary); font-size: var(--fs-body); }
@@ -859,10 +876,57 @@ select.input { padding-right: 28px; appearance: none; }
 
 /* Обслуживание: «Модель и словари» — только чтение, поэтому таблицы без рамок
    и без кнопок: строка выбранной модели выделяется фоном, остальное — текстом. */
+/* ---------- 运维页（v0.11）：按首页骨架重排 ---------- */
+/* Блок-якорь: навигация прокручивает к нему, липкая шапка не должна его накрыть.
+   Отступ — больше высоты самой навигации (42px + её поле до контента). */
+.opsBlock { scroll-margin-top: 68px; }
+/* Навигация по блокам страницы обслуживания: липкая, чтобы длинную страницу
+   можно было переставлять, не возвращаясь наверх. */
+/* Фон под липкой навигацией: содержимое, что уходит под неё, не должно просвечивать. */
+.opsNav { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2) 0; margin-top: var(--space-4); background: var(--dsw-alias-bg-base); box-shadow: 0 6px 8px -8px var(--dsw-alias-label-primary); }
+/* Сетка обслуживания — та же, что у главной (.layout), но инструменты лежат в ней
+   сами: карточка занимает ячейку, а не отдельную колонку. Порядок заполнения —
+   по строкам: слева широкая колонка (инструмент + состояние данных), справа
+   узкая (язык +裁决). */
+.opsGrid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: var(--space-5); align-items: start; }
+@media (max-width: 960px) {
+  .opsGrid { grid-template-columns: 1fr; }
+}
+/* Заголовок карточки — как у «近半年活动热力» на главной: имя инструмента
+   внутри карточки, справа — короткая справка или действие. */
+.cardHead { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-4); }
+.cardTitle { margin: 0; font-size: var(--fs-display); font-weight: 600; color: var(--dsw-alias-label-primary); }
+/* Волосяная линия между двумя половинами одной карточки (конфигурация и наблюдения). */
+.cardDivider { height: 1px; background: var(--dsw-alias-border-l1); margin: var(--space-4) 0; }
+/* Строки сводки словарей — как «房间目录» на главной: точка, имя, счёт справа. */
+.opsDictRow { display: grid; grid-template-columns: 8px minmax(0, auto) minmax(0, 1fr) auto auto; gap: var(--space-3); align-items: center; padding: var(--space-2) 0; font-size: var(--fs-body); }
+.opsDictRow + .opsDictRow { border-top: 1px solid var(--dsw-alias-border-l1); }
+.opsDictDot { width: 8px; height: 8px; border-radius: 50%; background: var(--dsw-alias-label-tertiary); }
+.opsDictName { color: var(--dsw-alias-label-primary); white-space: nowrap; }
+.opsDictFiles { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opsDictCount { font-size: var(--fs-body); color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.opsDictBad { font-size: var(--fs-micro); color: var(--dsw-alias-state-error-primary); white-space: nowrap; }
+/* Две задачи — двумя группами, а не одним длинным рядом. */
+.opsFieldGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--space-4); }
+.opsField { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.opsFieldRow { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+/* Пояснение, свёрнутое по клику: длинный текст не должен занимать первый экран. */
+.opsDetails { border: 1px solid var(--dsw-alias-border-soft); border-radius: var(--radius-control); padding: var(--space-2) var(--space-3); background: var(--dsw-alias-bg-layer-1); }
+.opsDetails summary { cursor: pointer; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); list-style-position: inside; }
+.opsDetails summary:hover { color: var(--dsw-alias-label-primary); }
+.opsDetails[open] summary { margin-bottom: var(--space-2); color: var(--dsw-alias-label-secondary); }
+
 .regGroup { display: flex; flex-direction: column; gap: 6px; margin-top: var(--space-4); }
+/* Таблицы реестра: длинные (модели, базы) не должны растягивать страницу —
+   обёртка даёт им свою прокрутку по горизонтали, а по высоте — только базы. */
+.regTableWrap { overflow-x: auto; }
+.regTableScroll { max-height: 320px; overflow-y: auto; }
 .regGroupTitle { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); letter-spacing: 0.04em; text-transform: uppercase; }
-.regTable { width: 100%; border-collapse: collapse; font-size: var(--fs-body); }
-.regTable th { text-align: left; font-weight: 500; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); padding: 0 var(--space-3) 4px 0; }
+.regTable { width: 100%; border-collapse: collapse; font-size: var(--fs-body); min-width: 340px; }
+/* Компактная таблица: по содержимому, а не во всю ширину — сводка из двух строк
+   не должна растягиваться на весь экран пустыми колонками. */
+.regTableAuto { width: auto; }
+.regTable th { text-align: left; font-weight: 500; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); padding: 0 var(--space-3) 4px 0; white-space: nowrap; }
 .regTable td { padding: 3px var(--space-3) 3px 0; color: var(--dsw-alias-label-primary); border-top: 1px solid var(--dsw-alias-border-l1); vertical-align: top; }
 .regTable tr.on td { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, transparent); }
 .regMono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-micro); color: var(--dsw-alias-label-secondary); word-break: break-all; }

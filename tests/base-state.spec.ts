@@ -51,6 +51,17 @@ describe('состояние базы: семь состояний и одно �
     expect(verdict).toMatchObject({ state: 'no-label', action: 'convert', model: { label: 'bge-small-zh' } })
   })
 
+  it('7. размерность вне каталога — модель неизвестна, целевую не угадываем', () => {
+    const verdict = judge({ dims: [{ dims: 768, rows: 10 }] })
+    expect(verdict).toMatchObject({ state: 'no-label', action: 'convert', model: undefined })
+    expect(labelToStamp({
+      facts: facts({ dims: [{ dims: 768, rows: 10 }] }),
+      target: TARGET,
+      language: 'ru',
+      catalog: CATALOG,
+    })).toBeUndefined()
+  })
+
   it('7. метки нет и длины векторов нет: предполагаем выбранную модель', () => {
     expect(judge({ dims: [], missing: 10 })).toMatchObject({ state: 'no-label', action: 'write-label' })
   })

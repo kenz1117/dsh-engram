@@ -1,4 +1,5 @@
 import { messageVocabulary } from '../src/i18n/messages.ts'
+import type { EpisodeTimelineAroundResponse } from '../src/types.ts'
 
 /**
  * REAL-composition coverage：测试用 cordis.yml 经真实 Loader 装载
@@ -567,7 +568,10 @@ describe('dsh-engram real Loader composition', () => {
     // 邻近扩展：以 sess-1 首条为锚点，±60 分钟窗口内的另两条情景按时间升序返回。
     const around = await call(port, 'GET', `/api/engram/episode-timeline?scope=user&around=${encodeURIComponent(anchorId)}`)
     expect(around.status).toBe(200)
-    const view = (around.json as { around: { anchor: { id: string }; neighbors: { content: string }[] } }).around
+    // 形状用共享类型（src/types.ts）断言：客户端读的就是 payload.around。
+    // 曾经两边各写一份形状，客户端少剥了一层 `around`，点「邻近」时 anchor 是 undefined，
+    // 渲染锚点行读 .id 就把整个往事视图带崩（见 EpisodeTimelineAroundResponse）。
+    const view = (around.json as EpisodeTimelineAroundResponse).around
     expect(view.anchor.id).toBe(anchorId)
     expect(view.neighbors).toHaveLength(2)
   })

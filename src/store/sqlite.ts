@@ -1872,14 +1872,35 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       const deleted = before - Number((sqlLogCount.get() as { n: number }).n)
       // Место освобождает только VACUUM: без него файл остаётся прежнего размера.
       // Занятая другим процессом база просто не сожмётся — размер покажет панель.
+      //
+      // Две особенности WAL-режима, из-за которых очистка прежде УВЕЛИЧИВАла размер:
+      //  1) VACUUM пишет пересобранную базу в -wal, а главный файл не усекает —
+      //     сумма db+wal+shm на диске растёт вместо того, чтобы падать;
+      //  2) запускать вакуум, когда удалять нечего, незачем: он только раздувает -wal.
+      // Поэтому вакуум — только когда реально что-то удалили, а следом TRUNCATE-
+      // checkpoint: освобождённые страницы возвращаются в главный файл, -wal
+      // обнуляется, и панель наконец показывает честный размер (проверено на
+      // реальной базе: 6.82 МБ → 0.38 МБ).
       let vacuumed = false
-      try {
-        db.exec('VACUUM')
-        vacuumed = true
-      } catch {
-        vacuumed = false
+      if (deleted > 0) {
+        try {
+          db.exec('VACUUM')
+          vacuumed = true
+        } catch {
+          vacuumed = false
+        }
       }
-      return { deleted, vacuumed }
+      // TRUNCATE-checkpoint не ждёт закрытия соединений: главный файл усекается
+      // до логического размера, -wal обнуляется. busy=1 — база занята чужим
+      // читателем, тогда усечения не будет, и панель покажет это честно.
+      let checkpointed = false
+      try {
+        const row = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy?: number } | undefined
+        checkpointed = row !== undefined && Number(row.busy ?? 0) === 0
+      } catch {
+        checkpointed = false
+      }
+      return { deleted, vacuumed, checkpointed }
     },
 
     async writeMeta(key: string, value: string) {

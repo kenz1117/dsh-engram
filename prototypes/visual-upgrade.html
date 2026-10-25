@@ -1,0 +1,2265 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh-engram · 视觉升级提案（可交互）</title>
+<style>
+/* ============================================================
+   视觉升级提案 · 6 个 demo 全部交互
+   配色 / 节奏 / 字体梯度全部对齐 src/client/panel.module.css
+   ============================================================ */
+
+:root {
+  /* Light tokens - mirror panel.module.css */
+  --bg: #fafaf7;
+  --bg-layer: #ffffff;
+  --bg-card: #f7f6f1;
+  --bg-deep: #efede6;
+  --fg: #1c1917;
+  --fg-secondary: #57534e;
+  --fg-tertiary: #a8a29e;
+  --border: #e7e5e4;
+  --border-l2: #d6d3d1;
+  --border-soft: #f1efec;
+
+  --brand-1: #f59e0b;
+  --brand-2: #f43f5e;
+  --brand-3: #fb923c;
+  --brand-grad: linear-gradient(135deg, var(--brand-1) 0%, var(--brand-3) 48%, var(--brand-2) 100%);
+  --brand-grad-line: linear-gradient(90deg, var(--brand-1) 0%, var(--brand-2) 100%);
+
+  --room-fact: #3b6ef5;
+  --room-preference: #a45cf0;
+  --room-decision: #16a394;
+  --room-episode: #e08a2e;
+  --room-skill: #d94f8a;
+
+  --state-success: #16a394;
+  --state-warn: #d4a017;
+  --state-error: #dc2626;
+
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 140ms;
+  --dur-base: 220ms;
+  --dur-slow: 360ms;
+
+  --space-1: 4px; --space-2: 8px; --space-3: 12px;
+  --space-4: 16px; --space-5: 24px; --space-6: 32px; --space-7: 48px;
+
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --fs-micro: 11px;
+  --fs-body: 12px;
+  --fs-ctrl: 13px;
+  --fs-display: 14px;
+  --fs-tag: 10px;
+}
+
+[data-theme="dark"] {
+  --bg: #0c0a09;
+  --bg-layer: #1c1917;
+  --bg-card: #292524;
+  --bg-deep: #1f1d1b;
+  --fg: #fafaf9;
+  --fg-secondary: #d6d3d1;
+  --fg-tertiary: #78716c;
+  --border: #292524;
+  --border-l2: #44403c;
+  --border-soft: #1c1917;
+  --brand-1: #fbbf24;
+  --brand-2: #fb7185;
+  --brand-3: #fb923c;
+  --state-success: #2dd4bf;
+  --state-warn: #fbbf24;
+  --state-error: #f87171;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0;
+  padding: 0;
+  transition: background var(--dur-base) var(--ease-spring), color var(--dur-base) var(--ease-spring);
+  font-feature-settings: "tnum";
+}
+button { font: inherit; cursor: pointer; }
+
+/* ===== Top Bar ===== */
+.topbar {
+  position: sticky; top: 0; z-index: 100;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border);
+  padding: var(--space-3) var(--space-5);
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);
+}
+.brand { display: flex; align-items: center; gap: var(--space-3); }
+.brand .logo {
+  width: 28px; height: 28px; border-radius: 8px;
+  background: var(--brand-grad);
+  display: grid; place-items: center;
+  box-shadow: 0 4px 14px -4px color-mix(in srgb, var(--brand-2) 60%, transparent);
+}
+.brand .logo svg { stroke: #fff; width: 16px; height: 16px; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.brand .text h1 { margin: 0; font-size: 14px; font-weight: 600; }
+.brand .text p { margin: 0; font-size: 11px; color: var(--fg-tertiary); }
+
+.topbar-actions { display: flex; gap: var(--space-2); align-items: center; }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 var(--space-3);
+  border: 1px solid var(--border-l2);
+  background: var(--bg-layer);
+  color: var(--fg-secondary);
+  border-radius: var(--radius-control);
+  font-size: 12px;
+  transition: all var(--dur-fast) var(--ease-spring);
+}
+.btn:hover { color: var(--fg); border-color: color-mix(in srgb, var(--brand-1) 55%, var(--border-l2)); }
+.btn.on { background: color-mix(in srgb, var(--brand-1) 14%, var(--bg-layer)); border-color: color-mix(in srgb, var(--brand-1) 45%, var(--border-l2)); color: var(--fg); }
+.btn .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--brand-1); }
+
+/* ===== Layout ===== */
+.layout {
+  max-width: 1320px; margin: 0 auto;
+  padding: var(--space-5) var(--space-5) var(--space-7);
+  display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: var(--space-6);
+}
+@media (max-width: 960px) { .layout { grid-template-columns: 1fr; } .toc { position: static !important; } }
+
+/* ===== TOC ===== */
+.toc {
+  position: sticky; top: 80px;
+  align-self: start;
+  display: flex; flex-direction: column; gap: var(--space-1);
+  font-size: 12px;
+}
+.toc h3 {
+  margin: 0 0 var(--space-2);
+  font-size: 11px; font-weight: 600;
+  color: var(--fg-tertiary); letter-spacing: 0.06em; text-transform: uppercase;
+}
+.toc a {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--fg-secondary);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  transition: all var(--dur-fast) var(--ease-spring);
+}
+.toc a:hover { background: var(--bg-layer); color: var(--fg); }
+.toc a.active { background: color-mix(in srgb, var(--brand-1) 10%, var(--bg-layer)); border-left-color: var(--brand-1); color: var(--fg); }
+.toc a .num {
+  width: 18px; height: 18px; border-radius: 5px;
+  background: var(--bg-card); color: var(--fg-tertiary);
+  display: grid; place-items: center;
+  font-size: 10px; font-weight: 600;
+  flex: none;
+}
+
+/* ===== Proposal Cards ===== */
+.proposal {
+  margin-bottom: var(--space-7);
+  animation: cardIn 360ms var(--ease-spring) both;
+}
+@keyframes cardIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.proposal-head {
+  display: flex; align-items: baseline; gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.proposal-num {
+  font-size: 32px; font-weight: 600;
+  background: var(--brand-grad-line);
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  flex: none;
+}
+.proposal-title { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.proposal-title h2 { margin: 0; font-size: 18px; font-weight: 600; }
+.proposal-title .tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--fg-tertiary);
+}
+.proposal-title .tag span {
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--fg-secondary);
+}
+
+.proposal-body p { margin: 0 0 var(--space-3); color: var(--fg-secondary); line-height: 1.7; }
+.proposal-body p strong { color: var(--fg); font-weight: 600; }
+.proposal-body p code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px; padding: 1px 6px;
+  background: var(--bg-card); border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--fg-secondary);
+}
+
+/* ===== Demo Frame ===== */
+.demo {
+  margin-top: var(--space-4);
+  border: 1px solid var(--border-l2);
+  border-radius: var(--radius-card);
+  background: var(--bg-layer);
+  overflow: hidden;
+}
+.demo-toolbar {
+  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-card) 50%, transparent);
+}
+.demo-toolbar .seg {
+  display: inline-flex; padding: 2px;
+  background: var(--bg-card); border-radius: 7px; gap: 2px;
+}
+.demo-toolbar .seg button {
+  border: 0; background: transparent;
+  padding: 4px 10px; border-radius: 5px;
+  font-size: 11px; color: var(--fg-tertiary);
+  transition: all var(--dur-fast) var(--ease-spring);
+}
+.demo-toolbar .seg button:hover { color: var(--fg-secondary); }
+.demo-toolbar .seg button.on {
+  background: var(--bg-layer);
+  color: var(--fg);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.demo-toolbar .meta { margin-left: auto; font-size: 11px; color: var(--fg-tertiary); font-variant-numeric: tabular-nums; }
+.demo-body { padding: var(--space-4); min-height: 320px; position: relative; }
+.demo-hint {
+  font-size: 11px; color: var(--fg-tertiary);
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg-card) 30%, transparent);
+  display: flex; align-items: center; gap: 6px;
+}
+.demo-hint::before { content: '💡'; opacity: 0.7; }
+
+/* ===== Constellation ===== */
+.constellation-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  gap: var(--space-4);
+  min-height: 460px;
+}
+.constellation-canvas {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--brand-1) 4%, transparent) 0%,
+    transparent 100%
+  ),
+  radial-gradient(circle at 30% 40%, color-mix(in srgb, var(--room-fact) 6%, transparent), transparent 50%),
+  radial-gradient(circle at 70% 60%, color-mix(in srgb, var(--room-preference) 6%, transparent), transparent 50%);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border);
+  width: 100%; height: 460px;
+  display: block;
+}
+.constellation-side {
+  display: flex; flex-direction: column; gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-card);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border);
+}
+.constellation-side h4 {
+  margin: 0; font-size: 11px; font-weight: 600;
+  color: var(--fg-tertiary); letter-spacing: 0.06em; text-transform: uppercase;
+}
+.constellation-side .pop {
+  padding: var(--space-2) var(--space-3);
+  border-radius: 6px;
+  background: var(--bg-layer);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  min-height: 60px;
+}
+.constellation-side .pop b { color: var(--fg); display: block; margin-bottom: 4px; font-size: 12px; }
+.constellation-side .pop .small { font-size: 11px; color: var(--fg-tertiary); display: block; line-height: 1.5; }
+.constellation-side .legend { display: flex; flex-direction: column; gap: 6px; }
+.constellation-side .legend-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--fg-secondary);
+}
+.constellation-side .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+/* Constellation popover (hover tooltip) */
+.constellation-pop {
+  position: absolute; pointer-events: none;
+  padding: 8px 12px;
+  background: var(--bg-layer);
+  border: 1px solid var(--border-l2);
+  border-radius: 8px;
+  font-size: 12px; line-height: 1.4;
+  box-shadow: 0 8px 24px -8px color-mix(in srgb, var(--fg) 30%, transparent);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-spring);
+  max-width: 220px;
+  z-index: 10;
+}
+.constellation-pop.show { opacity: 1; }
+.constellation-pop b { display: block; font-size: 11px; color: var(--fg-tertiary); margin-bottom: 2px; }
+
+/* ===== Heatmap ===== */
+.heatmap-grid {
+  display: grid;
+  grid-template-rows: repeat(7, 1fr);
+  grid-auto-flow: column;
+  grid-auto-columns: 14px;
+  gap: 3px;
+  font-size: 10px;
+}
+.heatmap-cell {
+  width: 14px; height: 14px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--brand-1) 8%, var(--bg-card));
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease-spring), outline-color var(--dur-fast) var(--ease-spring);
+  outline: 1px solid transparent;
+  outline-offset: 1px;
+}
+.heatmap-cell:hover {
+  outline-color: var(--brand-1);
+  transform: scale(1.4);
+}
+.heatmap-cell[data-l="1"] { background: color-mix(in srgb, var(--brand-1) 22%, var(--bg-card)); }
+.heatmap-cell[data-l="2"] { background: color-mix(in srgb, var(--brand-1) 42%, var(--bg-card)); }
+.heatmap-cell[data-l="3"] { background: color-mix(in srgb, var(--brand-1) 68%, var(--bg-card)); }
+.heatmap-cell[data-l="4"] { background: color-mix(in srgb, var(--brand-1) 95%, var(--bg-card)); }
+.heatmap-tooltip {
+  position: fixed;
+  padding: 6px 10px;
+  background: var(--bg-layer);
+  border: 1px solid var(--border-l2);
+  border-radius: 6px;
+  font-size: 11px;
+  pointer-events: none;
+  box-shadow: 0 4px 12px -4px color-mix(in srgb, var(--fg) 25%, transparent);
+  z-index: 1000;
+  opacity: 0;
+  transition: opacity var(--dur-fast);
+}
+.heatmap-tooltip.show { opacity: 1; }
+.heatmap-tooltip b { color: var(--fg); }
+
+.heatmap-legend {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--fg-tertiary);
+  margin-top: var(--space-3);
+}
+.heatmap-legend .scale {
+  display: inline-flex; gap: 2px;
+}
+.heatmap-legend .scale i {
+  width: 14px; height: 14px; border-radius: 3px;
+  background: color-mix(in srgb, var(--brand-1) 8%, var(--bg-card));
+}
+.heatmap-legend .scale i:nth-child(2) { background: color-mix(in srgb, var(--brand-1) 22%, var(--bg-card)); }
+.heatmap-legend .scale i:nth-child(3) { background: color-mix(in srgb, var(--brand-1) 42%, var(--bg-card)); }
+.heatmap-legend .scale i:nth-child(4) { background: color-mix(in srgb, var(--brand-1) 68%, var(--bg-card)); }
+.heatmap-legend .scale i:nth-child(5) { background: color-mix(in srgb, var(--brand-1) 95%, var(--bg-card)); }
+
+.heatmap-summary {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.heatmap-summary .stat {
+  padding: var(--space-3);
+  background: var(--bg-card);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+}
+.heatmap-summary .stat .label { font-size: 10px; color: var(--fg-tertiary); letter-spacing: 0.06em; text-transform: uppercase; }
+.heatmap-summary .stat .value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.heatmap-summary .stat .trend { font-size: 11px; color: var(--state-success); margin-top: 2px; }
+.heatmap-summary .stat .trend.down { color: var(--state-error); }
+
+/* ===== Nebula ===== */
+.nebula-canvas {
+  width: 100%; height: 420px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border);
+  background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--brand-2) 6%, var(--bg-card)), var(--bg-card) 70%);
+  cursor: grab;
+  display: block;
+}
+.nebula-canvas:active { cursor: grabbing; }
+.nebula-side {
+  display: flex; flex-direction: column; gap: var(--space-3);
+}
+.belief-card {
+  padding: var(--space-3) var(--space-4);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--brand-1) 8%, var(--bg-layer)), var(--bg-layer));
+  border: 1px solid color-mix(in srgb, var(--brand-1) 30%, var(--border));
+  border-radius: var(--radius-card);
+}
+.belief-card h4 {
+  margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--fg);
+}
+.belief-card p { margin: 0; font-size: 11px; color: var(--fg-secondary); }
+.belief-card .meta {
+  margin-top: var(--space-2); display: flex; gap: var(--space-3);
+  font-size: 10px; color: var(--fg-tertiary); padding-top: var(--space-2);
+  border-top: 1px solid var(--border-soft);
+  font-variant-numeric: tabular-nums;
+}
+.belief-card .meta b { color: var(--fg); font-weight: 600; }
+
+.nebula-evidence-card {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-card);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  font-size: 11px;
+}
+.nebula-evidence-card b { font-size: 11px; color: var(--fg-tertiary); display: block; margin-bottom: 2px; letter-spacing: 0.04em; text-transform: uppercase; }
+.nebula-evidence-card .text { font-size: 12px; color: var(--fg); line-height: 1.5; }
+
+/* ===== Floorplan ===== */
+.floorplan-canvas {
+  width: 100%; height: 360px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-deep) 60%, var(--bg-layer));
+  display: block;
+}
+.floorplan-side { display: flex; flex-direction: column; gap: var(--space-2); }
+.room-pill {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-spring);
+  font-size: 12px;
+}
+.room-pill:hover {
+  background: color-mix(in srgb, var(--brand-1) 6%, var(--bg-card));
+  transform: translateX(2px);
+}
+.room-pill.active {
+  background: color-mix(in srgb, var(--brand-1) 14%, var(--bg-card));
+  border-color: color-mix(in srgb, var(--brand-1) 50%, var(--border));
+}
+.room-pill .swatch {
+  width: 10px; height: 10px; border-radius: 3px; flex: none;
+}
+.room-pill .name { font-weight: 500; }
+.room-pill .count { margin-left: auto; color: var(--fg-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+/* ===== Sparkline Hero ===== */
+.hero-demo {
+  display: grid; grid-template-columns: minmax(0, 1fr) 320px;
+  gap: var(--space-4);
+  align-items: center;
+}
+.hero-demo-left { padding: var(--space-4); }
+.hero-demo-left h3 { margin: 0 0 var(--space-2); font-size: 16px; font-weight: 600; }
+.hero-demo-left p { margin: 0; font-size: 12px; color: var(--fg-secondary); line-height: 1.6; }
+
+.kpi-row { display: flex; gap: var(--space-5); margin-top: var(--space-4); flex-wrap: wrap; }
+.kpi {
+  display: flex; flex-direction: column; gap: 4px;
+  padding-right: var(--space-5);
+  border-right: 1px solid var(--border-soft);
+}
+.kpi:last-child { border-right: 0; }
+.kpi .label { font-size: 11px; color: var(--fg-tertiary); }
+.kpi .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.kpi .spark { height: 28px; width: 120px; margin-top: 4px; }
+.kpi .delta { font-size: 10px; color: var(--state-success); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.kpi .delta.down { color: var(--state-error); }
+.kpi .delta.due { color: var(--state-error); font-weight: 600; }
+
+.ring-wrap {
+  position: relative;
+  display: grid; place-items: center;
+  padding: var(--space-4);
+  background: var(--bg-card);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border);
+}
+.ring-wrap svg { display: block; transform: rotate(-90deg); }
+.ring-wrap .ring-text {
+  position: absolute; text-align: center;
+}
+.ring-wrap .ring-text b {
+  display: block; font-size: 22px; font-weight: 600;
+  font-variant-numeric: tabular-nums; line-height: 1;
+}
+.ring-wrap .ring-text span { font-size: 10px; color: var(--fg-tertiary); letter-spacing: 0.06em; text-transform: uppercase; margin-top: 4px; display: block; }
+
+.ring-controls {
+  display: flex; gap: 4px; margin-top: var(--space-3);
+  flex-wrap: wrap; justify-content: center;
+}
+.ring-controls button {
+  border: 1px solid var(--border-l2); background: var(--bg-layer);
+  padding: 4px 8px; border-radius: 5px;
+  font-size: 10px; color: var(--fg-tertiary);
+}
+.ring-controls button.on {
+  border-color: color-mix(in srgb, var(--brand-1) 50%, var(--border-l2));
+  color: var(--fg);
+}
+
+/* ===== Spiral ===== */
+.spiral-canvas {
+  width: 100%; height: 380px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border);
+  background: radial-gradient(circle at center, color-mix(in srgb, var(--brand-3) 5%, var(--bg-layer)), var(--bg-card));
+  display: block;
+  touch-action: none;
+}
+.spiral-controls {
+  position: absolute; top: var(--space-3); left: var(--space-3);
+  display: flex; flex-direction: column; gap: 4px;
+  padding: var(--space-2);
+  background: color-mix(in srgb, var(--bg-layer) 88%, transparent);
+  border: 1px solid var(--border-l2);
+  border-radius: var(--radius-control);
+  font-size: 10px; color: var(--fg-tertiary);
+}
+.spiral-controls button {
+  border: 0; background: transparent;
+  padding: 4px 8px; border-radius: 4px;
+  font-size: 10px; color: var(--fg-secondary);
+  text-align: left;
+}
+.spiral-controls button:hover { background: var(--bg-card); color: var(--fg); }
+.spiral-controls button.on { background: color-mix(in srgb, var(--brand-1) 12%, var(--bg-card)); color: var(--fg); }
+
+.spiral-side {
+  display: flex; flex-direction: column; gap: var(--space-3);
+}
+.spiral-stat {
+  padding: var(--space-3);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+.spiral-stat .label { font-size: 10px; color: var(--fg-tertiary); letter-spacing: 0.06em; text-transform: uppercase; }
+.spiral-stat .value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+
+/* ===== Empty State ===== */
+.empty-demo {
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  background: color-mix(in srgb, var(--bg-card) 30%, transparent);
+  border-radius: var(--radius-card);
+  border: 1px dashed var(--border-l2);
+  position: relative;
+  overflow: hidden;
+  min-height: 320px;
+}
+.empty-demo .stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+  max-width: 460px;
+  margin: var(--space-5) auto;
+}
+.empty-demo .chair {
+  position: relative;
+  height: 100px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  display: grid; place-items: center;
+  font-size: 11px;
+  transition: all 360ms var(--ease-spring);
+}
+.empty-demo .chair svg { width: 32px; height: 32px; stroke: var(--fg-tertiary); fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.empty-demo .chair.filled {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--brand-1) 18%, var(--bg-layer)), var(--bg-layer));
+  border-color: color-mix(in srgb, var(--brand-1) 50%, var(--border));
+  transform: translateY(-4px);
+  box-shadow: 0 6px 14px -6px color-mix(in srgb, var(--brand-1) 50%, transparent);
+}
+.empty-demo .chair.filled svg { stroke: var(--brand-2); }
+.empty-demo .chair .label {
+  position: absolute;
+  bottom: 6px; left: 0; right: 0; text-align: center;
+  font-size: 10px;
+}
+.empty-demo .chair.filled .label { color: var(--fg); font-weight: 500; }
+.empty-demo .narrative {
+  font-size: 14px;
+  color: var(--fg);
+  font-weight: 500;
+  margin: 0 0 4px;
+}
+.empty-demo .subnarrative {
+  font-size: 12px;
+  color: var(--fg-tertiary);
+  margin: 0 0 var(--space-3);
+}
+.empty-demo .actions {
+  display: flex; gap: var(--space-2); justify-content: center;
+  margin-top: var(--space-3);
+}
+
+/* ===== Footer ===== */
+.footer {
+  text-align: center; padding: var(--space-5);
+  font-size: 11px; color: var(--fg-tertiary);
+  border-top: 1px solid var(--border);
+}
+
+/* Reduced motion */
+[data-reduce-motion="true"] *, [data-reduce-motion="true"] *::before, [data-reduce-motion="true"] *::after {
+  animation-duration: 0.01ms !important;
+  transition-duration: 0.01ms !important;
+}
+
+/* ===== Position Demo (Sidebar vs Settings) ===== */
+:root { --danger: var(--state-error); --danger-tint: color-mix(in srgb, var(--state-error) 12%, transparent); }
+.pos-state { position: absolute; inset: 0; display: flex; }
+.pos-state-label {
+  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; color: var(--fg-tertiary);
+  background: color-mix(in srgb, var(--bg-layer) 90%, transparent);
+  border: 1px solid var(--border-l2);
+  padding: 4px 10px; border-radius: 999px;
+  white-space: nowrap; backdrop-filter: blur(6px);
+  z-index: 5;
+}
+.pos-state-label-good { color: var(--state-success); border-color: color-mix(in srgb, var(--state-success) 40%, var(--border-l2)); }
+
+/* DSH shell — sidebar (shared) */
+.dsh-shell-sidebar {
+  width: 220px; flex: none; border-right: 1px solid var(--border);
+  background: var(--bg-layer); padding: 16px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  font-size: 13px;
+}
+.dsh-logo-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px 12px; }
+.dsh-logo-mark { width: 22px; height: 22px; border-radius: 5px; background: var(--fg); position: relative; }
+.dsh-logo-mark::after { content: '✦'; position: absolute; inset: 0; display: grid; place-items: center; color: var(--bg-layer); font-size: 14px; }
+.dsh-logo-text { font-weight: 600; font-size: 14px; }
+.dsh-logo-text small { margin-left: 4px; padding: 1px 5px; background: var(--fg); color: var(--bg-layer); border-radius: 3px; font-size: 9px; letter-spacing: 0.06em; }
+.dsh-sidebar-btn {
+  height: 36px; padding: 0 12px;
+  border: 1px solid var(--border-l2); border-radius: 8px;
+  background: var(--bg-card); color: var(--fg); font-size: 13px;
+  display: flex; align-items: center; gap: 8px; cursor: pointer; text-align: left;
+}
+.dsh-sidebar-btn span { font-size: 16px; opacity: 0.7; }
+.dsh-sidebar-section { display: flex; flex-direction: column; gap: 2px; padding-top: 6px; }
+.dsh-sidebar-label { font-size: 10px; color: var(--fg-tertiary); padding: 6px 8px; letter-spacing: 0.06em; text-transform: uppercase; }
+.dsh-sidebar-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-radius: 6px;
+  background: transparent; border: 0;
+  color: var(--fg-secondary); font-size: 13px;
+  cursor: pointer; text-align: left;
+}
+.dsh-sidebar-row:hover { background: var(--bg-card); color: var(--fg); }
+.dsh-sidebar-row span:first-child { font-size: 14px; opacity: 0.6; width: 18px; text-align: center; }
+.dsh-sidebar-foot { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border-soft); }
+
+/* Engram sidebar entry */
+.dsh-sidebar-row.dsh-engram {
+  background: color-mix(in srgb, var(--brand-1) 12%, var(--bg-layer));
+  border: 1px solid color-mix(in srgb, var(--brand-1) 40%, var(--border-l2));
+  color: var(--fg); font-weight: 600; position: relative;
+}
+.dsh-sidebar-row.dsh-engram.on {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--brand-1) 16%, var(--bg-layer)), transparent);
+  box-shadow: inset 3px 0 0 var(--brand-2);
+}
+.dsh-engram-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; }
+.dsh-engram-icon svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.dsh-engram-badge {
+  margin-left: auto;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 999px; background: var(--danger); color: white;
+  font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums;
+  display: grid; place-items: center;
+}
+
+/* DSH shell — main column (shared) */
+.dsh-shell-main { flex: 1; min-width: 0; background: var(--bg); display: flex; flex-direction: column; }
+
+/* === 现状:设置弹窗 === */
+.dsh-settings-scrim {
+  position: absolute; inset: 0;
+  background: color-mix(in srgb, var(--fg) 35%, transparent);
+  z-index: 10;
+}
+.dsh-settings-modal {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(620px, 90%); max-height: 80%;
+  background: var(--bg-layer); border: 1px solid var(--border-l2);
+  border-radius: 12px; box-shadow: 0 24px 60px -20px color-mix(in srgb, var(--fg) 40%, transparent);
+  display: flex; flex-direction: column;
+  z-index: 11; overflow: hidden;
+}
+.dsh-settings-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+}
+.dsh-settings-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.dsh-modal-close {
+  width: 24px; height: 24px; border-radius: 5px; border: 0; background: transparent;
+  color: var(--fg-tertiary); font-size: 18px; cursor: pointer;
+}
+.dsh-settings-body { display: flex; flex: 1; min-height: 0; }
+.dsh-settings-tabs {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 12px 8px; border-right: 1px solid var(--border);
+  width: 100px; flex: none; background: var(--bg-card);
+}
+.dsh-settings-tabs button {
+  padding: 6px 10px; border-radius: 5px; border: 0; background: transparent;
+  font-size: 12px; color: var(--fg-tertiary); cursor: pointer; text-align: left;
+}
+.dsh-settings-tabs button:hover { background: var(--bg-layer); color: var(--fg); }
+.dsh-settings-tabs button.on {
+  background: var(--bg-layer); color: var(--fg); font-weight: 600; position: relative;
+}
+.dsh-settings-tabs button.on::before {
+  content: ''; position: absolute; left: 0; top: 4px; bottom: 4px; width: 6px;
+  background: var(--brand-grad-line); border-radius: 0 3px 3px 0;
+}
+.tab-dot { display: inline-block; width: 5px; height: 5px; background: var(--danger); border-radius: 50%; margin-left: 4px; vertical-align: middle; }
+.dsh-settings-content { flex: 1; min-width: 0; padding: 14px; overflow: auto; }
+.pos-cram { display: flex; flex-direction: column; gap: 8px; }
+.pos-cram-header { display: flex; align-items: center; gap: 8px; }
+.pos-cram-pill { font-size: 11px; padding: 3px 8px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 999px; }
+.pos-cram-tag { padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: var(--danger-tint); color: var(--danger); }
+.pos-cram-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.pos-cram-tabs button {
+  padding: 3px 8px; border-radius: 4px; border: 0; background: transparent;
+  font-size: 11px; color: var(--fg-tertiary); cursor: pointer;
+}
+.pos-cram-tabs button.on { background: var(--bg-card); color: var(--fg); }
+.pos-cram-content { display: flex; flex-direction: column; gap: 8px; }
+.pos-cram-kpi {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 10px 12px; background: var(--bg-card); border-radius: 6px;
+}
+.pos-cram-kpi-label { font-size: 11px; color: var(--fg-tertiary); }
+.pos-cram-kpi-value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pos-cram-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 5px;
+  font-size: 12px; color: var(--fg-secondary);
+}
+.pos-cram-row:hover { background: var(--bg-card); }
+.pos-cram-dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.pos-cram-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* === 升级后:满宽主列 === */
+.dsh-engram-topbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 18px; border-bottom: 1px solid var(--border);
+  background: var(--bg-layer);
+}
+.dsh-engram-scope {
+  display: inline-flex; padding: 2px;
+  background: var(--bg-card); border-radius: 8px; gap: 2px;
+}
+.dsh-engram-scope button {
+  border: 0; background: transparent;
+  padding: 4px 12px; border-radius: 6px;
+  font-size: 12px; color: var(--fg-tertiary); cursor: pointer;
+}
+.dsh-engram-scope button.on {
+  background: var(--bg-layer); color: var(--fg);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.dsh-engram-workspace { font-size: 11px; color: var(--fg-tertiary); }
+.dsh-engram-iconbtn {
+  width: 26px; height: 26px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg-layer);
+  color: var(--fg-secondary); cursor: pointer;
+  display: grid; place-items: center;
+}
+.dsh-engram-body {
+  display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 16px; padding: 16px 18px; align-items: start;
+}
+.dsh-engram-card {
+  background: var(--bg-layer); border: 1px solid var(--border-l2);
+  border-radius: 12px; padding: 14px;
+}
+.dsh-engram-hero { grid-column: 1 / 2; grid-row: 1; }
+.dsh-engram-rooms { grid-column: 2 / 3; grid-row: 1; }
+.dsh-engram-fulltabs { grid-column: 1 / -1; grid-row: 2; }
+.dsh-engram-metrics { display: flex; gap: 16px; flex-wrap: wrap; }
+.dsh-engram-metrics > div { display: flex; flex-direction: column; gap: 2px; padding-right: 16px; border-right: 1px solid var(--border-soft); }
+.dsh-engram-metrics > div:last-child { border-right: 0; }
+.dsh-engram-metrics .lbl { font-size: 11px; color: var(--fg-tertiary); }
+.dsh-engram-metrics .val { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.dsh-engram-metrics .dlt { font-size: 10px; color: var(--state-success); font-variant-numeric: tabular-nums; }
+.dsh-engram-metrics .dlt.dn { color: var(--danger); }
+.dsh-engram-metrics .dlt.dd { color: var(--danger); font-weight: 600; }
+.dsh-engram-room-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 4px; font-size: 12px; color: var(--fg-secondary);
+}
+.dsh-engram-room-row .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.dsh-engram-room-row .cnt { margin-left: auto; color: var(--fg-tertiary); font-variant-numeric: tabular-nums; font-size: 11px; }
+.dsh-engram-tab {
+  padding: 6px 0; border: 0; background: transparent;
+  font-size: 12px; color: var(--fg-tertiary); cursor: pointer; position: relative;
+}
+.dsh-engram-tab.on { color: var(--fg); font-weight: 600; }
+.dsh-engram-tab.on::after {
+  content: ''; position: absolute; left: -2px; right: -2px; bottom: -11px; height: 2px;
+  background: var(--brand-grad-line); border-radius: 2px 2px 0 0;
+}
+
+/* === Diff 状态 === */
+.pos-diff-wrap {
+  position: absolute; inset: 24px;
+  background: var(--bg-layer); border: 1px solid var(--border-l2);
+  border-radius: 12px; padding: 18px; overflow: auto;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.pos-diff-head {
+  display: flex; align-items: center; font-size: 12px; font-weight: 600;
+  padding-bottom: 10px; border-bottom: 1px solid var(--border);
+}
+.pos-diff-pre {
+  margin: 0; padding: 14px;
+  background: var(--bg-deep); border: 1px solid var(--border);
+  border-radius: 8px; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px; line-height: 1.7;
+  overflow-x: auto; white-space: pre;
+}
+.pos-diff-pre .dlt { color: var(--danger); display: block; }
+.pos-diff-pre .add { color: var(--state-success); display: block; }
+.pos-diff-foot { font-size: 12px; color: var(--fg-secondary); padding-top: 8px; border-top: 1px solid var(--border); }
+.pos-diff-foot strong { color: var(--fg); font-size: 14px; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">
+      <svg viewBox="0 0 24 24"><path d="M3 10 L12 3 L21 10 M5 10 V20 H19 V10 M9 20 V14 H15 V20"/></svg>
+    </div>
+    <div class="text">
+      <h1>dsh-engram · 视觉升级提案</h1>
+      <p>6 个交互 demo，每个升级点都有真实可点可拖的原型</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <button class="btn" id="themeBtn"><span class="dot"></span><span id="themeLabel">暗</span></button>
+    <button class="btn" id="motionBtn"><span id="motionLabel">动效开</span></button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="toc">
+    <h3>升级点</h3>
+    <a href="#constellation" class="active"><span class="num">1</span>记忆星河视图</a>
+    <a href="#heatmap"><span class="num">2</span>活动热力日历</a>
+    <a href="#nebula"><span class="num">3</span>信念星云</a>
+    <a href="#floorplan"><span class="num">4</span>走廊 2.0</a>
+    <a href="#sparkline"><span class="num">5</span>画像 KPI sparkline</a>
+    <a href="#spiral"><span class="num">6</span>回忆螺旋</a>
+    <a href="#position"><span class="num">7</span>位置升级:侧栏 vs 设置</a>
+  </aside>
+
+  <main>
+
+    <!-- ============================================ -->
+    <!-- 1. Memory Constellation -->
+    <!-- ============================================ -->
+    <section class="proposal" id="constellation">
+      <div class="proposal-head">
+        <div class="proposal-num">01</div>
+        <div class="proposal-title">
+          <h2>记忆星河视图</h2>
+          <div class="tag">
+            <span>新视图</span><span>大型</span>
+          </div>
+        </div>
+      </div>
+      <div class="proposal-body">
+        <p>
+          在「<strong>走廊</strong>」之外开一个全新的鸟瞰视图：把全部记忆按主题簇排成星座，
+          <strong>亮度 = 重要性</strong>，<strong>星等 = 访问频率</strong>，<strong>连线 = 语义近邻</strong>。
+          用来一眼识别冷宫区与活跃簇，比 5 间房颜色更深一层。
+        </p>
+        <p>
+          实现：服务端按 <code>engram_search room</code> 主题 + k-means 5 簇分组返回节点，前端用 force / canvas 渲染。
+          hover 单星弹出门牌 + 来源；<strong>点击簇中心</strong>平移到该主题的「陈展」过滤态。
+        </p>
+      </div>
+
+      <div class="demo">
+        <div class="demo-toolbar">
+          <div class="seg" id="constellationSeg">
+            <button data-filter="all" class="on">全部</button>
+            <button data-filter="fact">事实</button>
+            <button data-filter="preference">偏好</button>
+            <button data-filter="decision">决策</button>
+            <button data-filter="episode">往事</button>
+            <button data-filter="skill">技法</button>
+          </div>
+          <span class="meta">200 stars · 7 clusters · hover 看门牌</span>
+        </div>
+        <div class="demo-body">
+          <div class="constellation-wrap">
+            <svg class="constellation-canvas" id="constellationSvg" viewBox="0 0 600 460"></svg>
+            <div class="constellation-side">
+              <h4>图例</h4>
+              <div class="legend">
+                <div class="legend-item"><span class="legend-dot" style="background:var(--room-fact)"></span>事实厅 32</div>
+                <div class="legend-item"><span class="legend-dot" style="background:var(--room-preference)"></span>偏好阁 28</div>
+                <div class="legend-item"><span class="legend-dot" style="background:var(--room-decision)"></span>决策堂 24</div>
+                <div class="legend-item"><span class="legend-dot" style="background:var(--room-episode)"></span>往事廊 41</div>
+                <div class="legend-item"><span class="legend-dot" style="background:var(--room-skill)"></span>技法坊 35</div>
+              </div>
+              <h4 style="margin-top:8px">Hover 详情</h4>
+              <div class="pop" id="constellationPop">
+                <b style="color:var(--fg-tertiary); font-weight:500">悬停一颗星</b>
+                <span class="small">会显示门牌与重要性 / 访问频率</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="demo-hint">点不同过滤按钮看星河如何按种类抽离；星点 hover 看门牌信息；点击过滤按钮会重新定位与淡化粒子。</div>
+      </div>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- 2. Activity Heatmap -->
+    <!-- ============================================ -->
+    <section class="proposal" id="heatmap">
+      <div class="proposal-head">
+        <div class="proposal-num">02</div>
+        <div class="proposal-title">
+          <h2>活动热力日历</h2>
+          <div class="tag">
+            <span>新组件</span><span>今日视图增强</span>
+          </div>
+        </div>
+      </div>
+      <div class="proposal-body">
+        <p>
+          GitHub 风格的写入活跃度热力图：把「今日速览」的「近 7 天」改成「近 52 周」，
+          一眼看出<strong>活跃期 / 沉默期 / 突增抽离</strong>。比单调的 7 天柱状更立体。
+        </p>
+        <p>
+          实现：服务端聚合 <code>op_log</code> 写入按 (scope, day) 求和，前端 grid 渲染 7 行 × 53 列。
+          点单元格跳当日 viewer 时段；hover 看日期 + 写入条数。
+        </p>
+      </div>
+
+      <div class="demo">
+        <div class="demo-toolbar">
+          <div class="seg" id="heatmapSeg">
+            <button data-range="30" class="on">30 天</button>
+            <button data-range="90">90 天</button>
+            <button data-range="365">1 年</button>
+          </div>
+          <span class="meta" id="heatmapMeta">364 cells · peak 12/day</span>
+        </div>
+        <div class="demo-body">
+          <div class="heatmap-summary">
+            <div class="stat"><div class="label">活跃天数</div><div class="value">142</div><div class="trend">↑ 12 vs 上期</div></div>
+            <div class="stat"><div class="label">平均 / 日</div><div class="value">3.4</div><div class="trend">↑ 0.8</div></div>
+            <div class="stat"><div class="label">峰值日</div><div class="value">12</div><div class="trend down">↓ 2</div></div>
+            <div class="stat"><div class="label">当前连胜</div><div class="value">7d</div><div class="trend">🔥 连续活跃</div></div>
+          </div>
+          <div class="heatmap-grid" id="heatmapGrid"></div>
+          <div class="heatmap-legend">
+            <span>少</span>
+            <span class="scale"><i></i><i></i><i></i><i></i><i></i></span>
+            <span>多</span>
+            <span style="margin-left:auto" id="heatmapRange">2025-10-15 → 2026-10-15</span>
+          </div>
+        </div>
+        <div class="demo-hint">每个格子 hover 显示「日期 + 写入条数」；亮色 = 高活跃，暗色 = 沉默日。</div>
+      </div>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- 3. Belief Nebula -->
+    <!-- ============================================ -->
+    <section class="proposal" id="nebula">
+      <div class="proposal-head">
+        <div class="proposal-num">03</div>
+        <div class="proposal-title">
+          <h2>信念星云</h2>
+          <div class="tag">
+            <span>信念视图升级</span><span>实体相关</span>
+          </div>
+        </div>
+      </div>
+      <div class="proposal-body">
+        <p>
+          把现有「信念」视图从扁平列表升级为<strong>引力体可视化</strong>：核心信念 = 恒星，
+          证据 = 行星，证据与信念用引力线相连，证据数越多线越粗。
+          比纯 list 更直观地感受「这条信念站得多稳」。
+        </p>
+        <p>
+          实现：服务端 <code>GET /api/engram/observation-evidence</code> 已能拿证据，
+          前端按 evidence_count 排序，取前 5 条做引力图，剩余 list 保留。
+        </p>
+      </div>
+
+      <div class="demo">
+        <div class="demo-toolbar">
+          <span class="meta" style="margin-left:0">「用户对 TS 项目的工程风格」 · 证据 6 条 · 拖拽旋转</span>
+          <div class="seg" id="nebulaSeg" style="margin-left:auto">
+            <button data-status="active" class="on">成立</button>
+            <button data-status="stale">待复核</button>
+            <button data-status="refuted">已否定</button>
+          </div>
+        </div>
+        <div class="demo-body">
+          <div class="constellation-wrap" style="grid-template-columns: minmax(0,1fr) 240px">
+            <div style="position:relative">
+              <svg class="nebula-canvas" id="nebulaSvg" viewBox="-200 -200 400 400"></svg>
+            </div>
+            <div class="nebula-side">
+              <div class="belief-card">
+                <h4>用户对 TS 项目的工程风格</h4>
+                <p>倾向 strict + 显式 return 类型 + 测试覆盖核心路径，<br>不爱样板与过度抽象。</p>
+                <div class="meta">
+                  <span>证据 <b>6</b></span>
+                  <span>最近 <b>2d</b></span>
+                  <span>状态 <b style="color:var(--state-success)">成立</b></span>
+                </div>
+              </div>
+              <div class="nebula-evidence-card">
+                <b>证据 1 / 6</b>
+                <div class="text">「tsconfig 严格模式，2026-09」</div>
+              </div>
+              <div class="nebula-evidence-card">
+                <b>证据 3 / 6</b>
+                <div class="text">「核心模块显式声明返回类型」</div>
+              </div>
+              <div class="nebula-evidence-card">
+                <b>证据 5 / 6</b>
+                <div class="text">「拒绝 ts-pattern：可选解构」</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="demo-hint">拖拽星云旋转；hover 行星会高亮它到恒星的引力线。</div>
+      </div>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- 4. Corridor Floorplan -->
+    <!-- ============================================ -->
+    <section class="proposal" id="floorplan">
+      <div class="proposal-head">
+        <div class="proposal-num">04</div>
+        <div class="proposal-title">
+          <h2>走廊 2.0 · 建筑平面图</h2>
+          <div class="tag">
+            <span>现有视图</span><span>视觉重设计</span>
+          </div>
+        </div>
+      </div>
+      <div class="proposal-body">
+        <p>
+          把现有「走廊」视图的<strong>力导向图</strong>升级为<strong>建筑平面图</strong>：
+          5 间房成实心区域、走廊做主通道、巡游路线用虚线连接桩位。
+          比力导向图更「物理」、更易记忆（地图感强）。
+        </p>
+        <p>
+          实现：保留节点坐标逻辑（来自 <code>CorridorMap.tsx</code>），把节点圈改成 SVG 矩形房间块。
+          房间 4/5 容量满后自动开 <code>房名-2</code> —— 平面图能直接展示「扩容房」。
+        </p>
+      </div>
+
+      <div class="demo">
+        <div class="demo-toolbar">
+          <div class="seg" id="floorplanSeg">
+            <button data-view="user" class="on">私人</button>
+            <button data-view="project">项目</button>
+            <button data-view="shared">共享</button>
+          </div>
+          <span class="meta">5 间主房 · 1 间扩容 · 巡游路线 12 站</span>
+        </div>
+        <div class="demo-body">
+          <div class="constellation-wrap">
+            <svg class="floorplan-canvas" id="floorplanSvg" viewBox="0 0 720 320"></svg>
+            <div class="floorplan-side">
+              <h4 style="margin:0 0 4px; font-size:11px; color:var(--fg-tertiary); letter-spacing:0.06em; text-transform:uppercase">房间容量</h4>
+              <div class="room-pill active">
+                <span class="swatch" style="background:var(--room-fact)"></span>
+                <span class="name">事实厅</span>
+                <span class="count">7 / 9</span>
+              </div>
+              <div class="room-pill">
+                <span class="swatch" style="background:var(--room-preference)"></span>
+                <span class="name">偏好阁</span>
+                <span class="count">5 / 9</span>
+              </div>
+              <div class="room-pill">
+                <span class="swatch" style="background:var(--room-decision)"></span>
+                <span class="name">决策堂</span>
+                <span class="count">9 / 9</span>
+              </div>
+              <div class="room-pill" style="opacity:0.7">
+                <span class="swatch" style="background:repeating-linear-gradient(45deg, var(--room-decision) 0 4px, transparent 4px 8px)"></span>
+                <span class="name">决策堂-2</span>
+                <span class="count">1 / 9</span>
+              </div>
+              <div class="room-pill">
+                <span class="swatch" style="background:var(--room-episode)"></span>
+                <span class="name">往事廊</span>
+                <span class="count">3 / 9</span>
+              </div>
+              <div class="room-pill">
+                <span class="swatch" style="background:var(--room-skill)"></span>
+                <span class="name">技法坊</span>
+                <span class="count">6 / 9</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="demo-hint">hover 房间块高亮 + 显示桩位号；点房间块在右侧「陈展」自动按房间筛选。</div>
+      </div>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- 5. Sparkline Hero -->
+    <!-- ============================================ -->
+    <section class="proposal" id="sparkline">
+      <div class="proposal-head">
+        <div class="proposal-num">05</div>
+        <div class="proposal-title">
+          <h2>画像 KPI · sparkline 趋势</h2>
+          <div class="tag">
+            <span>今日视图</span><span>小改动</span>
+          </div>
+        </div>
+      </div>
+      <div class="proposal-body">
+        <p>
+          给「今日速览」三个主 KPI（记忆 / 开放 / 清晰度）每个加一条 <strong>30 天 sparkline</strong>，
+          一眼看出<strong>总库在涨、清晰度在掉、复习积压在收敛</strong>——
+          比单纯的大数字多一层「在哪儿」。
+        </p>
+        <p>
+          实现：服务端聚合 <code>op_log</code> 按日聚合，前端在 <code>.metric</code> 里塞 <code>&lt;svg class="spark"&gt;</code>。
+          sparkline 用 d3-shape-less 的 path 函数画，hover 显示当日数字。
+        </p>
+      </div>
+
+      <div class="demo">
+        <div class="demo-toolbar">
+          <div class="seg" id="ringSeg">
+            <button data-health="excellent" class="on">优 92</button>
+            <button data-health="good">良 76</button>
+            <button data-health="warn">差 41</button>
+          </div>
+          <span class="meta">点「优 / 良 / 差」模拟不同健康分</span>
+        </div>
+        <div class="demo-body">
+          <div class="hero-demo">
+            <div class="hero-demo-left">
+              <h3>今日速览</h3>
+              <p>三个主指标 + 30 天趋势线 + 健康环。一眼知道宫殿在「胖」还是在「瘦」、清晰度在「稳」还是在「掉」。</p>
+              <div class="kpi-row">
+                <div class="kpi">
+                  <span class="label">总记忆</span>
+                  <span class="value">348</span>
+                  <svg class="spark" id="sparkTotal" viewBox="0 0 120 28" preserveAspectRatio="none"></svg>
+                  <span class="delta">↑ 24 / 30d</span>
+                </div>
+                <div class="kpi">
+                  <span class="label">开放</span>
+                  <span class="value">18</span>
+                  <svg class="spark" id="sparkOpen" viewBox="0 0 120 28" preserveAspectRatio="none"></svg>
+                  <span class="delta down">↑ 6 / 30d</span>
+                </div>
+                <div class="kpi">
+                  <span class="label">清晰度</span>
+                  <span class="value">0.78</span>
+                  <svg class="spark" id="sparkClarity" viewBox="0 0 120 28" preserveAspectRatio="none"></svg>
+                  <span class="delta down">↓ 0.04</span>
+                </div>
+                <div class="kpi" style="border-right:0">
+                  <span class="label">今日到期</span>
+                  <span class="value" style="color:var(--state-error)">4</span>
+                  <svg class="spark" id="sparkDue" viewBox="0 0 120 28" preserveAspectRatio="none"></svg>
+                  <span class="delta due">3 / 5 已答</span>
+                </div>
+              </div>
+            </div>
+            <div class="ring-wrap">
+              <svg width="120" height="120" viewBox="0 0 120 120">
+                <circle cx="60" cy="60" r="48" fill="none" stroke="var(--border-soft)" stroke-width="8"/>
+                <circle id="healthArc" cx="60" cy="60" r="48" fill="none" stroke="var(--brand-grad-line)" stroke-width="8" stroke-linecap="round" stroke-dasharray="301.6" stroke-dashoffset="24"/>
+              </svg>
+              <div class="ring-text">
+                <b id="healthValue">92</b>
+                <span>宫殿健康</span>
+              </div>
+              <div class="ring-controls" id="ringControls">
+                <button data-health="excellent" class="on">优</button>
+                <button data-health="good">良</button>
+                <button data-health="warn">差</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="demo-hint">sparkline 用 30 天真实数据绘制；健康环 stroke-dashoffset 随分值变化。</div>
+      </div>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- 6. Memory Spiral -->
+    <!-- ============================================ -->
+    <section class="proposal" id="spiral">
+      <div class="proposal-head">
+        <div class="proposal-num">06</div>
+        <div class="proposal-title">
+          <h2>回忆螺旋</h2>
+          <div class="tag">
+            <span>新视图</span><span>时间型</span>
+          </div>
+        </div>
+      </div>
+      <div class="proposal-body">
+        <p>
+          另一条<strong>时间型鸟瞰</strong>：全部记忆按时间排成对数螺旋，
+          <strong>中心 = 现在</strong>，越外越旧，<strong>半径 = log(天数差)</strong>，
+          <strong>色相 = kind</strong>，<strong>亮度 = 重要性</strong>。
+          比平面时间线更「物理」、更接近人脑做记忆模型的隐喻。
+        </p>
+        <p>
+          实现：把 <code>engram_timeline</code> 的列表数据拿来按 t 坐标 log-scale 排到极坐标上。
+          适合发现「很老但很重要的早期决策」「突然密集的新主题」。
+        </p>
+      </div>
+
+      <div class="demo">
+        <div class="demo-toolbar">
+          <div class="seg" id="spiralSeg">
+            <button data-window="30" class="on">30 天</button>
+            <button data-window="180">半年</button>
+            <button data-window="all">全部</button>
+          </div>
+          <span class="meta">滚轮缩放 · 拖拽旋转 · hover 看铭牌</span>
+        </div>
+        <div class="demo-body" style="padding:0">
+          <div class="constellation-wrap" style="grid-template-columns: minmax(0,1fr) 200px; min-height:380px">
+            <div style="position:relative">
+              <svg class="spiral-canvas" id="spiralSvg" viewBox="-300 -190 600 380"></svg>
+            </div>
+            <div class="spiral-side" style="padding:var(--space-4); border-left:1px solid var(--border)">
+              <div class="spiral-stat">
+                <div class="label">最早记忆</div>
+                <div class="value">2025-02-14</div>
+              </div>
+              <div class="spiral-stat">
+                <div class="label">总跨度</div>
+                <div class="value">611 天</div>
+              </div>
+              <div class="spiral-stat">
+                <div class="label">中心 = 现在</div>
+                <div class="value" style="color:var(--brand-2)">2026-10-15</div>
+              </div>
+              <div class="spiral-stat">
+                <div class="label">最远 = 起点</div>
+                <div class="value" style="opacity:0.5">半径 ↑ 天数差</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="demo-hint">滚轮缩放（demo 中点按钮模拟）；hover 单点查看记忆。</div>
+      </div>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- 7. Position: Sidebar vs Settings Tab -->
+    <!-- ============================================ -->
+    <section class="proposal" id="position">
+      <div class="proposal-head">
+        <div class="proposal-num">07</div>
+        <div class="proposal-title">
+          <h2>位置升级 · 设置弹窗 → 顶层侧栏</h2>
+          <div class="tag">
+            <span>入口改造</span><span>改动 ≤ 30 行</span>
+            <span>涉及 client/index.ts</span>
+          </div>
+        </div>
+      </div>
+      <div class="proposal-body">
+        <p>
+          现在 dsh-engram 挂在 <code>settings.section</code>，用户得「打开设置 → 点「记忆库」tab」两步才能进。
+          改挂到 <code>sidebar.panellist</code> + <code>main</code> 后，跟「Hyreal FDE 工作台」平起平坐，
+          <strong>1 击直达 + 顶到主列满宽</strong>（不再被设置弹窗 ~600px 限制）。
+        </p>
+        <p>
+          槽位定义：<code>sidebar.panellist</code> 是 <code>kind: 'list', scope: 'root'</code>，
+          参照 <code>ui-plugin-manager/src/client/index.ts</code> 的「Plugins」入口的双 register 写法。
+        </p>
+      </div>
+
+      <div class="demo">
+        <div class="demo-toolbar">
+          <div class="seg" id="positionSeg">
+            <button data-pos="now" class="on">现在 · 设置 tab</button>
+            <button data-pos="upgrade">升级后 · 顶层侧栏</button>
+            <button data-pos="diff">代码 diff</button>
+          </div>
+          <span class="meta" id="positionMeta">点切换 · 看两种状态对比</span>
+        </div>
+        <div class="demo-body" style="padding:0">
+          <div id="positionStage" style="position:relative; min-height:560px; background:var(--bg-deep); border-radius:var(--radius-card); overflow:hidden">
+
+            <!-- ============== STATE 1: 现在（设置弹窗） ============== -->
+            <div class="pos-state pos-now" data-pos-state="now">
+              <!-- 假侧栏（普通会话页） -->
+              <div class="dsh-shell-sidebar">
+                <div class="dsh-logo-row">
+                  <div class="dsh-logo-mark"></div>
+                  <div class="dsh-logo-text">deepseek<small>HARNESS</small></div>
+                </div>
+                <button class="dsh-sidebar-btn dsh-new"><span>＋</span>新会话</button>
+                <div class="dsh-sidebar-section">
+                  <button class="dsh-sidebar-row"><span>⊕</span>插件</button>
+                  <button class="dsh-sidebar-row"><span>⏱</span>自动化任务</button>
+                  <button class="dsh-sidebar-row"><span>⊟</span>上下文洞察</button>
+                  <button class="dsh-sidebar-row"><span>▦</span>Hyreal FDE 工作台</button>
+                </div>
+                <div class="dsh-sidebar-section" style="opacity:0.45">
+                  <div class="dsh-sidebar-label">工作区</div>
+                </div>
+                <div class="dsh-sidebar-foot">
+                  <button class="dsh-sidebar-row" style="color:var(--fg-tertiary)"><span>⚙</span>设置</button>
+                </div>
+              </div>
+              <!-- 主列:聊天 -->
+              <div class="dsh-shell-main">
+                <div style="padding:24px; color:var(--fg-tertiary); font-size:13px">当前会话（占位）</div>
+              </div>
+              <!-- 设置弹窗浮层 -->
+              <div class="dsh-settings-scrim"></div>
+              <div class="dsh-settings-modal">
+                <div class="dsh-settings-head">
+                  <h3>设置</h3>
+                  <button class="dsh-modal-close">×</button>
+                </div>
+                <div class="dsh-settings-body">
+                  <nav class="dsh-settings-tabs">
+                    <button>通用</button>
+                    <button>模型</button>
+                    <button>插件</button>
+                    <button class="on">记忆库<span class="tab-dot"></span></button>
+                  </nav>
+                  <div class="dsh-settings-content">
+                    <!-- 模拟记忆库的现状视图，挤压在 ~480px 里 -->
+                    <div class="pos-cram">
+                      <div class="pos-cram-header">
+                        <span class="pos-cram-pill">私人 · 项目</span>
+                        <span class="pos-cram-tag" style="background:var(--danger-tint); color:var(--danger)">4</span>
+                      </div>
+                      <div class="pos-cram-tabs">
+                        <button class="on">今日</button><button>陈展</button><button>走廊</button>
+                        <button>日志</button><button>回填</button><button>往事</button>
+                        <button>实体</button><button>信念</button><button>裁决</button>
+                      </div>
+                      <div class="pos-cram-content">
+                        <div class="pos-cram-kpi">
+                          <div class="pos-cram-kpi-label">总记忆</div>
+                          <div class="pos-cram-kpi-value">348</div>
+                        </div>
+                        <div class="pos-cram-row">
+                          <span class="pos-cram-dot" style="background:var(--room-fact)"></span>
+                          <span class="pos-cram-text">事实厅 · 7 / 9 · 桩位 #1–7</span>
+                        </div>
+                        <div class="pos-cram-row">
+                          <span class="pos-cram-dot" style="background:var(--room-preference)"></span>
+                          <span class="pos-cram-text">偏好阁 · 5 / 9 · 桩位 #1–5</span>
+                        </div>
+                        <div class="pos-cram-row" style="opacity:0.5">
+                          <span style="font-size:11px;color:var(--fg-tertiary)">… 9 个视图全部挤压在 480px 内</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="pos-state-label">现状:设置弹窗里的「记忆库」tab · ~600px 受限 · 2 击进入</div>
+            </div>
+
+            <!-- ============== STATE 2: 升级后（顶层侧栏） ============== -->
+            <div class="pos-state pos-upgrade" data-pos-state="upgrade" style="display:none">
+              <div class="dsh-shell-sidebar">
+                <div class="dsh-logo-row">
+                  <div class="dsh-logo-mark"></div>
+                  <div class="dsh-logo-text">deepseek<small>HARNESS</small></div>
+                </div>
+                <button class="dsh-sidebar-btn dsh-new"><span>＋</span>新会话</button>
+                <div class="dsh-sidebar-section">
+                  <button class="dsh-sidebar-row"><span>⊕</span>插件</button>
+                  <button class="dsh-sidebar-row"><span>⏱</span>自动化任务</button>
+                  <button class="dsh-sidebar-row"><span>⊟</span>上下文洞察</button>
+                  <button class="dsh-sidebar-row"><span>▦</span>Hyreal FDE 工作台</button>
+                  <!-- 新增:engram 入口,带颜色徽标 -->
+                  <button class="dsh-sidebar-row dsh-engram on">
+                    <span class="dsh-engram-icon">
+                      <svg viewBox="0 0 24 24"><path d="M3 10 L12 3 L21 10 M5 10 V20 H19 V10 M9 20 V14 H15 V20"/></svg>
+                    </span>
+                    <span>记忆宫殿</span>
+                    <span class="dsh-engram-badge">4</span>
+                  </button>
+                </div>
+                <div class="dsh-sidebar-section" style="opacity:0.45">
+                  <div class="dsh-sidebar-label">工作区</div>
+                </div>
+                <div class="dsh-sidebar-foot">
+                  <button class="dsh-sidebar-row" style="color:var(--fg-tertiary)"><span>⚙</span>设置</button>
+                </div>
+              </div>
+              <!-- 主列:完整宽度的记忆宫殿面板 -->
+              <div class="dsh-shell-main dsh-engram-main">
+                <div class="dsh-engram-topbar">
+                  <div class="dsh-engram-scope">
+                    <button class="on">私人</button>
+                    <button>项目</button>
+                    <button>共享</button>
+                  </div>
+                  <div style="margin-left:auto; display:flex; gap:8px; align-items:center">
+                    <span class="dsh-engram-workspace">design · 跟随 GUI</span>
+                    <button class="dsh-engram-iconbtn"><span style="font-size:14px">⏰</span></button>
+                    <button class="dsh-engram-iconbtn"><span style="font-size:14px">↻</span></button>
+                  </div>
+                </div>
+                <div class="dsh-engram-body">
+                  <!-- 左:今日速览 -->
+                  <div class="dsh-engram-card dsh-engram-hero">
+                    <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:10px">
+                      <h4 style="margin:0; font-size:14px; font-weight:600">今日速览</h4>
+                      <span style="font-size:11px; color:var(--fg-tertiary)">今天 · 2026-10-15</span>
+                    </div>
+                    <div class="dsh-engram-metrics">
+                      <div><span class="lbl">总记忆</span><span class="val">348</span><span class="dlt">↑ 24</span></div>
+                      <div><span class="lbl">开放</span><span class="val">18</span><span class="dlt dn">↑ 6</span></div>
+                      <div><span class="lbl">清晰度</span><span class="val">0.78</span><span class="dlt dn">↓ 0.04</span></div>
+                      <div><span class="lbl">今日到期</span><span class="val" style="color:var(--danger)">4</span><span class="dlt dd">3/5 已答</span></div>
+                    </div>
+                  </div>
+                  <!-- 右:房间目录 -->
+                  <div class="dsh-engram-card dsh-engram-rooms">
+                    <h4 style="margin:0 0 8px; font-size:14px; font-weight:600">房间目录</h4>
+                    <div class="dsh-engram-room-row"><span class="dot" style="background:var(--room-fact)"></span>事实厅<span class="cnt">7/9</span></div>
+                    <div class="dsh-engram-room-row"><span class="dot" style="background:var(--room-preference)"></span>偏好阁<span class="cnt">5/9</span></div>
+                    <div class="dsh-engram-room-row"><span class="dot" style="background:var(--room-decision)"></span>决策堂<span class="cnt">9/9</span></div>
+                    <div class="dsh-engram-room-row" style="opacity:0.7"><span class="dot" style="background:repeating-linear-gradient(45deg,var(--room-decision) 0 3px,transparent 3px 6px)"></span>决策堂-2<span class="cnt">1/9</span></div>
+                    <div class="dsh-engram-room-row"><span class="dot" style="background:var(--room-episode)"></span>往事廊<span class="cnt">3/9</span></div>
+                    <div class="dsh-engram-room-row"><span class="dot" style="background:var(--room-skill)"></span>技法坊<span class="cnt">6/9</span></div>
+                  </div>
+                  <!-- 下:完整标签条 -->
+                  <div class="dsh-engram-card dsh-engram-fulltabs">
+                    <div style="display:flex; gap:12px; border-bottom:1px solid var(--border); padding-bottom:10px">
+                      <button class="dsh-engram-tab on">今日</button>
+                      <button class="dsh-engram-tab">陈展</button>
+                      <button class="dsh-engram-tab">走廊</button>
+                      <button class="dsh-engram-tab">日志</button>
+                      <button class="dsh-engram-tab">回填</button>
+                      <button class="dsh-engram-tab">往事</button>
+                      <button class="dsh-engram-tab">实体</button>
+                      <button class="dsh-engram-tab">信念</button>
+                      <button class="dsh-engram-tab">裁决</button>
+                    </div>
+                    <div style="padding-top:12px; color:var(--fg-tertiary); font-size:12px">
+                      9 个视图横排全部可见 · 1240px 主列满载 · 与 FDE 工作台同层级
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="pos-state-label pos-state-label-good">升级后:顶层侧栏入口 · 满宽主列 · 1 击直达</div>
+            </div>
+
+            <!-- ============== STATE 3: 代码 diff ============== -->
+            <div class="pos-state pos-diff" data-pos-state="diff" style="display:none">
+              <div class="pos-diff-wrap">
+                <div class="pos-diff-head">
+                  <span style="color:var(--danger)">− src/client/index.ts (现状)</span>
+                  <span style="margin:0 16px;color:var(--fg-tertiary)">→</span>
+                  <span style="color:var(--state-success)">+ src/client/index.ts (升级后)</span>
+                </div>
+                <pre class="pos-diff-pre"><span class="dlt">- // 现状:只挂 settings.section</span>
+<span class="dlt">- ctx.slots.inject('settings.section', () => ctx.slots.register({</span>
+<span class="dlt">-   name: 'settings.section',</span>
+<span class="dlt">-   id: 'engram',</span>
+<span class="dlt">-   order: 20,</span>
+<span class="dlt">-   label: () => t('nav'),</span>
+<span class="dlt">-   locale: NS,</span>
+<span class="dlt">- }, bindEngramSection({ workspaces, sessions })))</span>
+<span class="add">+ // 升级后:挂 main + sidebar.panellist 双槽位</span>
+<span class="add">+ import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'</span>
+<span class="add">+ import { EngramPanelIcon } from './EngramPanelIcon.tsx'</span>
+<span class="add">+ </span>
+<span class="add">+ export const PANEL_ID = 'engram' as MainPanelId</span>
+<span class="add">+ </span>
+<span class="add">+ // 1. 主列内容</span>
+<span class="add">+ ctx.slots.inject('main', () => ctx.slots.register({</span>
+<span class="add">+   name: 'main', key: PANEL_ID, locale: NS,</span>
+<span class="add">+ }, bindEngramSection({ workspaces, sessions })))</span>
+<span class="add">+ </span>
+<span class="add">+ // 2. 侧栏入口(18px 线性图标)</span>
+<span class="add">+ ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({</span>
+<span class="add">+   name: 'sidebar.panellist', id: PANEL_ID,</span>
+<span class="add">+   order: 50,  // 「上下文洞察」「Hyreal FDE」之后</span>
+<span class="add">+   label: () => t('nav'), locale: NS,</span>
+<span class="add">+ }, EngramPanelIcon))</span>
+                </pre>
+                <div class="pos-diff-foot">
+                  净改动: <strong>+ 14 行</strong>, <span style="color:var(--danger)">− 7 行</span> · EngramPanel.tsx / css / 服务端路由不动
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+        <div class="demo-hint">三个 tab 切换:现状 / 升级后 / 代码 diff · 直观感受空间与入口层级的变化。</div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      每个 demo 都用了独立数据集模拟 · 不依赖服务端 · 鼠标 hover / click / drag 都有效
+    </footer>
+
+  </main>
+</div>
+
+<div class="heatmap-tooltip" id="heatmapTooltip"></div>
+
+<script>
+/* ============================================================
+   交互脚本
+   ============================================================ */
+
+// ----- 提前声明所有 let,避免 TDZ -----
+const themeBtn = document.getElementById('themeBtn');
+const themeLabel = document.getElementById('themeLabel');
+let dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+themeBtn.addEventListener('click', () => { dark = !dark; applyTheme(); });
+function applyTheme() {
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  themeLabel.textContent = dark ? '暗' : '亮';
+  drawHeatmap();
+  drawConstellation(currentFilter);
+  drawSpiral();
+}
+
+const motionBtn = document.getElementById('motionBtn');
+const motionLabel = document.getElementById('motionLabel');
+let reduce = false;
+motionBtn.addEventListener('click', () => { reduce = !reduce; motionLabel.textContent = reduce ? '动效关' : '动效开'; document.documentElement.setAttribute('data-reduce-motion', reduce); });
+
+// ----- TOC active state -----
+const tocLinks = document.querySelectorAll('.toc a');
+const tocTargets = Array.from(tocLinks).map(a => document.querySelector(a.getAttribute('href')));
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      const id = '#' + e.target.id;
+      tocLinks.forEach(a => a.classList.toggle('active', a.getAttribute('href') === id));
+    }
+  });
+}, { rootMargin: '-30% 0px -55% 0px' });
+tocTargets.forEach(t => t && obs.observe(t));
+
+/* ============================================================
+   1. Constellation
+   ============================================================ */
+const constellationSvg = document.getElementById('constellationSvg');
+const constellationPop = document.createElement('div');
+constellationPop.className = 'constellation-pop';
+constellationPop.innerHTML = '<b></b><span></span>';
+document.body.appendChild(constellationPop);
+
+const constellationSeg = document.getElementById('constellationSeg');
+const constellationPopCard = document.getElementById('constellationPop');
+
+const ROOMS = {
+  fact:        { color: 'var(--room-fact)',        count: 32, names: ['TS strict 开启', '用户时区 CST', '负责 dsh-engram', 'macOS 25.5', 'pnpm 11', 'node 20.19', '每月 1 号备份', '常用 vim', 'PostgreSQL 16', 'commit 中文'] },
+  preference:  { color: 'var(--room-preference)',  count: 28, names: ['晨间不接会议', '爱热茶不咖啡', '写作先大纲', '回复不超过 5 行', '周末不处理工作 IM', '周二不开晨会', '代码注释中文', '听白噪音', '不接冷不丁任务', '晚上 9 点下线'] },
+  decision:    { color: 'var(--room-decision)',    count: 24, names: ['用 pnpm 不用 npm', 'PR 自审再请审', 'schema 升级前评估', '迁移用 migration', 'hook 失败不重试', '红线 = 用户隐私', 'token 预算硬顶', '辅助 LLM 路由独立', '不持久化原始 prompt', '明文密钥走掩码'] },
+  episode:     { color: 'var(--room-episode)',     count: 41, names: ['2026-09 启动 v0.7', '2026-07 解决 migrate 撞库', '2026-05 加 evidence门', '2026-04 接入 Jev', '2026-03 加实体词典', '2026-02 v0.7.0 上线', '2025-12 启动 engram 项目', '2025-11 调通 sqlite-vec', '2025-10 学 LoCoMo', '2025-09 设计 palace IA'] },
+  skill:       { color: 'var(--room-skill)',       count: 35, names: ['FTS5 中文 2-gram', 'sqlite-vec q8', 'RRF 融合', 'SM-2 调度', 'force-directed 布局', 'lucide-react', 'useReducer 状态机', 'react-hook-form', '乐观锁', 'LRU cache'] }
+};
+
+let stars = [];
+let currentFilter = 'all';
+const constellationSide = constellationSvg.closest('.constellation-wrap').querySelector('.constellation-side .pop');
+
+function generateStars(filter) {
+  stars = [];
+  const kinds = filter === 'all' ? Object.keys(ROOMS) : [filter];
+  let idx = 0;
+  kinds.forEach((kind, ki) => {
+    const r = ROOMS[kind];
+    const cx = 120 + (ki % 3) * 200 + (Math.random() - 0.5) * 30;
+    const cy = 100 + Math.floor(ki / 3) * 150 + (Math.random() - 0.5) * 30;
+    const n = filter === 'all' ? Math.min(r.count, 22) : Math.min(r.count, 24);
+    for (let i = 0; i < n; i++) {
+      const angle = (i / n) * Math.PI * 2 + ki * 0.7;
+      const radius = 18 + Math.random() * 55;
+      stars.push({
+        id: `${kind}-${i}`,
+        kind,
+        name: r.names[i % r.names.length] + (i > r.names.length - 1 ? ` ${Math.floor(i / r.names.length) + 1}` : ''),
+        importance: 0.3 + Math.random() * 0.7,
+        frequency: 0.2 + Math.random() * 0.8,
+        x: cx + Math.cos(angle) * radius,
+        y: cy + Math.sin(angle) * radius,
+        color: r.color,
+        cx, cy
+      });
+      idx++;
+    }
+  });
+}
+
+function drawConstellation(filter = 'all') {
+  currentFilter = filter;
+  if (stars.length === 0 || filter !== currentFilter || true) {
+    generateStars(filter);
+  }
+  constellationSvg.innerHTML = '';
+  const ns = 'http://www.w3.org/2000/svg';
+  // edges (only in 'all')
+  if (filter === 'all') {
+    stars.forEach((s, i) => {
+      if (i % 4 !== 0) return;
+      // connect to nearest other kind
+      let nearest = null, best = Infinity;
+      stars.forEach((t, j) => {
+        if (j === i || t.kind === s.kind) return;
+        const dx = s.x - t.x, dy = s.y - t.y;
+        const d = dx * dx + dy * dy;
+        if (d < best && d < 60 * 60) { best = d; nearest = t; }
+      });
+      if (nearest) {
+        const ln = document.createElementNS(ns, 'line');
+        ln.setAttribute('x1', s.x); ln.setAttribute('y1', s.y);
+        ln.setAttribute('x2', nearest.x); ln.setAttribute('y2', nearest.y);
+        ln.setAttribute('stroke', 'var(--border-l2)');
+        ln.setAttribute('stroke-width', '0.5');
+        ln.setAttribute('opacity', '0.3');
+        constellationSvg.appendChild(ln);
+      }
+    });
+  }
+  // stars
+  stars.forEach((s, i) => {
+    const c = document.createElementNS(ns, 'circle');
+    c.setAttribute('cx', s.x);
+    c.setAttribute('cy', s.y);
+    const r = 2 + s.importance * 6;
+    c.setAttribute('r', r);
+    c.setAttribute('fill', s.color);
+    c.setAttribute('opacity', 0.4 + s.frequency * 0.6);
+    c.style.transition = 'all 220ms cubic-bezier(0.32, 0.72, 0, 1)';
+    c.style.cursor = 'pointer';
+    c.style.animation = `cardIn 360ms cubic-bezier(0.32, 0.72, 0, 1) ${i * 4}ms both`;
+    c.addEventListener('mouseenter', (e) => {
+      c.setAttribute('r', r * 1.8);
+      c.setAttribute('opacity', 1);
+      constellationPop.classList.add('show');
+      constellationPop.querySelector('b').textContent = `${s.kind.toUpperCase()} · ${(s.importance * 100).toFixed(0)} 分`;
+      constellationPop.querySelector('span').textContent = s.name;
+      const rect = constellationSvg.getBoundingClientRect();
+      constellationPop.style.left = (rect.left + s.x * (rect.width / 600) + 12) + 'px';
+      constellationPop.style.top = (rect.top + s.y * (rect.height / 460) - 8) + 'px';
+      constellationSide.innerHTML = `<b>${s.kind.toUpperCase()} · ${(s.importance * 100).toFixed(0)} 分</b><span class="small">${s.name}</span><span class="small" style="margin-top:6px">访问频率 ${(s.frequency * 100).toFixed(0)}%</span>`;
+    });
+    c.addEventListener('mouseleave', () => {
+      c.setAttribute('r', r);
+      c.setAttribute('opacity', 0.3 + s.frequency * 0.7);
+      constellationPop.classList.remove('show');
+    });
+    constellationSvg.appendChild(c);
+  });
+}
+
+constellationSeg.addEventListener('click', (e) => {
+  if (e.target.tagName !== 'BUTTON') return;
+  constellationSeg.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+  e.target.classList.add('on');
+  drawConstellation(e.target.dataset.filter);
+});
+drawConstellation('all');
+
+/* ============================================================
+   2. Heatmap
+   ============================================================ */
+const heatmapGrid = document.getElementById('heatmapGrid');
+const heatmapTooltip = document.getElementById('heatmapTooltip');
+const heatmapRange = document.getElementById('heatmapRange');
+const heatmapMeta = document.getElementById('heatmapMeta');
+
+function genHeatmapData(days) {
+  // generate plausible pattern: weekdays higher, with peaks
+  const data = [];
+  const today = new Date('2026-10-15');
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(today); d.setDate(d.getDate() - i);
+    const dow = d.getDay();
+    let v = Math.random() * 4;
+    if (dow >= 1 && dow <= 5) v += 2 + Math.random() * 3;
+    if (dow === 0 || dow === 6) v += Math.random() * 1;
+    // random peaks
+    if (Math.random() < 0.04) v += 4 + Math.random() * 6;
+    // silence periods
+    if (Math.random() < 0.08) v *= 0.2;
+    v = Math.min(v, 12);
+    data.push({ date: d, count: Math.round(v) });
+  }
+  return data;
+}
+
+let heatmapDays = 90;
+let heatmapData = [];
+
+function drawHeatmap() {
+  heatmapGrid.innerHTML = '';
+  heatmapData = genHeatmapData(heatmapDays);
+  // find max
+  const max = Math.max(...heatmapData.map(d => d.count), 1);
+  heatmapData.forEach((d, i) => {
+    const cell = document.createElement('div');
+    cell.className = 'heatmap-cell';
+    const level = d.count === 0 ? 0 : Math.min(4, Math.ceil((d.count / max) * 4));
+    cell.dataset.l = level;
+    cell.dataset.date = d.date.toISOString().slice(0, 10);
+    cell.dataset.count = d.count;
+    heatmapGrid.appendChild(cell);
+  });
+  heatmapMeta.textContent = `${heatmapDays} cells · peak ${max}/day`;
+  const first = heatmapData[0].date.toISOString().slice(0, 10);
+  const last = heatmapData[heatmapData.length - 1].date.toISOString().slice(0, 10);
+  heatmapRange.textContent = `${first} → ${last}`;
+}
+
+heatmapGrid.addEventListener('mouseover', (e) => {
+  if (!e.target.classList.contains('heatmap-cell')) return;
+  heatmapTooltip.innerHTML = `<b>${e.target.dataset.date}</b> · ${e.target.dataset.count} 条写入`;
+  heatmapTooltip.classList.add('show');
+});
+heatmapGrid.addEventListener('mousemove', (e) => {
+  heatmapTooltip.style.left = (e.clientX + 12) + 'px';
+  heatmapTooltip.style.top = (e.clientY + 12) + 'px';
+});
+heatmapGrid.addEventListener('mouseleave', () => heatmapTooltip.classList.remove('show'));
+
+const heatmapSeg = document.getElementById('heatmapSeg');
+heatmapSeg.addEventListener('click', (e) => {
+  if (e.target.tagName !== 'BUTTON') return;
+  heatmapSeg.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+  e.target.classList.add('on');
+  heatmapDays = parseInt(e.target.dataset.range);
+  drawHeatmap();
+});
+drawHeatmap();
+
+/* ============================================================
+   3. Nebula
+   ============================================================ */
+const nebulaSvg = document.getElementById('nebulaSvg');
+const nebulaSeg = document.getElementById('nebulaSeg');
+
+const nebulaEvidence = [
+  { angle: -1.4, dist: 110, label: 'tsconfig 严格模式，2026-09' },
+  { angle: -0.4, dist: 130, label: '核心模块显式返回类型' },
+  { angle: 0.5, dist: 100, label: '拒绝 ts-pattern：可选解构' },
+  { angle: 1.4, dist: 140, label: '测试覆盖核心路径' },
+  { angle: 2.3, dist: 115, label: '拒绝装饰器 sugar' },
+  { angle: 3.0, dist: 95, label: '显式 import 不混 barrel' }
+];
+
+function drawNebula() {
+  nebulaSvg.innerHTML = '';
+  const ns = 'http://www.w3.org/2000/svg';
+  // gradient def
+  const defs = document.createElementNS(ns, 'defs');
+  defs.innerHTML = `
+    <radialGradient id="starGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="var(--brand-1)" stop-opacity="0.9"/>
+      <stop offset="60%" stop-color="var(--brand-2)" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="var(--brand-2)" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="planetGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="var(--brand-3)" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="var(--brand-3)" stop-opacity="0"/>
+    </radialGradient>
+  `;
+  nebulaSvg.appendChild(defs);
+
+  // orbit ring
+  const orbit = document.createElementNS(ns, 'circle');
+  orbit.setAttribute('cx', 0); orbit.setAttribute('cy', 0);
+  orbit.setAttribute('r', 120);
+  orbit.setAttribute('fill', 'none');
+  orbit.setAttribute('stroke', 'var(--border)');
+  orbit.setAttribute('stroke-dasharray', '3 3');
+  nebulaSvg.appendChild(orbit);
+
+  // evidence-to-belief lines
+  nebulaEvidence.forEach(e => {
+    const x = Math.cos(e.angle) * e.dist;
+    const y = Math.sin(e.angle) * e.dist;
+    const ln = document.createElementNS(ns, 'line');
+    ln.setAttribute('x1', 0); ln.setAttribute('y1', 0);
+    ln.setAttribute('x2', x); ln.setAttribute('y2', y);
+    ln.setAttribute('stroke', 'var(--brand-1)');
+    ln.setAttribute('stroke-width', '1.2');
+    ln.setAttribute('opacity', '0.5');
+    ln.classList.add('nebula-line');
+    nebulaSvg.appendChild(ln);
+  });
+
+  // belief core (big glow)
+  const glow = document.createElementNS(ns, 'circle');
+  glow.setAttribute('cx', 0); glow.setAttribute('cy', 0);
+  glow.setAttribute('r', 50);
+  glow.setAttribute('fill', 'url(#starGlow)');
+  nebulaSvg.appendChild(glow);
+
+  // belief core (point)
+  const core = document.createElementNS(ns, 'circle');
+  core.setAttribute('cx', 0); core.setAttribute('cy', 0);
+  core.setAttribute('r', 18);
+  core.setAttribute('fill', 'var(--brand-1)');
+  core.style.cursor = 'pointer';
+  nebulaSvg.appendChild(core);
+
+  // belief text
+  const txt = document.createElementNS(ns, 'text');
+  txt.setAttribute('x', 0); txt.setAttribute('y', -28);
+  txt.setAttribute('text-anchor', 'middle');
+  txt.setAttribute('fill', 'var(--fg)');
+  txt.setAttribute('font-size', '11');
+  txt.setAttribute('font-weight', '600');
+  txt.textContent = 'TS 工程风格';
+  nebulaSvg.appendChild(txt);
+
+  const sub = document.createElementNS(ns, 'text');
+  sub.setAttribute('x', 0); sub.setAttribute('y', -14);
+  sub.setAttribute('text-anchor', 'middle');
+  sub.setAttribute('fill', 'var(--fg-tertiary)');
+  sub.setAttribute('font-size', '9');
+  sub.textContent = '6 证据 · 成立';
+  nebulaSvg.appendChild(sub);
+
+  // evidence planets
+  nebulaEvidence.forEach((e, i) => {
+    const x = Math.cos(e.angle) * e.dist;
+    const y = Math.sin(e.angle) * e.dist;
+    const pg = document.createElementNS(ns, 'circle');
+    pg.setAttribute('cx', x); pg.setAttribute('cy', y);
+    pg.setAttribute('r', 14);
+    pg.setAttribute('fill', 'url(#planetGlow)');
+    pg.style.opacity = '0.6';
+    nebulaSvg.appendChild(pg);
+
+    const p = document.createElementNS(ns, 'circle');
+    p.setAttribute('cx', x); p.setAttribute('cy', y);
+    p.setAttribute('r', 5 + Math.random() * 2);
+    p.setAttribute('fill', 'var(--brand-3)');
+    p.setAttribute('opacity', '0.95');
+    p.style.cursor = 'pointer';
+    p.style.transition = 'all 220ms cubic-bezier(0.32, 0.72, 0, 1)';
+    p.addEventListener('mouseenter', () => {
+      p.setAttribute('r', '8');
+      nebulaSvg.querySelectorAll('.nebula-line').forEach((ln, j) => {
+        if (j === i) ln.setAttribute('stroke', 'var(--brand-2)');
+        ln.setAttribute('stroke-width', '2');
+        ln.setAttribute('opacity', '1');
+      });
+    });
+    p.addEventListener('mouseleave', () => {
+      p.setAttribute('r', '5');
+      nebulaSvg.querySelectorAll('.nebula-line').forEach(ln => {
+        ln.setAttribute('stroke', 'var(--brand-1)');
+        ln.setAttribute('stroke-width', '1.2');
+        ln.setAttribute('opacity', '0.5');
+      });
+    });
+    nebulaSvg.appendChild(p);
+  });
+
+  // drag rotate
+  let isDown = false, startX = 0, startY = 0, rot = 0;
+  nebulaSvg.addEventListener('mousedown', (e) => {
+    isDown = true;
+    startX = e.clientX; startY = e.clientY;
+    rot = nebulaSvg.style.transform.match(/-?\d+/) ? parseInt(nebulaSvg.style.transform.match(/-?\d+/)[0]) : 0;
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!isDown) return;
+    const dx = e.clientX - startX;
+    nebulaSvg.style.transform = `rotate(${rot + dx / 2}deg)`;
+    nebulaSvg.style.transformOrigin = 'center';
+  });
+  window.addEventListener('mouseup', () => { isDown = false; });
+}
+drawNebula();
+nebulaSeg.addEventListener('click', (e) => {
+  if (e.target.tagName !== 'BUTTON') return;
+  nebulaSeg.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+  e.target.classList.add('on');
+  // visually re-draw with different counts could go here
+});
+
+/* ============================================================
+   4. Floorplan
+   ============================================================ */
+const floorplanSvg = document.getElementById('floorplanSvg');
+const floorplanSeg = document.getElementById('floorplanSeg');
+
+function drawFloorplan() {
+  floorplanSvg.innerHTML = '';
+  const ns = 'http://www.w3.org/2000/svg';
+  // outer wall
+  const outer = document.createElementNS(ns, 'rect');
+  outer.setAttribute('x', 30); outer.setAttribute('y', 30);
+  outer.setAttribute('width', 660); outer.setAttribute('height', 260);
+  outer.setAttribute('rx', 12);
+  outer.setAttribute('fill', 'var(--bg-card)');
+  outer.setAttribute('stroke', 'var(--border-l2)');
+  outer.setAttribute('stroke-width', 1.5);
+  floorplanSvg.appendChild(outer);
+
+  // central hallway
+  const hall = document.createElementNS(ns, 'rect');
+  hall.setAttribute('x', 350); hall.setAttribute('y', 90);
+  hall.setAttribute('width', 20); hall.setAttribute('height', 200);
+  hall.setAttribute('rx', 6);
+  hall.setAttribute('fill', 'color-mix(in srgb, var(--brand-1) 8%, var(--bg-layer))');
+  hall.setAttribute('stroke', 'color-mix(in srgb, var(--brand-1) 30%, var(--border))');
+  hall.setAttribute('stroke-dasharray', '4 2');
+  hall.setAttribute('stroke-width', 1);
+  floorplanSvg.appendChild(hall);
+  const hallLabel = document.createElementNS(ns, 'text');
+  hallLabel.setAttribute('x', 360); hallLabel.setAttribute('y', 195);
+  hallLabel.setAttribute('text-anchor', 'middle');
+  hallLabel.setAttribute('fill', 'var(--brand-2)');
+  hallLabel.setAttribute('font-size', '10');
+  hallLabel.setAttribute('font-weight', '600');
+  hallLabel.setAttribute('transform', 'rotate(-90, 360, 195)');
+  hallLabel.textContent = '走廊 · 主通道';
+  floorplanSvg.appendChild(hallLabel);
+
+  // rooms
+  const rooms = [
+    { x: 50,  y: 50,  w: 280, h: 110, name: '事实厅',  color: 'var(--room-fact)',        count: '7 / 9', slots: [1,2,3,4,5,6,7] },
+    { x: 50,  y: 170, w: 280, h: 110, name: '偏好阁',  color: 'var(--room-preference)',  count: '5 / 9', slots: [1,2,3,4,5] },
+    { x: 390, y: 50,  w: 280, h: 110, name: '决策堂',  color: 'var(--room-decision)',    count: '9 / 9', slots: [1,2,3,4,5,6,7,8,9] },
+    { x: 390, y: 170, w: 280, h: 50,  name: '决策堂-2', color: 'var(--room-decision)',    count: '1 / 9', slots: [1], pattern: true },
+    { x: 390, y: 230, w: 130, h: 50,  name: '往事廊',  color: 'var(--room-episode)',     count: '3 / 9', slots: [1,2,3] },
+    { x: 540, y: 230, w: 130, h: 50,  name: '技法坊',  color: 'var(--room-skill)',       count: '6 / 9', slots: [1,2,3,4,5,6] }
+  ];
+
+  rooms.forEach((r, idx) => {
+    const g = document.createElementNS(ns, 'g');
+    g.style.cursor = 'pointer';
+    g.style.transition = 'all 220ms cubic-bezier(0.32, 0.72, 0, 1)';
+    const rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('x', r.x); rect.setAttribute('y', r.y);
+    rect.setAttribute('width', r.w); rect.setAttribute('height', r.h);
+    rect.setAttribute('rx', 8);
+    if (r.pattern) {
+      rect.setAttribute('fill', `repeating-linear-gradient(45deg, color-mix(in srgb, ${r.color} 12%, var(--bg-layer)) 0 4px, var(--bg-layer) 4px 8px)`);
+    } else {
+      rect.setAttribute('fill', `color-mix(in srgb, ${r.color} 12%, var(--bg-layer))`);
+    }
+    rect.setAttribute('stroke', `color-mix(in srgb, ${r.color} 60%, var(--border-l2))`);
+    rect.setAttribute('stroke-width', 1.5);
+    g.appendChild(rect);
+
+    // room name
+    const label = document.createElementNS(ns, 'text');
+    label.setAttribute('x', r.x + 10); label.setAttribute('y', r.y + 18);
+    label.setAttribute('fill', 'var(--fg)');
+    label.setAttribute('font-size', '11');
+    label.setAttribute('font-weight', '600');
+    label.textContent = r.name;
+    g.appendChild(label);
+
+    // room count
+    const cnt = document.createElementNS(ns, 'text');
+    cnt.setAttribute('x', r.x + r.w - 10); cnt.setAttribute('y', r.y + 18);
+    cnt.setAttribute('text-anchor', 'end');
+    cnt.setAttribute('fill', 'var(--fg-tertiary)');
+    cnt.setAttribute('font-size', '10');
+    cnt.setAttribute('font-variant-numeric', 'tabular-nums');
+    cnt.textContent = r.count;
+    g.appendChild(cnt);
+
+    // slots
+    const slotW = 14, slotGap = 4;
+    const slotsTotalW = r.slots.length * (slotW + slotGap) - slotGap;
+    const startX = r.x + (r.w - slotsTotalW) / 2;
+    r.slots.forEach((s, i) => {
+      const sx = startX + i * (slotW + slotGap);
+      const sy = r.y + r.h - 22;
+      const slot = document.createElementNS(ns, 'rect');
+      slot.setAttribute('x', sx); slot.setAttribute('y', sy);
+      slot.setAttribute('width', slotW); slot.setAttribute('height', slotW);
+      slot.setAttribute('rx', 2);
+      slot.setAttribute('fill', r.color);
+      slot.setAttribute('opacity', 0.65);
+      g.appendChild(slot);
+
+      // slot number
+      const num = document.createElementNS(ns, 'text');
+      num.setAttribute('x', sx + slotW / 2); num.setAttribute('y', sy + slotW - 3);
+      num.setAttribute('text-anchor', 'middle');
+      num.setAttribute('fill', 'var(--fg)');
+      num.setAttribute('font-size', '8');
+      num.setAttribute('font-weight', '600');
+      num.setAttribute('opacity', 0.8);
+      num.textContent = s;
+      g.appendChild(num);
+    });
+
+    g.addEventListener('mouseenter', () => {
+      rect.setAttribute('stroke-width', 2.5);
+      rect.setAttribute('opacity', 1);
+    });
+    g.addEventListener('mouseleave', () => {
+      rect.setAttribute('stroke-width', 1.5);
+      rect.setAttribute('opacity', 0.92);
+    });
+
+    floorplanSvg.appendChild(g);
+  });
+
+  // tour route dashed line
+  const tour = document.createElementNS(ns, 'path');
+  tour.setAttribute('d', 'M 100 80 L 330 80 L 360 100 L 100 100 L 100 200 L 330 200 L 360 220 L 420 220 L 420 80 L 660 80 M 540 250 L 660 250');
+  tour.setAttribute('fill', 'none');
+  tour.setAttribute('stroke', 'var(--brand-2)');
+  tour.setAttribute('stroke-width', 1.5);
+  tour.setAttribute('stroke-dasharray', '6 4');
+  tour.setAttribute('opacity', 0.45);
+  floorplanSvg.appendChild(tour);
+}
+drawFloorplan();
+floorplanSeg.addEventListener('click', (e) => {
+  if (e.target.tagName !== 'BUTTON') return;
+  floorplanSeg.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+  e.target.classList.add('on');
+});
+
+/* ============================================================
+   5. Sparkline Hero
+   ============================================================ */
+function sparkline(svgId, data, color = 'var(--brand-1)', reverse = false) {
+  const svg = document.getElementById(svgId);
+  if (!svg) return;
+  svg.innerHTML = '';
+  const ns = 'http://www.w3.org/2000/svg';
+  const w = 120, h = 28;
+  const max = Math.max(...data), min = Math.min(...data);
+  const range = Math.max(max - min, 1);
+  const step = w / (data.length - 1);
+  const pts = data.map((v, i) => {
+    const x = i * step;
+    const y = h - 2 - ((v - min) / range) * (h - 4);
+    return `${x},${y}`;
+  }).join(' ');
+  // area fill
+  const area = document.createElementNS(ns, 'polyline');
+  area.setAttribute('points', `0,${h} ${pts} ${w},${h}`);
+  area.setAttribute('fill', `color-mix(in srgb, ${color} 18%, transparent)`);
+  area.setAttribute('stroke', 'none');
+  svg.appendChild(area);
+  // line
+  const line = document.createElementNS(ns, 'polyline');
+  line.setAttribute('points', pts);
+  line.setAttribute('fill', 'none');
+  line.setAttribute('stroke', color);
+  line.setAttribute('stroke-width', '1.5');
+  line.setAttribute('stroke-linejoin', 'round');
+  line.setAttribute('stroke-linecap', 'round');
+  svg.appendChild(line);
+  // last dot
+  const lastX = (data.length - 1) * step;
+  const lastY = h - 2 - ((data[data.length - 1] - min) / range) * (h - 4);
+  const dot = document.createElementNS(ns, 'circle');
+  dot.setAttribute('cx', lastX); dot.setAttribute('cy', lastY);
+  dot.setAttribute('r', '2');
+  dot.setAttribute('fill', color);
+  svg.appendChild(dot);
+}
+
+function genSparkData(seed, n = 30, trend = 0) {
+  const data = [];
+  let v = 30 + Math.random() * 20;
+  for (let i = 0; i < n; i++) {
+    v += (Math.random() - 0.45 + trend / n) * 8;
+    v = Math.max(5, Math.min(95, v));
+    data.push(Math.round(v));
+  }
+  return data;
+}
+sparkline('sparkTotal', genSparkData(1, 30, 8), 'var(--brand-1)');
+sparkline('sparkOpen', genSparkData(2, 30, 4), 'var(--state-warn)');
+sparkline('sparkClarity', genSparkData(3, 30, -3), 'var(--room-preference)');
+sparkline('sparkDue', genSparkData(4, 30, 0), 'var(--state-error)');
+
+// ring controls
+const healthArc = document.getElementById('healthArc');
+const healthValue = document.getElementById('healthValue');
+const ringControls = document.getElementById('ringControls');
+const ringSeg = document.getElementById('ringSeg');
+
+const HEALTH = {
+  excellent: { score: 92, label: '优', dash: 24, color: 'var(--brand-grad-line)' },
+  good:      { score: 76, label: '良', dash: 73, color: 'var(--brand-grad-line)' },
+  warn:      { score: 41, label: '差', dash: 178, color: 'var(--state-error)' }
+};
+function applyHealth(key) {
+  const h = HEALTH[key];
+  healthArc.setAttribute('stroke-dashoffset', h.dash);
+  healthArc.setAttribute('stroke', h.color);
+  healthValue.textContent = h.score;
+}
+ringControls.addEventListener('click', (e) => {
+  if (e.target.tagName !== 'BUTTON') return;
+  ringControls.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+  e.target.classList.add('on');
+  applyHealth(e.target.dataset.health);
+});
+ringSeg.addEventListener('click', (e) => {
+  if (e.target.tagName !== 'BUTTON') return;
+  ringSeg.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+  e.target.classList.add('on');
+  applyHealth(e.target.dataset.health);
+});
+
+/* ============================================================
+   6. Spiral
+   ============================================================ */
+const spiralSvg = document.getElementById('spiralSvg');
+const spiralSeg = document.getElementById('spiralSeg');
+
+function drawSpiral() {
+  spiralSvg.innerHTML = '';
+  const ns = 'http://www.w3.org/2000/svg';
+  // center = today, spiral outward = older
+  const today = new Date('2026-10-15').getTime();
+  const earliest = new Date('2025-02-14').getTime();
+  const totalDays = (today - earliest) / (1000 * 60 * 60 * 24);
+
+  const mems = [];
+  // generate 160 memories
+  for (let i = 0; i < 160; i++) {
+    const dayOffset = Math.random() * totalDays;
+    const t = today - dayOffset * (1000 * 60 * 60 * 24);
+    const radius = Math.log(1 + dayOffset) * 25;
+    const angle = dayOffset * 0.55;
+    const kinds = ['fact', 'preference', 'decision', 'episode', 'skill'];
+    const kind = kinds[Math.floor(Math.random() * kinds.length)];
+    mems.push({ x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, r: 1 + Math.random() * 3.5, kind, importance: Math.random() });
+  }
+
+  // spiral arm guide
+  for (let r = 0; r < 280; r += 2) {
+    const angle = r / 25 * 0.55;
+    const dot = document.createElementNS(ns, 'circle');
+    dot.setAttribute('cx', Math.cos(angle) * r);
+    dot.setAttribute('cy', Math.sin(angle) * r);
+    dot.setAttribute('r', '0.5');
+    dot.setAttribute('fill', 'var(--border-l2)');
+    dot.setAttribute('opacity', '0.4');
+    spiralSvg.appendChild(dot);
+  }
+
+  // today center
+  const center = document.createElementNS(ns, 'circle');
+  center.setAttribute('cx', 0); center.setAttribute('cy', 0);
+  center.setAttribute('r', '4');
+  center.setAttribute('fill', 'var(--brand-2)');
+  spiralSvg.appendChild(center);
+  const ct = document.createElementNS(ns, 'text');
+  ct.setAttribute('x', 8); ct.setAttribute('y', 4);
+  ct.setAttribute('fill', 'var(--brand-2)');
+  ct.setAttribute('font-size', '10');
+  ct.setAttribute('font-weight', '600');
+  ct.textContent = '现在';
+  spiralSvg.appendChild(ct);
+
+  // memories
+  mems.forEach((m, i) => {
+    const c = document.createElementNS(ns, 'circle');
+    c.setAttribute('cx', m.x); c.setAttribute('cy', m.y);
+    c.setAttribute('r', m.r);
+    c.setAttribute('fill', `var(--room-${m.kind})`);
+    c.setAttribute('opacity', 0.4 + m.importance * 0.6);
+    c.style.cursor = 'pointer';
+    c.style.transition = 'all 220ms cubic-bezier(0.32, 0.72, 0, 1)';
+    c.style.animation = `cardIn 360ms cubic-bezier(0.32, 0.72, 0, 1) ${i * 3}ms both`;
+    c.addEventListener('mouseenter', () => {
+      c.setAttribute('r', m.r * 2);
+    });
+    c.addEventListener('mouseleave', () => {
+      c.setAttribute('r', m.r);
+    });
+    spiralSvg.appendChild(c);
+  });
+}
+drawSpiral();
+
+spiralSeg.addEventListener('click', (e) => {
+  if (e.target.tagName !== 'BUTTON') return;
+  spiralSeg.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+  e.target.classList.add('on');
+  drawSpiral();
+});
+
+// 触发主题初始化（此时 let 全部已就位）
+applyTheme();
+
+/* ============================================================
+   7. Position: Sidebar vs Settings Tab
+   ============================================================ */
+const positionSeg = document.getElementById('positionSeg');
+positionSeg.addEventListener('click', (e) => {
+  if (e.target.tagName !== 'BUTTON') return;
+  positionSeg.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+  e.target.classList.add('on');
+  const pos = e.target.dataset.pos;
+  document.querySelectorAll('.pos-state').forEach(s => {
+    s.style.display = s.dataset.posState === pos ? 'flex' : 'none';
+  });
+  const labels = { now: '现状:设置弹窗里的「记忆库」tab · ~600px 受限 · 2 击进入', upgrade: '升级后:顶层侧栏入口 · 满宽主列 · 1 击直达', diff: '代码 diff · 仅改 client/index.ts 一个文件' };
+  document.getElementById('positionMeta').textContent = labels[pos];
+});
+
+</script>
+</body>
+</html>

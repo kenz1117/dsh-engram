@@ -1,17 +1,19 @@
 /**
- * 走廊鸟瞰图：中度版力导向 + 拖拽 + hover 邻居高亮 + 响应式 viewBox。
+ * 走廊鸟瞰：同一座宫殿的两种视图——「建筑平面图」与「关系图」。
  *
  * 设计要点：
- * 1. 冷却调度 alpha 1.0 → 0.1（240 tick），保证收敛不抖。
- * 2. drag 节点：mousedown 抓住 → mousemove 改写 vx/vy 为 0（吸附鼠标）→ mouseup 释放。
- * 3. hover 节点：该节点 + 一跳邻居 + 关联边高亮，其他 0.15 透明。
- * 4. tooltip 显示完整铭牌（沿用 SVG <title> 标签 + 自定义 <foreignObject> HTML tooltip 增强可读性）。
- * 5. viewBox 自适应容器宽度（preserveAspectRatio="xMidYMid meet"），固定 560x320 逻辑坐标。
+ * 1. 两种视图共用同一套建筑几何（PLAN 尺寸、房间排布、外墙、中央主通道），
+ *    平面图看「谁住在哪间房 + 容量」，关系图看「谁住在哪间房 + 谁和谁有关系」。
+ *    房间位置在两个视图间保持一致（位置当索引），切换标签不重排。
+ * 2. 关系图的节点锚在房间里（房 = kind），不再是满屏乱飞的力导向孤点：
+ *    房内做一次确定性的排斥松弛（无随机、无 rAF 抖动），房与房之间画关系边。
+ * 3. 节点不常驻文字标签（房间小、点多，标签必糊），hover 出提示卡；
+ *    hover 节点时高亮它 + 一跳邻居 + 相关边，其余淡出。
  *
  * @module @kenz1117/dsh-engram/client/CorridorMap
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { ReactElement } from 'react'
 import styles from './panel.module.css'
 import { KIND_KEY, type EngramKey } from './locales/index.ts'
@@ -54,7 +56,8 @@ export const KIND_PALETTE: Readonly<Record<string, string>> = {
 
 /** 边视觉语义。dash 显式允许 undefined：exactOptionalPropertyTypes 下字面量表无需逐项删键。 */
 type EdgeStyle = { color: string; dash?: string | undefined; width: number }
-const EDGE_STYLE: Readonly<Record<string, EdgeStyle>> = {
+/** 边样式表（导出给宿主面板的图例用，保证图例与画布同一色源）。 */
+export const EDGE_STYLE: Readonly<Record<string, EdgeStyle>> = {
   related:   { color: 'rgba(120, 130, 150, 0.6)',  dash: undefined, width: 1 },
   refines:   { color: 'rgba(120, 130, 150, 0.6)',  dash: undefined, width: 1 },
   supports:  { color: 'rgba(120, 130, 150, 0.6)',  dash: undefined, width: 1 },
@@ -62,33 +65,116 @@ const EDGE_STYLE: Readonly<Record<string, EdgeStyle>> = {
   contradicts:{ color: 'rgba(226, 107, 134, 0.9)', dash: '4 4',     width: 1.4 },
 }
 
-interface PositionedNode extends CorridorNode {
-  x: number
-  y: number
-  vx: number
-  vy: number
-  r: number
-  /** 是否被用户拖拽中（拖拽时禁用 tick 力更新）。 */
-  fixed: boolean
-}
-
-interface CorridorMapProps {
-  readonly scope: 'user' | 'project' | 'shared'
-  readonly nodes: readonly CorridorNode[]
-  readonly edges: readonly CorridorEdge[]
-  readonly onSelect?: (id: string) => void
-  readonly selectedId?: string
-  /** 界面文案（房间名与图例走宿主 locale 词典）。 */
-  readonly t: CorridorT
-}
-
-/** 节点半径。 */
-function nodeRadius(n: CorridorNode): number {
-  return Math.max(4, Math.min(14, 4 + 10 * n.importance * n.confidence))
-}
-
 /** 房间容量（与 src/palace/slots.ts 的容量 9 对齐；满员开新房）。 */
 const ROOM_CAPACITY = 9
+
+/* ---------- 建筑几何（两种视图共用） ---------- */
+
+/** 画布逻辑尺寸：与设计稿 prototypes/visual-upgrade.html #floorplan 对齐。 */
+const PLAN_W = 720
+const PLAN_H = 380
+/** 房间列宽 / 顶边 / 底边 / 房间间隙 / 左右列起点。 */
+const ROOM_COL_W = 320
+const ROOM_TOP = 40
+const ROOM_BOTTOM = PLAN_H - 14
+const ROOM_GAP = 12
+const ROOM_MAX_H = 160
+const ROOM_LEFT_X = 20
+const ROOM_RIGHT_X = 380
+
+/** 一间房的几何矩形。 */
+interface RoomBox {
+  readonly kind: string
+  readonly count: number
+  readonly x: number
+  readonly y: number
+  readonly w: number
+  readonly h: number
+}
+
+/**
+ * 房间排布：按驻留数降序取前 6 间（kind 理论 5 种 + 扩容房示意），
+ * 偶数位进左列、奇数位进右列，两列纵向均分高度（单间最高 ROOM_MAX_H）。
+ * 平面图与关系图共用此函数——房间位置在两个视图间必须一致。
+ */
+function roomBoxes(nodes: readonly CorridorNode[]): RoomBox[] {
+  const counts = new Map<string, number>()
+  for (const n of nodes) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1)
+  const kinds = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+  const boxes: RoomBox[] = []
+  const column = (list: ReadonlyArray<readonly [string, number]>, x: number): void => {
+    const n = list.length
+    if (n === 0) return
+    const h = Math.min(ROOM_MAX_H, (ROOM_BOTTOM - ROOM_TOP - (n - 1) * ROOM_GAP) / n)
+    list.forEach(([kind, count], i) => {
+      boxes.push({ kind, count, x, y: ROOM_TOP + i * (h + ROOM_GAP), w: ROOM_COL_W, h })
+    })
+  }
+  column(kinds.filter((_, i) => i % 2 === 0), ROOM_LEFT_X)
+  column(kinds.filter((_, i) => i % 2 === 1), ROOM_RIGHT_X)
+  return boxes
+}
+
+/** 房内可用区（避开标题行与下边距）。 */
+function roomInner(box: RoomBox): { x: number; y: number; w: number; h: number } {
+  return { x: box.x + 14, y: box.y + 34, w: box.w - 28, h: Math.max(20, box.h - 46) }
+}
+
+/** 房间外壳（两种视图同款：淡填 + 描边 + hover 加深）。 */
+function roomShell(box: RoomBox, color: string, hovered: boolean): ReactElement {
+  return (
+    <rect x={box.x} y={box.y} width={box.w} height={box.h} rx={10}
+      fill={color} fillOpacity={hovered ? 0.1 : 0.06}
+      stroke={color} strokeOpacity={hovered ? 0.8 : 0.35}
+      strokeWidth={hovered ? 2 : 1.2}
+      style={{ transition: 'fill-opacity 160ms ease, stroke-opacity 160ms ease, stroke-width 160ms ease' }} />
+  )
+}
+
+/** 房间门牌：房名 + 驻留数。 */
+function roomPlate(box: RoomBox, color: string, t: CorridorT): ReactElement {
+  return (
+    <>
+      <text x={box.x + 14} y={box.y + 24} fill={color} fontSize="12" fontWeight={600}
+        fontFamily="ui-sans-serif, system-ui">{roomLabel(t, box.kind)}</text>
+      <text x={box.x + box.w - 14} y={box.y + 24} textAnchor="end" fill="rgba(127,127,127,0.8)" fontSize="11"
+        style={{ fontVariantNumeric: 'tabular-nums' }}
+        fontFamily="ui-sans-serif, system-ui">{`${String(box.count)} / ${String(ROOM_CAPACITY)}`}</text>
+    </>
+  )
+}
+
+/** 中央主通道的虚线轮廓（两模式同款，铺在最底层）。 */
+function hallStrip(): ReactElement {
+  return (
+    <rect x={PLAN_W / 2 - 11} y={64} width={22} height={PLAN_H - 110} rx={8}
+      fill="none" stroke="var(--dsw-alias-brand-primary)" strokeOpacity={0.4}
+      strokeWidth={1.2} strokeDasharray="5 4" />
+  )
+}
+
+/**
+ * 主通道门牌：旋转文字 + 底衬。
+ * 画在边之上（关系图的连线会穿过通道），否则虚线与连线会把字切碎。
+ */
+function hallLabel(t: CorridorT): ReactElement {
+  return (
+    <g>
+      <rect x={PLAN_W / 2 - 6} y={PLAN_H / 2 - 40} width={12} height={80} rx={6}
+        fill="var(--dsw-alias-bg-base)" fillOpacity={0.92} />
+      <text x={PLAN_W / 2} y={PLAN_H / 2} textAnchor="middle"
+        fill="var(--dsw-alias-brand-primary)" fillOpacity={0.8} fontSize="10" fontWeight={600}
+        fontFamily="ui-sans-serif, system-ui"
+        transform={`rotate(-90 ${String(PLAN_W / 2)} ${String(PLAN_H / 2)})`}>
+        {t('corridorHall')}
+      </text>
+    </g>
+  )
+}
+
+/* ---------- 平面图 ---------- */
 
 /**
  * 走廊 2.0 · 建筑平面图（设计稿 prototypes/visual-upgrade.html #floorplan 的落地版）：
@@ -101,53 +187,32 @@ export function FloorplanMap({ nodes, onOpenRoom, t }: {
   onOpenRoom: (kind: string) => void
   t: CorridorT
 }): ReactElement {
-  const width = 720
-  const height = 380
   const [hoverKind, setHoverKind] = useState<string | null>(null)
-  /** 按驻留数降序（大房间放左上），最多画 6 间（kind 理论 5 种 + 扩容房示意）。 */
-  const rooms = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const n of nodes) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1)
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 6)
-      .map(([kind, count]) => ({ kind, count }))
-  }, [nodes])
-  const leftCol = rooms.filter((_, i) => i % 2 === 0)
-  const rightCol = rooms.filter((_, i) => i % 2 === 1)
+  const boxes = useMemo(() => roomBoxes(nodes), [nodes])
 
-  const renderRoom = (room: { kind: string; count: number }, x: number, y: number, w: number, h: number): ReactElement => {
-    const color = KIND_PALETTE[room.kind] ?? '#7d8590'
-    const hovered = hoverKind === room.kind
-    const filled = Math.min(room.count, ROOM_CAPACITY)
+  const renderRoom = (box: RoomBox): ReactElement => {
+    const color = KIND_PALETTE[box.kind] ?? '#7d8590'
+    const hovered = hoverKind === box.kind
+    const filled = Math.min(box.count, ROOM_CAPACITY)
     const pipSize = 12
     const pipGap = 5
-    const overflow = room.count > ROOM_CAPACITY ? room.count - ROOM_CAPACITY : 0
+    const overflow = box.count > ROOM_CAPACITY ? box.count - ROOM_CAPACITY : 0
     return (
-      <g key={room.kind} onMouseEnter={() => { setHoverKind(room.kind) }}
-        onMouseLeave={() => { setHoverKind(prev => prev === room.kind ? null : prev) }}
-        onClick={() => onOpenRoom(room.kind)} style={{ cursor: 'pointer' }}>
-        <rect x={x} y={y} width={w} height={h} rx={10}
-          fill={color} fillOpacity={hovered ? 0.1 : 0.06}
-          stroke={color} strokeOpacity={hovered ? 0.8 : 0.35}
-          strokeWidth={hovered ? 2 : 1.2}
-          style={{ transition: 'fill-opacity 160ms ease, stroke-opacity 160ms ease, stroke-width 160ms ease' }} />
-        {/* 门牌：房名 + 驻留数 */}
-        <text x={x + 14} y={y + 24} fill={color} fontSize="12" fontWeight={600}
-          fontFamily="ui-sans-serif, system-ui">{roomLabel(t, room.kind)}</text>
-        <text x={x + w - 14} y={y + 24} textAnchor="end" fill="rgba(127,127,127,0.8)" fontSize="11"
-          style={{ fontVariantNumeric: 'tabular-nums' }}
-          fontFamily="ui-sans-serif, system-ui">{`${String(room.count)} / ${String(ROOM_CAPACITY)}`}</text>
+      <g key={box.kind} onMouseEnter={() => { setHoverKind(box.kind) }}
+        onMouseLeave={() => { setHoverKind(prev => prev === box.kind ? null : prev) }}
+        onClick={() => onOpenRoom(box.kind)} style={{ cursor: 'pointer' }}>
+        {roomShell(box, color, hovered)}
+        {roomPlate(box, color, t)}
         {/* 桩位点阵：9 格，填充数 = 驻留数 */}
         {Array.from({ length: ROOM_CAPACITY }, (_, i) => (
-          <rect key={i} x={x + 14 + i * (pipSize + pipGap)} y={y + h - 26} width={pipSize} height={pipSize} rx={3}
+          <rect key={i} x={box.x + 14 + i * (pipSize + pipGap)} y={box.y + box.h - 26} width={pipSize} height={pipSize} rx={3}
             fill={i < filled ? color : 'none'}
             fillOpacity={i < filled ? 0.85 : 0}
             stroke={color} strokeOpacity={i < filled ? 0 : 0.3} strokeWidth={1} />
         ))}
         {/* 满员开新房提示 */}
         {overflow > 0 && (
-          <text x={x + 14 + ROOM_CAPACITY * (pipSize + pipGap) + 4} y={y + h - 16}
+          <text x={box.x + 14 + ROOM_CAPACITY * (pipSize + pipGap) + 4} y={box.y + box.h - 16}
             fill={color} fontSize="10" fontFamily="ui-sans-serif, system-ui">
             {t('corridorOverflow', { n: overflow })}
           </text>
@@ -156,110 +221,150 @@ export function FloorplanMap({ nodes, onOpenRoom, t }: {
     )
   }
 
-  const renderColumn = (col: typeof rooms, x: number): ReactElement[] => {
-    const colW = 320
-    const top = 40
-    const bottom = height - 14
-    const gap = 12
-    const h = Math.min(160, (bottom - top - (col.length - 1) * gap) / Math.max(col.length, 1))
-    return col.map((room, i) => renderRoom(room, x, top + i * (h + gap), colW, h))
-  }
-
   return (
     <div className={styles.mapWrap}>
-      <svg viewBox={`0 0 ${String(width)} ${String(height)}`} className={`${styles.map} ${styles.mapFloorplan}`}
-        preserveAspectRatio="xMidYMid meet" role="img" aria-label={t('corridorAria')} key={rooms.map(r => r.kind).join('-')}>
+      <svg viewBox={`0 0 ${String(PLAN_W)} ${String(PLAN_H)}`} className={`${styles.map} ${styles.mapFloorplan}`}
+        preserveAspectRatio="xMidYMid meet" role="img" aria-label={t('corridorAria')} key={boxes.map(b => b.kind).join('-')}>
         {/* 外墙 */}
-        <rect x={6} y={6} width={width - 12} height={height - 12} rx={14}
+        <rect x={6} y={6} width={PLAN_W - 12} height={PLAN_H - 12} rx={14}
           fill="var(--dsw-alias-bg-base)" stroke="var(--dsw-alias-border-l2)" strokeWidth={1.5} />
         {/* 中央主通道：虚线描边 + 旋转门牌 */}
-        <rect x={width / 2 - 9} y={64} width={18} height={height - 110} rx={8}
-          fill="none" stroke="var(--dsw-alias-brand-primary)" strokeOpacity={0.4}
-          strokeWidth={1.2} strokeDasharray="5 4" />
-        <text x={width / 2} y={height / 2} textAnchor="middle"
-          fill="var(--dsw-alias-brand-primary)" fillOpacity={0.75} fontSize="10" fontWeight={600}
-          fontFamily="ui-sans-serif, system-ui"
-          transform={`rotate(-90 ${String(width / 2)} ${String(height / 2)})`}>
-          {t('corridorHall')}
-        </text>
+        {hallStrip()}
         {/* 左右两列房间（房间之间的间隙即走廊） */}
-        {renderColumn(leftCol, 20)}
-        {renderColumn(rightCol, 380)}
+        {boxes.map(renderRoom)}
+        {hallLabel(t)}
       </svg>
     </div>
   )
 }
 
-/** 单步力更新（带冷却 alpha）。 */
-function step(nodes: PositionedNode[], edges: readonly CorridorEdge[], width: number, height: number, alpha: number): void {
-  const REPLUSION = 4800
-  const SPRING_LEN = 64
-  const SPRING_K = 0.04
-  const CENTER_K = 0.003
-  const FLOOR_K = 0.005
-  // 排斥力：平方反比（带 alpha 冷却）。
-  for (let i = 0; i < nodes.length; i += 1) {
-    const a = nodes[i]!
-    for (let j = i + 1; j < nodes.length; j += 1) {
-      const b = nodes[j]!
-      const dx = a.x - b.x
-      const dy = a.y - b.y
-      const dist = Math.sqrt(dx * dx + dy * dy) + 0.01
-      const force = (REPLUSION * alpha) / (dist * dist)
-      const fx = (dx / dist) * force
-      const fy = (dy / dist) * force
-      a.vx += fx
-      a.vy += fy
-      b.vx -= fx
-      b.vy -= fy
+/* ---------- 关系图 ---------- */
+
+/** 关系图里的一个记忆点（锚在房间里）。 */
+interface GraphNode {
+  readonly id: string
+  readonly kind: string
+  readonly status: string
+  readonly title: string
+  readonly content: string
+  readonly r: number
+  x: number
+  y: number
+}
+
+/** 节点半径：房内小圆点，按重要度微调（4~8 逻辑像素）。 */
+function graphRadius(n: CorridorNode): number {
+  return 4 + 4 * n.importance * n.confidence
+}
+
+/**
+ * 房内排布：确定性排斥松弛（无随机数、无 rAF 抖动，一次算完）。
+ * 初始位置用黄金角螺旋铺开，之后按「最小间距 + 弱回中」迭代若干轮。
+ */
+function layoutRoom(nodes: GraphNode[], box: RoomBox): void {
+  const area = roomInner(box)
+  const cx = area.x + area.w / 2
+  const cy = area.y + area.h / 2
+  const golden = Math.PI * (3 - Math.sqrt(5))
+  // 初始位置：黄金角螺旋铺满整间房（椭圆分布，别缩成一坨）。
+  nodes.forEach((n, i) => {
+    const t = (i + 0.5) / nodes.length
+    const angle = i * golden
+    n.x = cx + Math.sqrt(t) * area.w * 0.44 * Math.cos(angle)
+    n.y = cy + Math.sqrt(t) * area.h * 0.44 * Math.sin(angle)
+  })
+  const ITER = 220
+  for (let iter = 0; iter < ITER; iter += 1) {
+    const alpha = 1 - iter / ITER
+    for (let i = 0; i < nodes.length; i += 1) {
+      const a = nodes[i]!
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const b = nodes[j]!
+        let dx = a.x - b.x
+        let dy = a.y - b.y
+        let dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist < 0.01) { dx = 0.1; dy = 0.05; dist = 0.112 }
+        const minDist = a.r + b.r + 4
+        const push = dist < minDist ? (minDist - dist) * 0.6 : 0
+        const repulse = (220 / (dist * dist)) * alpha
+        const fx = (dx / dist) * (push + repulse)
+        const fy = (dy / dist) * (push + repulse)
+        a.x += fx; a.y += fy
+        b.x -= fx; b.y -= fy
+      }
     }
-  }
-  // 弹簧力。
-  const nodeMap = new Map<string, PositionedNode>(nodes.map(n => [n.id, n]))
-  for (const edge of edges) {
-    const a = nodeMap.get(edge.from)
-    const b = nodeMap.get(edge.to)
-    if (a === undefined || b === undefined) continue
-    const dx = b.x - a.x
-    const dy = b.y - a.y
-    const dist = Math.sqrt(dx * dx + dy * dy) + 0.01
-    const force = (dist - SPRING_LEN) * SPRING_K * alpha
-    const fx = (dx / dist) * force
-    const fy = (dy / dist) * force
-    a.vx += fx
-    a.vy += fy
-    b.vx -= fx
-    b.vy -= fy
-  }
-  // 中心引力 + 房间水平分簇。
-  const kinds = [...new Set(nodes.map(n => n.kind))]
-  const band = width / Math.max(kinds.length, 1)
-  for (const n of nodes) {
-    if (n.fixed) continue
-    n.vx += (width / 2 - n.x) * CENTER_K * alpha
-    n.vy += (height / 2 - n.y) * CENTER_K * alpha
-    const idx = kinds.indexOf(n.kind)
-    if (idx >= 0) {
-      const target = band * (idx + 0.5)
-      n.vx += (target - n.x) * FLOOR_K * alpha
+    for (const n of nodes) {
+      n.x += (cx - n.x) * 0.012 * alpha
+      n.y += (cy - n.y) * 0.012 * alpha
+      n.x = Math.max(area.x + n.r, Math.min(area.x + area.w - n.r, n.x))
+      n.y = Math.max(area.y + n.r, Math.min(area.y + area.h - n.r, n.y))
     }
-  }
-  // 阻尼 + 边界。
-  const DAMPING = 0.82
-  for (const n of nodes) {
-    if (n.fixed) { n.vx = 0; n.vy = 0; continue }
-    n.vx *= DAMPING
-    n.vy *= DAMPING
-    n.x = Math.max(20, Math.min(width - 20, n.x + n.vx))
-    n.y = Math.max(20, Math.min(height - 20, n.y + n.vy))
   }
 }
 
-/** 走廊鸟瞰组件。 */
+/** 关系图的节点集合：按 kind 归房 + 房内排布。 */
+function layoutGraph(nodes: readonly CorridorNode[], boxes: readonly RoomBox[]): GraphNode[] {
+  const byKind = new Map<string, RoomBox>(boxes.map(b => [b.kind, b]))
+  const groups = new Map<string, GraphNode[]>()
+  const out: GraphNode[] = []
+  for (const n of nodes) {
+    const box = byKind.get(n.kind)
+    if (box === undefined) continue // 房间位不足 6 间时，溢出 kind 不画（与平面图同源的上限）
+    const g: GraphNode = {
+      id: n.id,
+      kind: n.kind,
+      status: n.status,
+      title: n.title,
+      content: n.content ?? n.title,
+      r: graphRadius(n),
+      x: 0,
+      y: 0,
+    }
+    const list = groups.get(n.kind)
+    if (list === undefined) groups.set(n.kind, [g])
+    else list.push(g)
+    out.push(g)
+  }
+  for (const [kind, list] of groups) {
+    const box = byKind.get(kind)
+    if (box !== undefined) layoutRoom(list, box)
+  }
+  return out
+}
+
+/** 按可用宽度截断文本（CJK 记 1 字宽，西文记 0.55 字宽）。 */
+function fitText(text: string, maxWidth: number, fontSize: number): string {
+  let used = 0
+  let out = ''
+  for (const ch of text) {
+    const w = /[　-鿿＀-￯]/.test(ch) ? fontSize : fontSize * 0.55
+    if (used + w > maxWidth) return `${out}…`
+    used += w
+    out += ch
+  }
+  return out
+}
+
+interface CorridorMapProps {
+  readonly scope: 'user' | 'project' | 'shared'
+  readonly nodes: readonly CorridorNode[]
+  readonly edges: readonly CorridorEdge[]
+  readonly onSelect?: (id: string) => void
+  readonly selectedId?: string
+  /** 界面文案（房间名与图例走宿主 locale 词典）。 */
+  readonly t: CorridorT
+  /** 点房间空白处 → 宿主接「陈展」按房筛选（与平面图同款手势）。 */
+  readonly onOpenRoom?: (kind: string) => void
+}
+
+/** 走廊关系图：房间即锚点，边即关系。 */
 export function CorridorMap(props: CorridorMapProps): ReactElement {
-  const { scope, nodes, edges, onSelect, selectedId, t } = props
-  const width = 560
-  const height = 320
+  const { scope, nodes, edges, onSelect, selectedId, t, onOpenRoom } = props
+  const [hoverId, setHoverId] = useState<string | null>(null)
+  const [hoverRoom, setHoverRoom] = useState<string | null>(null)
+  const boxes = useMemo(() => roomBoxes(nodes), [nodes])
+  const positions = useMemo(() => layoutGraph(nodes, boxes), [nodes, boxes])
+  const posMap = useMemo(() => new Map(positions.map(p => [p.id, p])), [positions])
   /** 邻居表：node id → 邻居 id 集合（含一跳）。 */
   const neighborMap = useMemo(() => {
     const map = new Map<string, Set<string>>()
@@ -272,107 +377,12 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
     }
     return map
   }, [nodes, edges])
-  /** 起始布局：按房间水平均分带，垂直随机抖动。 */
-  const initialNodes = useMemo<PositionedNode[]>(() => {
-    const kinds = [...new Set(nodes.map(n => n.kind))]
-    const band = width / Math.max(kinds.length, 1)
-    return nodes.map((n, index) => ({
-      ...n,
-      x: kinds.indexOf(n.kind) >= 0 ? band * (kinds.indexOf(n.kind) + 0.5) : width / 2,
-      y: 30 + ((index * 47) % (height - 60)),
-      vx: 0, vy: 0,
-      r: nodeRadius(n),
-      fixed: false,
-    }))
-  }, [nodes, width, height])
-  const positionsRef = useRef<PositionedNode[]>(initialNodes.map(n => ({ ...n })))
-  const [, forceRender] = useState(0)
-  const animRef = useRef<number | null>(null)
-  const tickRef = useRef(0)
-  const totalTicks = 280
-  // 初始化 / 重置：拷贝新布局并清零 tick。
-  useEffect(() => {
-    positionsRef.current = initialNodes.map(n => ({ ...n }))
-    tickRef.current = 0
-    forceRender(value => value + 1)
-  }, [initialNodes])
-  // 力导向主循环：requestAnimationFrame，alpha 1.0 → 0.1。
-  useEffect(() => {
-    const tick = (): void => {
-      const nodesArr = positionsRef.current
-      tickRef.current += 1
-      const alpha = Math.max(0.1, 1 - (tickRef.current / totalTicks) * 0.9)
-      step(nodesArr, edges, width, height, alpha)
-      // 触发 React 重渲染（不可变快照：拷贝一次引用）。
-      positionsRef.current = nodesArr.map(n => ({ ...n }))
-      forceRender(value => value + 1)
-      if (tickRef.current < totalTicks) animRef.current = requestAnimationFrame(tick)
-    }
-    animRef.current = requestAnimationFrame(tick)
-    return () => { if (animRef.current !== null) cancelAnimationFrame(animRef.current) }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- tick 仅在新 nodes/edges 时重启
-  }, [initialNodes, edges])
-  const positions = positionsRef.current
-  const posMap = useMemo(() => new Map(positions.map(p => [p.id, p])), [positions])
-  const roomKinds = useMemo(() => [...new Set(nodes.map(n => n.kind))], [nodes])
-  /** hover 高亮：当前节点 id → 邻居 id 集合；null = 不高亮。 */
-  const [hoverId, setHoverId] = useState<string | null>(null)
   const hoverNeighbors = useMemo(() => {
     if (hoverId === null) return null
     return neighborMap.get(hoverId) ?? new Set<string>()
   }, [hoverId, neighborMap])
   const isFaded = (nId: string): boolean => hoverId !== null && nId !== hoverId && !(hoverNeighbors?.has(nId) ?? false)
-  const isEdgeHighlighted = (e: CorridorEdge): boolean => {
-    if (hoverId === null) return false
-    return e.from === hoverId || e.to === hoverId
-  }
-  /** drag：mousedown 抓住节点 → mousemove 改 vx/vy 为 0 → mouseup 释放。 */
-  const svgRef = useRef<SVGSVGElement | null>(null)
-  const dragIdRef = useRef<string | null>(null)
-  const svgToScreen = (clientX: number, clientY: number): { x: number; y: number } | null => {
-    const svg = svgRef.current
-    if (svg === null) return null
-    const rect = svg.getBoundingClientRect()
-    // viewBox 0 0 width height，preserveAspectRatio meet → 等比缩放，逻辑坐标 = 屏幕坐标 * (width / rect.width)
-    const scaleX = width / rect.width
-    const scaleY = height / rect.height
-    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY }
-  }
-  const onNodeMouseDown = (event: React.MouseEvent<SVGGElement>, nodeId: string): void => {
-    event.preventDefault()
-    dragIdRef.current = nodeId
-    const node = positionsRef.current.find(n => n.id === nodeId)
-    if (node !== undefined) node.fixed = true
-  }
-  useEffect(() => {
-    const handleMove = (event: MouseEvent): void => {
-      const id = dragIdRef.current
-      if (id === null) return
-      const pos = svgToScreen(event.clientX, event.clientY)
-      if (pos === null) return
-      const node = positionsRef.current.find(n => n.id === id)
-      if (node === undefined) return
-      node.x = Math.max(20, Math.min(width - 20, pos.x))
-      node.y = Math.max(20, Math.min(height - 20, pos.y))
-      node.vx = 0
-      node.vy = 0
-      forceRender(value => value + 1)
-    }
-    const handleUp = (): void => {
-      const id = dragIdRef.current
-      if (id === null) return
-      const node = positionsRef.current.find(n => n.id === id)
-      if (node !== undefined) node.fixed = false
-      dragIdRef.current = null
-    }
-    window.addEventListener('mousemove', handleMove)
-    window.addEventListener('mouseup', handleUp)
-    return () => {
-      window.removeEventListener('mousemove', handleMove)
-      window.removeEventListener('mouseup', handleUp)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const isEdgeHighlighted = (e: CorridorEdge): boolean => hoverId !== null && (e.from === hoverId || e.to === hoverId)
 
   if (nodes.length === 0) {
     return <div className={styles.empty}>{t('corridorEmpty')}</div>
@@ -380,26 +390,28 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
 
   return (
     <div className={styles.mapWrap}>
-      <svg ref={svgRef} viewBox={`0 0 ${String(width)} ${String(height)}`} className={`${styles.map} ${styles.mapGraph}`}
+      <svg viewBox={`0 0 ${String(PLAN_W)} ${String(PLAN_H)}`} className={`${styles.map} ${styles.mapFloorplan}`}
         preserveAspectRatio="xMidYMid meet" role="img" aria-label={t('corridorAria')} key={scope}>
-        {/* 房间背景带（关系图模式用轻斑马纹分区即可;建筑房间块是平面图模式的语言）。 */}
-        {roomKinds.map((kind, idx) => {
-          const band = width / Math.max(roomKinds.length, 1)
-          return <rect key={kind} x={band * idx + 2} y={4} width={band - 4} height={height - 8} rx={8}
-            fill={idx % 2 === 0 ? 'rgba(127,127,127,0.05)' : 'transparent'} />
-        })}
-        {roomKinds.map((kind, idx) => {
-          const band = width / Math.max(roomKinds.length, 1)
-          const color = KIND_PALETTE[kind] ?? '#7d8590'
+        {/* 外墙 */}
+        <rect x={6} y={6} width={PLAN_W - 12} height={PLAN_H - 12} rx={14}
+          fill="var(--dsw-alias-bg-base)" stroke="var(--dsw-alias-border-l2)" strokeWidth={1.5} />
+        {/* 中央主通道（与平面图同款） */}
+        {hallStrip()}
+        {/* 房间外壳 + 门牌（与平面图同款） */}
+        {boxes.map(box => {
+          const color = KIND_PALETTE[box.kind] ?? '#7d8590'
+          const hovered = hoverRoom === box.kind
           return (
-            <text key={`${kind}-label`} x={band * (idx + 0.5)} y={16} textAnchor="middle"
-              fill={color} fillOpacity={0.85} fontSize="10" fontWeight={600} fontFamily="ui-sans-serif, system-ui">
-              {roomLabel(t, kind)}
-            </text>
+            <g key={box.kind} onMouseEnter={() => { setHoverRoom(box.kind) }}
+              onMouseLeave={() => { setHoverRoom(prev => prev === box.kind ? null : prev) }}
+              onClick={() => onOpenRoom?.(box.kind)}
+              style={{ cursor: onOpenRoom === undefined ? 'default' : 'pointer' }}>
+              {roomShell(box, color, hovered)}
+              {roomPlate(box, color, t)}
+            </g>
           )
         })}
-        {/* 走廊边：高亮时画弹簧弧线（quadratic 曲线 + 垂直凸起 6px），其他边保持直线。
-            用 stagger-delay 让边按 from 节点索引依次淡入，强化「地图刷新」感。 */}
+        {/* 关系边：跨房间的线走走廊。高亮时画弹簧弧线，其他边保持直线。 */}
         {edges.map((edge, idx) => {
           const a = posMap.get(edge.from)
           const b = posMap.get(edge.to)
@@ -407,122 +419,79 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
           const style = EDGE_STYLE[edge.type] ?? EDGE_STYLE.related!
           const highlighted = isEdgeHighlighted(edge)
           const faded = hoverId !== null && !highlighted
-          if (highlighted) {
-            // 垂直中点偏移：构造弹簧视觉。
-            const mx = (a.x + b.x) / 2
-            const my = (a.y + b.y) / 2
-            const dx = b.x - a.x
-            const dy = b.y - a.y
-            const length = Math.sqrt(dx * dx + dy * dy) || 1
-            const offsetX = (-dy / length) * 6
-            const offsetY = (dx / length) * 6
-            return (
-              <path key={edge.id} d={`M ${String(a.x)} ${String(a.y)} Q ${String(mx + offsetX)} ${String(my + offsetY)} ${String(b.x)} ${String(b.y)}`}
-                fill="none" stroke={style.color}
-                strokeWidth={style.width + 1.2} strokeDasharray={style.dash}
-                style={{ transition: 'stroke-width 200ms ease, d 240ms ease' }}>
-                <title>{`${a.title} --${edge.type}--> ${b.title}`}</title>
-              </path>
-            )
-          }
+          const dx = b.x - a.x
+          const dy = b.y - a.y
+          const length = Math.sqrt(dx * dx + dy * dy) || 1
+          // 垂直偏移：同对节点的多条边错开，避免叠成一条。
+          const bow = Math.min(18, length * 0.12)
+          const mx = (a.x + b.x) / 2 + (-dy / length) * bow
+          const my = (a.y + b.y) / 2 + (dx / length) * bow
           return (
-            <line key={edge.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-              stroke={style.color} strokeWidth={style.width}
-              strokeDasharray={style.dash} opacity={faded ? 0.1 : 1}
+            <path key={edge.id} data-edge-id={edge.id} d={`M ${String(a.x)} ${String(a.y)} Q ${String(mx)} ${String(my)} ${String(b.x)} ${String(b.y)}`}
+              fill="none" stroke={style.color}
+              strokeWidth={highlighted ? style.width + 1.2 : style.width}
+              strokeDasharray={style.dash}
+              opacity={faded ? 0.08 : highlighted ? 1 : 0.55}
               className={styles.edgeFade}
               style={{ transition: 'opacity 200ms ease, stroke-width 200ms ease', animationDelay: `${String(Math.min(idx, 24) * 24)}ms` }}>
               <title>{`${a.title} --${edge.type}--> ${b.title}`}</title>
-            </line>
+            </path>
           )
         })}
-        {/* 房间节点。 */}
+        {/* 主通道门牌：压在边之上，避免连线把字切碎 */}
+        {hallLabel(t)}
+        {/* 房间里的记忆点 */}
         {positions.map((n, index) => {
           const color = KIND_PALETTE[n.kind] ?? '#7d8590'
           const isSelected = selectedId === n.id
           const isHovered = hoverId === n.id
           const faded = isFaded(n.id)
           return (
-            <g key={n.id} className={styles.node} transform={`translate(${String(n.x)} ${String(n.y)})`}
-              style={{ cursor: dragIdRef.current === n.id ? 'grabbing' : 'grab', opacity: faded ? 0.15 : 1, transition: 'opacity 200ms ease', animationDelay: `${String(Math.min(index, 24) * 24)}ms` }}
+            <g key={n.id} data-node-id={n.id} className={styles.node} transform={`translate(${String(n.x)} ${String(n.y)})`}
+              style={{ opacity: faded ? 0.2 : 1, transition: 'opacity 200ms ease', animationDelay: `${String(Math.min(index, 24) * 24)}ms` }}
               onMouseEnter={() => { setHoverId(n.id) }}
               onMouseLeave={() => { setHoverId(prev => prev === n.id ? null : prev) }}
-              onMouseDown={event => onNodeMouseDown(event, n.id)}
               onClick={() => onSelect?.(n.id)}>
-              {/* hover 时画一圈柔光外晕。 */}
               {(isHovered || isSelected) && (
-                <circle r={String(n.r + 6)} fill={color} fillOpacity={0.18} />
+                <circle r={String(n.r + 5)} fill={color} fillOpacity={0.22} />
               )}
-              <circle r={String(n.r)} fill={color} fillOpacity={n.status === 'active' ? 0.88 : 0.42}
+              <circle r={String(n.r)} fill={color} fillOpacity={n.status === 'active' ? 0.9 : 0.45}
                 stroke={isSelected ? 'var(--dsw-alias-brand-primary)' : isHovered ? color : 'rgba(255,255,255,0.9)'}
                 strokeWidth={isSelected ? 2 : isHovered ? 1.5 : 1}
                 style={{ transition: 'stroke 160ms ease, stroke-width 160ms ease' }}>
                 <title>{`${n.title}（${n.kind}/${n.status}）`}</title>
               </circle>
-              {isSelected && <circle r={String(n.r + 4)} fill="none" stroke={color} strokeOpacity={0.4} strokeWidth={1} />}
-              {nodes.length <= 40 && (
-                <text y={String(n.r + 12)} textAnchor="middle" fill="rgba(127,127,127,0.85)" fontSize="8"
-                  fontFamily="ui-sans-serif, system-ui" style={{ pointerEvents: 'none', userSelect: 'none' }}>
-                  {n.title.length > 9 ? `${n.title.slice(0, 9)}…` : n.title}
-                </text>
-              )}
             </g>
           )
         })}
-        {/* hover tooltip：HTML 浮层，显示完整铭牌（用 SVG <text> 简易渲染）。 */}
+        {/* hover 提示卡：房间名 + 完整铭牌 */}
         {hoverId !== null && (() => {
           const node = posMap.get(hoverId)
           if (node === undefined) return null
-          const tx = Math.min(width - 180, Math.max(8, node.x + 14))
-          const ty = Math.min(height - 60, Math.max(28, node.y - 16))
-          const fullContent = (node.content ?? node.title).slice(0, 120)
+          const boxW = 210
+          const boxH = 46
+          const tx = Math.min(PLAN_W - boxW - 6, Math.max(6, node.x + 12))
+          const ty = Math.min(PLAN_H - boxH - 6, Math.max(6, node.y - boxH - 8))
           return (
             <g className={styles.tooltip} transform={`translate(${String(tx)} ${String(ty)})`}>
-              <rect x={0} y={0} width={176} height={48} rx={6} ry={6}
+              <rect x={0} y={0} width={boxW} height={boxH} rx={6} ry={6}
                 fill="var(--dsw-alias-bg-base)" stroke="var(--dsw-alias-border-l2)" strokeWidth={1} opacity={0.96} />
               <text x={8} y={16} fill="var(--dsw-alias-label-primary)" fontSize="11" fontWeight={600}
                 fontFamily="ui-sans-serif, system-ui">{roomLabel(t, node.kind)}</text>
               <text x={8} y={32} fill="var(--dsw-alias-label-secondary)" fontSize="10"
-                fontFamily="ui-sans-serif, system-ui">{`${fullContent}${(node.content ?? node.title).length > 120 ? '…' : ''}`}</text>
+                fontFamily="ui-sans-serif, system-ui">{fitText(node.content, boxW - 16, 10)}</text>
             </g>
           )
         })()}
-        {/* 零边提示：关系图的价值在边;无边时明说,不要让用户看一堆孤点。 */}
+        {/* 零边提示：关系图的价值在边;无边时明说,不要让用户看一堆孤点。
+            放在顶部空白带（不放正中——那里是旋转的主通道门牌）。 */}
         {edges.length === 0 && (
-          <text x={String(width / 2)} y={String(height / 2)} textAnchor="middle"
+          <text x={String(PLAN_W / 2)} y="25" textAnchor="middle"
             fill="rgba(127,127,127,0.75)" fontSize="12" fontFamily="ui-sans-serif, system-ui">
             {t('corridorNoEdges')}
           </text>
         )}
       </svg>
-      <div className={styles.legend}>
-        {roomKinds.map(kind => (
-          <span key={kind} className={styles.legendItem}>
-            <span className={styles.legendDot} style={{ background: KIND_PALETTE[kind] ?? '#7d8590' }} />
-            {roomLabel(t, kind)}
-          </span>
-        ))}
-        <span className={styles.legendItem}>{t('corridorSummary', { nodes: nodes.length, edges: edges.length })}</span>
-      </div>
-      <div className={styles.legend} style={{ marginTop: 2 }}>
-        {edges.length > 0 && ([
-          ['other', t('edgeOther'), EDGE_STYLE.related!],
-          ['supersedes', t('edgeSupersedes'), EDGE_STYLE.supersedes!],
-          ['contradicts', t('edgeContradicts'), EDGE_STYLE.contradicts!],
-        ] as const).map(([type, label, style]) => {
-          const present = type === 'other'
-            ? edges.some(e => e.type !== 'supersedes' && e.type !== 'contradicts')
-            : edges.some(e => e.type === type)
-          if (!present) return null
-          return (
-            <span key={type} className={styles.legendItem}>
-              <svg width={20} height={6} aria-hidden="true">
-                <line x1={0} y1={3} x2={20} y2={3} stroke={style.color} strokeWidth={style.width} strokeDasharray={style.dash} />
-              </svg>
-              <span>{label}</span>
-            </span>
-          )
-        })}
-      </div>
     </div>
   )
 }

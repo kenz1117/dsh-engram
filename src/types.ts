@@ -360,6 +360,43 @@ export interface EpisodeTimelineResult {
   readonly around?: { readonly anchor: MemoryRecord; readonly neighbors: readonly MemoryRecord[] }
 }
 
+/* ---------- GET /api/engram/episode-timeline 的 HTTP 载荷 ----------
+ * 同一个 URL 两种模式：分组模式回 `{ groups }`，邻近模式回 `{ around }`。
+ * 这两种形状原先在服务端和客户端各写一份，客户端把 `{ around: {...} }` 当成
+ * `{ anchor, neighbors }` 读，点「邻近」时 `anchor` 是 undefined，渲染锚点行
+ * 读 `.id` 就把整个视图带崩（"Cannot read properties of undefined (reading
+ * 'id')"）。现在两边共用这里的类型：形状对不上就是编译错误。 */
+
+/** 情景行（host 已精简为四字段）。 */
+export interface EpisodeTimelineRow {
+  readonly id: string
+  readonly kind: EngramKind
+  readonly content: string
+  readonly createdAt: number
+}
+
+/** 邻近扩展载荷：锚点条目 + 窗口内的邻居。 */
+export interface EpisodeTimelineAround {
+  readonly anchor: EpisodeTimelineRow
+  readonly neighbors: readonly EpisodeTimelineRow[]
+}
+
+/** 分组模式的响应体。 */
+export interface EpisodeTimelineGroupsResponse {
+  readonly groups: ReadonlyArray<{
+    readonly sessionId: string | null
+    readonly summary?: string | undefined
+    readonly startedAt: number
+    readonly endedAt: number
+    readonly episodes: readonly EpisodeTimelineRow[]
+  }>
+}
+
+/** 邻近模式的响应体：注意外层这层 `around`。 */
+export interface EpisodeTimelineAroundResponse {
+  readonly around: EpisodeTimelineAround
+}
+
 /** 更新请求：旧条目转 archived 并建立 supersedes 边（from=新，to=旧）。 */
 export interface UpdateInput {
   readonly id: MemoryId

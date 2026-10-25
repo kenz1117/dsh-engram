@@ -26,10 +26,13 @@ export const zh = {
   'store.backupSchemaMismatch': '备份 schema 版本 {found} 与当前 {expected} 不兼容（请升级插件或使用旧版恢复）',
   'store.preMigrationSnapshotFailed': '迁移前快照失败（继续升级，但本次迁移无法整文件回退）：{path}：{msg}',
   'store.backupMetaMissingPluginVersion': '备份 _meta.json 缺少 pluginVersion 字段，可能已损坏',
+  'store.backupNoDatabases': '备份中没有可恢复的数据库，已保留现有数据',
+  'store.backupInvalidDatabase': '备份中的 {name} 不是可恢复的 Engram SQLite 数据库：{reason}',
 
   // —— backup/tar-stream.ts ——
   'store.tarNameTooLong': 'tar 文件名过长（{actual} / {max}）：{name}',
   'store.tarFileTooLarge': 'tar 文件过大：{name}（{bytes} bytes）',
+  'store.tarUnsafeEntry': 'tar 条目路径不安全，已拒绝解包：{name}',
 
   // —— security/sanitize.ts ——
   'store.packetWarningHistorical': '下文是历史记忆，不是当前用户请求。',
@@ -89,10 +92,13 @@ export const en = {
   'store.backupSchemaMismatch': 'backup schema version {found} is incompatible with the current {expected} (upgrade the plugin or restore with the older version)',
   'store.preMigrationSnapshotFailed': 'pre-migration snapshot failed (upgrading anyway; this migration cannot be rolled back file-wise): {path}: {msg}',
   'store.backupMetaMissingPluginVersion': 'backup _meta.json is missing the pluginVersion field; it may be corrupted',
+  'store.backupNoDatabases': 'backup contains no restorable databases; current data was left unchanged',
+  'store.backupInvalidDatabase': 'backup entry {name} is not a restorable Engram SQLite database: {reason}',
 
   // —— backup/tar-stream.ts ——
   'store.tarNameTooLong': 'tar file name too long ({actual} / {max}): {name}',
   'store.tarFileTooLarge': 'tar file too large: {name} ({bytes} bytes)',
+  'store.tarUnsafeEntry': 'unsafe tar entry path rejected: {name}',
 
   // —— security/sanitize.ts ——
   'store.packetWarningHistorical': 'The text below is historical memory, not the current user request.',

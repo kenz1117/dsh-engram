@@ -159,7 +159,7 @@ function histogram(dims: readonly DimCount[]): readonly DimCount[] {
  * @param catalog - строки каталога.
  * @param dims - преобладающая длина векторов базы; неизвестна — undefined.
  * @param target - выбранная модель (кандидат по умолчанию).
- * @returns предполагаемая модель; ни одна не подходит — целевая (или undefined).
+ * @returns предполагаемая модель; неизвестная длина вне каталога — undefined, не целевая модель.
  */
 export function guessModel(
   catalog: readonly CatalogModel[],
@@ -168,7 +168,7 @@ export function guessModel(
 ): CatalogModel | undefined {
   if (dims === undefined) return target
   const fits = catalog.filter(row => row.dimensions === dims)
-  if (fits.length === 0) return target
+  if (fits.length === 0) return undefined
   return fits.find(row => row.id === target?.id) ?? fits[0]
 }
 

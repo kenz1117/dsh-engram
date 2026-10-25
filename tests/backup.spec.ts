@@ -1,7 +1,7 @@
 import { createWriteStream } from 'node:fs'
-import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { createGzip } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createBackup, restoreBackup, BACKUP_SCHEMA_VERSION } from '../src/backup/tar.ts'
@@ -12,6 +12,29 @@ import type { EngramStore } from '../src/store/interface.ts'
 let dir: string
 let userStore: EngramStore
 let projectStore: EngramStore
+
+function validMeta(): Buffer {
+  return Buffer.from(JSON.stringify({
+    schemaVersion: BACKUP_SCHEMA_VERSION,
+    pluginVersion: '0.10.1-test',
+    exportedAt: Date.now(),
+    scopes: [],
+  }), 'utf8')
+}
+
+async function writeArchive(path: string, entries: ReadonlyArray<{ name: string; data: Buffer }>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const sink = createWriteStream(path, { mode: 0o600 })
+    sink.on('error', reject)
+    sink.on('finish', () => resolve())
+    const gz = createGzip()
+    gz.on('error', reject)
+    gz.pipe(sink)
+    for (const entry of entries) createTarPack(gz, entry.name, entry.data)
+    endTarPack(gz)
+    gz.end()
+  })
+}
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'engram-backup-'))
@@ -79,6 +102,69 @@ describe('宫殿备份 / 恢复 round-trip', () => {
       gz.end()
     })
     await expect(restoreBackup(tamperedPath, dir)).rejects.toThrow(/^备份 schema 版本/)
+  })
+
+  it('createBackup 包含仍在 WAL 中的已提交写入', async () => {
+    const live = await openEngramStore(join(dir, 'user.db'))
+    await live.write({ scope: 'user', kind: 'fact', content: '仅在 WAL 中的已提交记录', importance: 0.9 })
+    const created = await createBackup(dir, '0.10.1-test')
+    await live.close()
+
+    const restoreDir = await mkdtemp(join(tmpdir(), 'engram-wal-restore-'))
+    await restoreBackup(created.archivePath, restoreDir, { keepCurrent: false })
+    const restored = await openEngramStore(join(restoreDir, 'user.db'))
+    const rows = await restored.topActive('user', 10)
+    expect(rows.map(row => row.content)).toContain('仅在 WAL 中的已提交记录')
+    await restored.close()
+  })
+
+  it('restoreBackup 拒绝 tar 路径穿越且不写目标目录外', async () => {
+    const restoreDir = await mkdtemp(join(tmpdir(), 'engram-traversal-restore-'))
+    const archive = join(dir, 'palace-traversal.tar.gz')
+    const escapedName = `${basename(restoreDir)}-escaped.txt`
+    await writeArchive(archive, [
+      { name: `../${escapedName}`, data: Buffer.from('must not escape', 'utf8') },
+      { name: '_meta.json', data: validMeta() },
+    ])
+
+    await expect(restoreBackup(archive, restoreDir)).rejects.toThrow('tar 条目路径不安全')
+    await expect(readFile(join(restoreDir, '..', escapedName))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('restoreBackup 拒收坏 SQLite 且原库逐字节不变', async () => {
+    const currentPath = join(dir, 'user.db')
+    const before = await readFile(currentPath)
+    const archive = join(dir, 'palace-corrupt.tar.gz')
+    await writeArchive(archive, [
+      { name: 'user.db', data: Buffer.from('not-a-real-sqlite', 'utf8') },
+      { name: '_meta.json', data: validMeta() },
+    ])
+
+    await expect(restoreBackup(archive, dir)).rejects.toThrow('不是可恢复的 Engram SQLite 数据库')
+    expect(await readFile(currentPath)).toEqual(before)
+    expect((await readdir(dir)).filter(name => name.includes('.before-restore-'))).toEqual([])
+  })
+
+  it('restoreBackup 安装中途失败时回滚全部现有库', async () => {
+    const extra = await openEngramStore(join(dir, 'zz.db'))
+    await extra.close()
+    const created = await createBackup(dir, '0.10.1-test')
+
+    const current = await openEngramStore(join(dir, 'user.db'))
+    await current.write({ scope: 'user', kind: 'fact', content: '恢复失败也必须保留的当前数据', importance: 0.9 })
+    await current.close()
+
+    // 非空目录令最后一个 zz.db 的 rename 失败；此前已安装的库必须撤掉，旧库必须搬回。
+    await rm(join(dir, 'zz.db'))
+    await mkdir(join(dir, 'zz.db'))
+    await writeFile(join(dir, 'zz.db', 'blocker'), 'non-empty')
+    await expect(restoreBackup(created.archivePath, dir)).rejects.toThrow()
+
+    const rolledBack = await openEngramStore(join(dir, 'user.db'))
+    const rows = await rolledBack.topActive('user', 10)
+    expect(rows.map(row => row.content)).toContain('恢复失败也必须保留的当前数据')
+    await rolledBack.close()
+    expect((await readdir(dir)).filter(name => name.includes('.before-restore-'))).toEqual([])
   })
 
   it('archivePath 必须在 dbDir 内（防止路径穿越）', async () => {
