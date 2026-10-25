@@ -5,7 +5,7 @@
  * @module @kenz1117/dsh-engram/backup/tar-stream
  */
 
-import { join } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { message } from '../i18n/messages.ts'
 import type { Writable } from 'node:stream'
 
@@ -69,7 +69,7 @@ export function endTarPack(out: Writable): void {
 /** 解 tar 字节流到目标目录。整段读完再解析（备份场景文件小、可接受）。 */
 export async function extractTar(buffer: Buffer, destDir: string): Promise<void> {
   const { writeFile, mkdir } = await import('node:fs/promises')
-  const { dirname } = await import('node:path')
+  const root = resolve(destDir)
   let offset = 0
   while (offset + BLOCK_SIZE <= buffer.length) {
     const header = buffer.subarray(offset, offset + BLOCK_SIZE)
@@ -77,10 +77,14 @@ export async function extractTar(buffer: Buffer, destDir: string): Promise<void>
     const name = header.toString('ascii', 0, NAME_LEN).replace(/\0+$/, '')
     const sizeOct = header.toString('ascii', 124, 124 + SIZE_LEN).replace(/\0+$/, '')
     const size = parseInt(sizeOct, 8)
+    const target = resolve(root, name)
+    const rel = relative(root, target)
+    if (name === '' || isAbsolute(name) || rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      throw new Error(message('store.tarUnsafeEntry', { name }))
+    }
     offset += BLOCK_SIZE
     if (size > 0) {
       const data = buffer.subarray(offset, offset + size)
-      const target = join(destDir, name)
       await mkdir(dirname(target), { recursive: true, mode: 0o700 })
       await writeFile(target, data, { mode: 0o600 })
       const pad = (BLOCK_SIZE - (size % BLOCK_SIZE)) % BLOCK_SIZE
