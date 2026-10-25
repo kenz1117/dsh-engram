@@ -8,3 +8,8 @@ lib/
 *.tgz
 # 构建产物（发布用的 tarball 不进仓库）
 dist/
+
+# 本机工具的状态目录（不是仓库内容）
+.v2c/
+.video_agent/
+.zcode/
