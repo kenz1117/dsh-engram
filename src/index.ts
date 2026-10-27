@@ -708,7 +708,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   // Локаль машины и preference интерфейса для этого слишком слабы: язык дворца держит
   // модель, инструкции и язык новых записей, поэтому в остальных случаях спрашиваем
   // человека в панели (В.02), а до ответа считаем по тем же слабым сигналам.
-  if (determination !== undefined && determination.decision.grounded) {
+  if (determination?.decision.grounded) {
     const decided = determination.decision.language
     ctx.effect(() => {
       const timer = setTimeout(() => { persistPalaceLanguage(ctx, decided) }, 0)

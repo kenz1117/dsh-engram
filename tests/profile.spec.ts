@@ -66,7 +66,7 @@ describe('renderProfile 预算装填', () => {
     expect(estimateTokens(text)).toBeLessThanOrEqual(1024)
     // 分级递减：5 条全部截断装入（首条 160 字），不再需要索引行/计数行。
     expect(text.match(/^- \[fact\]/gm)).toHaveLength(5)
-    expect(text).toContain('中'.repeat(160) + '…')
+    expect(text).toContain(`${'中'.repeat(160)}…`)
     expect(text).not.toContain('中'.repeat(161))
   })
 })
@@ -76,8 +76,8 @@ describe('分级递减正文预算', () => {
     const records = [record('a', 'fact', '甲'.repeat(200)), record('b', 'fact', '乙'.repeat(200))]
     const detailed = renderProfileDetailed(records, 8192, 'en', { start: 160, decay: 0.9, floor: 24 })
     const lines = detailed.text.split('\n').filter(line => line.startsWith('- ['))
-    expect(lines[0]).toContain('甲'.repeat(160) + '…')
-    expect(lines[1]).toContain('乙'.repeat(144) + '…')
+    expect(lines[0]).toContain(`${'甲'.repeat(160)}…`)
+    expect(lines[1]).toContain(`${'乙'.repeat(144)}…`)
     expect(detailed.overflow).toEqual([])
   })
 
@@ -88,9 +88,9 @@ describe('分级递减正文预算', () => {
     ]
     const detailed = renderProfileDetailed(records, 8192, 'en', { start: 160, decay: 0.9, floor: 24 })
     const lines = detailed.text.split('\n').filter(line => line.startsWith('- ['))
-    expect(lines[0]).toContain('甲'.repeat(160) + '…')
+    expect(lines[0]).toContain(`${'甲'.repeat(160)}…`)
     const floorLine = lines.at(-1)!
-    expect(floorLine).toContain('丙'.repeat(24) + '…')
+    expect(floorLine).toContain(`${'丙'.repeat(24)}…`)
     expect(floorLine).not.toContain('丙'.repeat(25))
   })
 

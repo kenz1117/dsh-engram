@@ -119,7 +119,7 @@ describe('redactSecrets', () => {
   })
 
   it('脱敏 GitHub token、AWS key 与 Bearer 头', () => {
-    expect(redactSecrets('ghp_' + 'a'.repeat(24))).toBe('[REDACTED:github-token]')
+    expect(redactSecrets(`ghp_${'a'.repeat(24)}`)).toBe('[REDACTED:github-token]')
     expect(redactSecrets('AKIAIOSFODNN7EXAMPLE')).toBe('[REDACTED:aws-access-key]')
     expect(redactSecrets('Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.x.y'))
       .toBe('Authorization: Bearer [REDACTED:bearer-token]')

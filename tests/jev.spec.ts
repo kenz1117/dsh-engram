@@ -336,10 +336,10 @@ describe('след сорванного решения Jev в журнале', (
     expect(rows[0]?.op).toBe('jev-fallback')
     expect(rows[0]?.target).toBe('AUX')
     const detail = JSON.parse(rows[0]!.detail) as Record<string, unknown>
-    expect(detail['site']).toBe('band')
-    expect(detail['question']).toBe('same_memory')
-    expect(detail['reason']).toBe('network down')
-    expect(typeof detail['elapsedMs']).toBe('number')
+    expect(detail.site).toBe('band')
+    expect(detail.question).toBe('same_memory')
+    expect(detail.reason).toBe('network down')
+    expect(typeof detail.elapsedMs).toBe('number')
     // Текст памяти в журнал не едет: он там не нужен, а вторым хранилищем журнал быть не должен.
     expect(rows[0]!.detail).not.toContain('память A')
     expect(rows[0]!.detail).not.toContain('память B')
@@ -354,7 +354,7 @@ describe('след сорванного решения Jev в журнале', (
     }
     await decideWrite(auditStore(makeRecord('A')), 'fact', embedding, { judge: noAnswer, content: 'B' })
     expect(rows).toHaveLength(1)
-    expect(JSON.parse(rows[0]!.detail)['reason']).toBe('ответ без вероятности')
+    expect(JSON.parse(rows[0]!.detail).reason).toBe('ответ без вероятности')
   })
 
   it('удачное решение Jev журнал не трогает', async () => {
@@ -370,8 +370,8 @@ describe('след сорванного решения Jev в журнале', (
     expect(confirmed).toBeUndefined()
     expect(rows).toHaveLength(1)
     const detail = JSON.parse(rows[0]!.detail) as Record<string, unknown>
-    expect(detail['site']).toBe('contradiction')
-    expect(detail['reason']).toBe('boom')
+    expect(detail.site).toBe('contradiction')
+    expect(detail.reason).toBe('boom')
   })
 
   it('без базы (старый вызов) журнал не пишется и ошибки нет', async () => {

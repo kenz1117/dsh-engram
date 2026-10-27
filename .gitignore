@@ -13,3 +13,4 @@ dist/
 .v2c/
 .video_agent/
 .zcode/
+coverage/

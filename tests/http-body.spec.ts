@@ -132,7 +132,7 @@ describe('readJsonBody 上限口径', () => {
     const payload = Buffer.from(JSON.stringify({ content: '中文' }), 'utf8')
     const result = await postChunked(port, [payload.subarray(0, 5), payload.subarray(5)])
     expect(result.ok).toBe(true)
-    if (result.ok) expect(result.body['content']).toBe('中文')
+    if (result.ok) expect(result.body.content).toBe('中文')
   })
 })
 
@@ -187,7 +187,7 @@ describe('readJsonBody 多字节解码', () => {
     expect(result.ok).toBe(true)
     if (result.ok) {
       // 逐块 String(chunk) 会得到「��」；整块解码才拿得到「中」。
-      expect(result.body['content']).toBe('中')
+      expect(result.body.content).toBe('中')
     }
   })
 })

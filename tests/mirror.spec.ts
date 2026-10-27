@@ -35,7 +35,7 @@ describe('Markdown 镜像导出', () => {
     const factFiles = await readdir(factDir)
     expect(factFiles).toHaveLength(1)
     const factContent = await readFile(join(factDir, factFiles[0]!), 'utf8')
-    expect(factContent).toContain('id: ' + a.id)
+    expect(factContent).toContain(`id: ${a.id}`)
     expect(factContent).toContain('kind: fact')
     expect(factContent).toContain('importance: 0.700')
     expect(factContent).toContain('部署端口是 4000')

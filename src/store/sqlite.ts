@@ -762,6 +762,118 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       .all(...scopes, ...(rooms ?? [])) as unknown as NodeRow[]
   }
 
+  /**
+   * 向量道的进程内打包矩阵（审计 P1-2）。双道检索每次查询、写入处置（最近邻/矛盾探测）
+   * 每次写入都要全池余弦：旧实现逐行 new Float32Array + 逐行调 cosine——一万条即单扫
+   * 15MB 垃圾、380 万次乘加，scope=all 一次检索最多十二连扫。打包成单个 Float32Array
+   * 后用紧凑点积循环一次算完：一次分配、零逐行对象、无函数调用开销。
+   *
+   * 失效：gen 取 op_log 的 MAX(seq)（PK 上 O(1)）。所有会改变候选集的写路径都写 op_log
+   * （insertRecord/update/forget/forgetWithTombstone/restore/import/decay/reinforce），
+   * 例外只有 attachEmbeddings / rewriteVectors / purge 三个——它们各自显式
+   * bumpVectorMatrix()。新增会改 nodes.embedding 或 status 的写路径时必须补失效，
+   * 否则检索对着旧矩阵打分——这条约定与「加列走 MIGRATIONS」同级，忘不得。
+   *
+   * 上限：超过 VECTOR_MATRIX_MAX_ROWS 不缓存（常数内存上界），调用方回落逐行流式扫描
+   * ——那个量级该上 sqlite-vec，而不是把 150MB 钉在进程里。
+   */
+  const VECTOR_MATRIX_MAX_ROWS = 50_000
+  const sqlMatrixGen = db.prepare('SELECT COALESCE(MAX(seq), 0) AS g FROM op_log')
+  // 行数用 COUNT 先探（索引范围扫、零物化）：超限直接判 overflow，不把 6 万行 ×
+  // 1.5KB 的 BLOB 拖进内存再扔掉——那会让回落路径比旧实现还多一次全池物化。
+  const sqlMatrixCount = db.prepare(`SELECT COUNT(*) AS n FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0`)
+  const sqlMatrixPool = db.prepare(`SELECT id, scope, slot_room, embedding FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0`)
+  interface VectorMatrix {
+    readonly gen: number
+    readonly dim: number
+    readonly ids: readonly string[]
+    readonly packed: Float32Array
+    /** 每行的 scope 序号（0 user / 1 project / 2 shared）——scope 过滤是逐行一个分支。 */
+    readonly scopeIdx: Uint8Array
+    /** 每行的房间序号（0xFFFF = 无房间）；房名字表随用随建。 */
+    readonly roomIdx: Uint16Array
+  }
+  const SCOPE_ORDER: readonly EngramScope[] = ['user', 'project', 'shared']
+  let vecMatrix: VectorMatrix | undefined
+  /** overflow 判定按 gen 缓存：超限库里每次查询都 COUNT 一次（O(索引)），不再物化全池。 */
+  let vecOverflowGen = -1
+  const roomTable = new Map<string, number>()
+  const bumpVectorMatrix = (): void => { vecMatrix = undefined; vecOverflowGen = -1 }
+  const vectorMatrix = (): VectorMatrix | 'overflow' | undefined => {
+    const gen = Number((sqlMatrixGen.get() as unknown as { g: number }).g)
+    if (vecMatrix !== undefined && vecMatrix.gen === gen) return vecMatrix
+    if (vecOverflowGen === gen) return 'overflow'
+    const count = Number((sqlMatrixCount.get() as unknown as { n: number }).n)
+    if (count === 0) { vecMatrix = undefined; return undefined }
+    if (count > VECTOR_MATRIX_MAX_ROWS) { vecOverflowGen = gen; return 'overflow' }
+    const all = sqlMatrixPool.all() as unknown as { id: string; scope: string; slot_room: string | null; embedding: Uint8Array }[]
+    // 维度取多数派（平局取小）——与 computeStoredDim 同一口径。守卫闸之后本不该有
+    // 混维行，但旧库可能带着守卫上线前的历史混合；少数派行不打包（摆不进统一
+    // 步长的矩阵，set 越界会炸），它们与旧读道一样被晾在语义道之外。
+    const dimCounts = new Map<number, number>()
+    for (const row of all) {
+      const d = row.embedding.byteLength / Float32Array.BYTES_PER_ELEMENT
+      dimCounts.set(d, (dimCounts.get(d) ?? 0) + 1)
+    }
+    const dim = [...dimCounts.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]![0]
+    const rows = dimCounts.size === 1 ? all : all.filter(row => row.embedding.byteLength / Float32Array.BYTES_PER_ELEMENT === dim)
+    const packed = new Float32Array(rows.length * dim)
+    const scopeIdx = new Uint8Array(rows.length)
+    const roomIdx = new Uint16Array(rows.length)
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i]!
+      const blob = row.embedding
+      // 打包循环里做一次视图换算（blobToVec 的逐行 slice+拷贝在这里摊销成零），
+      // 并就地归一化：写入侧不保证归一（那是 embedder 的职责），而点积当余弦用的
+      // 前提是两侧单位长。归一一次打包进矩阵，比每次查询逐行除省一个数量级。
+      // 零向量保持原样：点积恒 0，过不了 MIN_COSINE 阈（与旧 cosine 的 NaN 同效）。
+      const floats = new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / Float32Array.BYTES_PER_ELEMENT)
+      let norm = 0
+      for (let k = 0; k < floats.length; k += 1) norm += floats[k]! * floats[k]!
+      norm = Math.sqrt(norm)
+      const base = i * dim
+      if (norm > 0) {
+        for (let k = 0; k < floats.length; k += 1) packed[base + k] = floats[k]! / norm
+      }
+      scopeIdx[i] = Math.max(0, SCOPE_ORDER.indexOf(row.scope as EngramScope))
+      if (row.slot_room === null) {
+        roomIdx[i] = 0xffff
+      } else {
+        let idx = roomTable.get(row.slot_room)
+        if (idx === undefined) { idx = roomTable.size; roomTable.set(row.slot_room, idx) }
+        roomIdx[i] = idx
+      }
+    }
+    vecMatrix = { gen, dim, ids: rows.map(row => row.id), packed, scopeIdx, roomIdx }
+    return vecMatrix
+  }
+  /** 归一化副本（零向量原样返回）。查询侧每次调用做一次，行侧在打包时已归一。 */
+  const unit = (vector: Float32Array): Float32Array => {
+    let norm = 0
+    for (let k = 0; k < vector.length; k += 1) norm += vector[k]! * vector[k]!
+    norm = Math.sqrt(norm)
+    if (norm === 0) return vector
+    const out = new Float32Array(vector.length)
+    for (let k = 0; k < vector.length; k += 1) out[k] = vector[k]! / norm
+    return out
+  }
+  /** 紧凑点积：矩阵第 i 行与单位化 query 的内积（行已在打包时归一化，等价余弦）。 */
+  const dotAt = (matrix: VectorMatrix, i: number, queryUnit: Float32Array): number => {
+    const base = i * matrix.dim
+    let dot = 0
+    for (let k = 0; k < matrix.dim; k += 1) dot += queryUnit[k]! * matrix.packed[base + k]!
+    return dot
+  }
+  /** RRF 计分累加：同 id 多道命中合并（via 升级为 both）。 */
+  const addScore = (
+    scores: Map<string, { score: number; via: SearchHit['via'] }>,
+    id: string, add: number, via: 'fts' | 'vec',
+  ): void => {
+    const existing = scores.get(id)
+    if (existing === undefined) scores.set(id, { score: add, via })
+    else scores.set(id, { score: existing.score + add, via: 'both' })
+  }
+
   const getRow = (id: string): NodeRow | undefined => sqlGet.get(id) as unknown as NodeRow | undefined
 
   /**
@@ -949,22 +1061,41 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       let degraded = true
       if (queryVector !== undefined) {
         try {
-          const pool = vectorPool(query.scopes, query.rooms)
-          const ranked = pool
-            .map(row => ({ row, sim: cosine(queryVector, blobToVec(row.embedding!)) }))
-            .filter(entry => entry.sim >= MIN_COSINE)
-            .sort((a, b) => b.sim - a.sim)
-            .slice(0, RANK_POOL)
-          ranked.forEach((entry, index) => {
-            const add = 1 / (RRF_K + index + 1)
-            const existing = scores.get(entry.row.id)
-            if (existing === undefined) {
-              scores.set(entry.row.id, { score: add, via: 'vec' })
-            } else {
-              scores.set(entry.row.id, { score: existing.score + add, via: 'both' })
+          const matrix = vectorMatrix()
+          if (matrix === undefined) {
+            // 空池：向量道无事可做，不算降级（与旧行为一致——空池 ranked=[] 也不降级）。
+            degraded = false
+          } else if (matrix === 'overflow') {
+            // 超打包上限：逐行流式扫（分配多但内存有界；这个量级该换 sqlite-vec）。
+            const ranked = vectorPool(query.scopes, query.rooms)
+              .map(row => ({ id: row.id, sim: cosine(queryVector, blobToVec(row.embedding!)) }))
+              .filter(entry => entry.sim >= MIN_COSINE)
+              .sort((a, b) => b.sim - a.sim)
+              .slice(0, RANK_POOL)
+            ranked.forEach((entry, index) => { addScore(scores, entry.id, 1 / (RRF_K + index + 1), 'vec') })
+            degraded = false
+          } else {
+            if (queryVector.length !== matrix.dim) {
+              throw new EngramError('EMBEDDER_DIMENSION_MISMATCH', message('store.embedderDimensionMismatch', { expected: matrix.dim, found: queryVector.length }))
             }
-          })
-          degraded = false
+            const scopeMask = query.scopes.reduce((mask, scope) => mask | (1 << Math.max(0, SCOPE_ORDER.indexOf(scope))), 0)
+            const roomSet = query.rooms === undefined || query.rooms.length === 0
+              ? null
+              : new Set(query.rooms.map(room => roomTable.get(room) ?? -1))
+            const queryUnit = unit(queryVector)
+            const hits: { index: number; sim: number }[] = []
+            for (let i = 0; i < matrix.ids.length; i += 1) {
+              if ((scopeMask & (1 << matrix.scopeIdx[i]!)) === 0) continue
+              if (roomSet !== null && !roomSet.has(matrix.roomIdx[i]!)) continue
+              const sim = dotAt(matrix, i, queryUnit)
+              if (sim >= MIN_COSINE) hits.push({ index: i, sim })
+            }
+            hits.sort((a, b) => b.sim - a.sim)
+            hits.slice(0, RANK_POOL).forEach((hit, index) => {
+              addScore(scores, matrix.ids[hit.index]!, 1 / (RRF_K + index + 1), 'vec')
+            })
+            degraded = false
+          }
         } catch (error) {
           if (!isDimensionMismatch(error)) throw error
           if (!warnedDegradedRead) {
@@ -1448,9 +1579,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       for (const row of statusRows) byStatus[row.status] = row.n
       const byKind: Record<string, number> = {}
       for (const row of kindRows) byKind[row.kind] = row.n
-      const active = byStatus['active'] ?? 0
-      const archived = byStatus['archived'] ?? 0
-      const forgotten = byStatus['forgotten'] ?? 0
+      const active = byStatus.active ?? 0
+      const archived = byStatus.archived ?? 0
+      const forgotten = byStatus.forgotten ?? 0
       const total = active + archived + forgotten
       return {
         total,
@@ -1598,6 +1729,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       }
       // 逐条 attach 同样可能改变库的有效维度画像（空库首嵌），与其他写路径同规重算。
       storedDim = computeStoredDim()
+      bumpVectorMatrix()
       return attached
     },
 
@@ -1612,6 +1744,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       // 转换后库里已经是新维度：缓存必须跟着重算，否则后续写入会拿旧维度去对，
       // 把「刚转成 384 维的库」判成 512 维的库并拒绝写入（EMBEDDER_DIMENSION_MISMATCH）。
       storedDim = computeStoredDim()
+      bumpVectorMatrix()
       return written
     },
 
@@ -1624,14 +1757,33 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     },
 
     async findContradictions(embedding: Float32Array, limit = 3) {
-      // 与 vectorPool 同一坏行标准：损坏 BLOB 不进池（审计 N10）。
-      const pool = db.prepare(`SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0 AND scope IN ('user','project')`).all() as unknown as NodeRow[]
-      return pool
-        .map(row => ({ row, sim: cosine(embedding, blobToVec(row.embedding!)) }))
-        .filter(entry => entry.sim >= CONTRADICTION_COSINE)
-        .sort((a, b) => b.sim - a.sim)
-        .slice(0, limit)
-        .map(entry => rowToRecord(entry.row))
+      // 与检索同一打包矩阵（user+project 掩码，无房间过滤）；坏行不进池，超限回落流式扫。
+      const matrix = vectorMatrix()
+      if (matrix === undefined) return []
+      if (matrix === 'overflow') {
+        const pool = db.prepare(`SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0 AND scope IN ('user','project')`).all() as unknown as NodeRow[]
+        return pool
+          .map(row => ({ row, sim: cosine(embedding, blobToVec(row.embedding!)) }))
+          .filter(entry => entry.sim >= CONTRADICTION_COSINE)
+          .sort((a, b) => b.sim - a.sim)
+          .slice(0, limit)
+          .map(entry => rowToRecord(entry.row))
+      }
+      if (embedding.length !== matrix.dim) {
+        throw new EngramError('EMBEDDER_DIMENSION_MISMATCH', message('store.embedderDimensionMismatch', { expected: matrix.dim, found: embedding.length }))
+      }
+      const queryUnit = unit(embedding)
+      const hits: { index: number; sim: number }[] = []
+      for (let i = 0; i < matrix.ids.length; i += 1) {
+        if (matrix.scopeIdx[i]! > 1) continue // 只比 user/project，与旧行为一致。
+        const sim = dotAt(matrix, i, queryUnit)
+        if (sim >= CONTRADICTION_COSINE) hits.push({ index: i, sim })
+      }
+      hits.sort((a, b) => b.sim - a.sim)
+      return hits.slice(0, limit)
+        .map(hit => getRow(matrix.ids[hit.index]!))
+        .filter((row): row is NodeRow => row !== undefined)
+        .map(row => rowToRecord(row))
     },
 
     async linkEdge(from: MemoryId, to: MemoryId, type: EngramEdgeType) {
@@ -1639,14 +1791,30 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     },
 
     async nearestNeighbor(embedding: Float32Array) {
-      // 与 findContradictions 同一池口径（active 且有向量的 user/project 行），不夹阈值、保留相似度；坏行同规跳过。
-      const pool = db.prepare(`SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0 AND scope IN ('user','project')`).all() as unknown as NodeRow[]
-      let best: { row: NodeRow; sim: number } | undefined
-      for (const row of pool) {
-        const sim = cosine(embedding, blobToVec(row.embedding!))
-        if (best === undefined || sim > best.sim) best = { row, sim }
+      // 与 findContradictions 同一池口径（active 且有向量的 user/project 行），不夹阈值、保留相似度。
+      const matrix = vectorMatrix()
+      if (matrix === undefined) return undefined
+      if (matrix === 'overflow') {
+        const pool = db.prepare(`SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0 AND scope IN ('user','project')`).all() as unknown as NodeRow[]
+        let best: { row: NodeRow; sim: number } | undefined
+        for (const row of pool) {
+          const sim = cosine(embedding, blobToVec(row.embedding!))
+          if (best === undefined || sim > best.sim) best = { row, sim }
+        }
+        return best === undefined ? undefined : { record: rowToRecord(best.row), similarity: best.sim }
       }
-      return best === undefined ? undefined : { record: rowToRecord(best.row), similarity: best.sim }
+      if (embedding.length !== matrix.dim) {
+        throw new EngramError('EMBEDDER_DIMENSION_MISMATCH', message('store.embedderDimensionMismatch', { expected: matrix.dim, found: embedding.length }))
+      }
+      const queryUnit = unit(embedding)
+      let best: { index: number; sim: number } | undefined
+      for (let i = 0; i < matrix.ids.length; i += 1) {
+        if (matrix.scopeIdx[i]! > 1) continue
+        const sim = dotAt(matrix, i, queryUnit)
+        if (best === undefined || sim > best.sim) best = { index: i, sim }
+      }
+      const row = best === undefined ? undefined : getRow(matrix.ids[best.index]!)
+      return row === undefined || best === undefined ? undefined : { record: rowToRecord(row), similarity: best.sim }
     },
 
     async reinforce(id: MemoryId, note: string) {
@@ -2000,6 +2168,8 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         sqlPurgeFacts.run()
         sqlPurgeObservations.run()
       })
+      // purge 清了 op_log：向量矩阵的 gen（MAX(seq)）会倒退，但为防旧 gen 撞新序号，显式失效。
+      bumpVectorMatrix()
     },
 
     async close() {

@@ -61,6 +61,8 @@ const llmDouble = {
       stream: async function* (params: { route?: unknown }) {
         llmCalls.push(params)
         throw new Error('llm offline in test')
+        // biome-ignore lint/correctness/noUnreachable: 离线桩故意首拍即抛；yield 只为满足生成器签名
+        yield params
       },
       // 模型清单（面板「辅助模型」下拉的数据源）。
       listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
@@ -179,7 +181,7 @@ async function loadComposition(extraConfig: readonly string[] = [], pending?: Pe
   ].join('\n'))
 
   context = new Context()
-  context.baseUrl = pathToFileURL(root).href + '/'
+  context.baseUrl = `${pathToFileURL(root).href}/`
   await context.plugin(Loader)
   context.loader.builtins.include = Include
   const modules = new Map<string, unknown>([
@@ -932,7 +934,7 @@ describe('dsh-engram real Loader composition', () => {
       '',
     ].join('\n'))
     const bad = new Context()
-    bad.baseUrl = pathToFileURL(root).href + '/'
+    bad.baseUrl = `${pathToFileURL(root).href}/`
     await bad.plugin(Loader)
     bad.loader.builtins.include = Include
     const modules = new Map<string, unknown>([

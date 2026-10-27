@@ -49,6 +49,11 @@ const DEFAULTS: Required<Omit<ConsolidateOptions, 'scope' | 'mergeCandidateIds'>
   mergeThreshold: 0.92,
 }
 
+/** 合并阶段的工作集封顶：超出交给归档/衰减处置（审计 N12——两两比对必须设界）。 */
+const CONSOLIDATION_MAX_RECORDS = 500
+/** 批式嵌入的块大小（一次 ONNX 前向的条数）。 */
+const EMBED_BATCH = 32
+
 /** 闭馆整理主函数：纯异步，不抛错（失败仅记日志 / 落 pending）。 */
 export async function runConsolidation(
   store: EngramStore,
@@ -58,44 +63,39 @@ export async function runConsolidation(
   const start = Date.now()
   const options = { ...DEFAULTS, ...opts }
   const scope: 'user' | 'project' | 'shared' = options.scope ?? 'user'
-  const stats = await store.stats()
-  const records = await store.topActive(scope, Math.max(stats.active, 0))
-  const archivedIds = new Set<string>()
   let archived = 0
   let merged = 0
   let skipped = 0
-  const now = Date.now()
-  const ageCutoff = options.olderThanDays * 86_400_000
 
-  // 阶段 1：闭馆归档（清楼）。
-  for (const record of records) {
-    if (record.importance >= options.importanceBelow) continue
-    // lastAccessedAt 通过 store 接口无显式字段；用 createdAt + confidence 衰减作为代理：
-    // 创建已过 ageCutoff 且 confidence < 0.3（低访问代理）则归档。
-    if (now - record.createdAt < ageCutoff) continue
-    if (record.confidence >= 0.3) continue
-    try {
-      await store.forget(record.id)
-      archivedIds.add(record.id)
-      archived += 1
-    } catch {
-      skipped += 1
-    }
+  // 阶段 1：闭馆归档（清楼）——走 store.decay 的 archived 语义（SQL 全表，不整池加载）。
+  // 审计 N12：此前这里逐条 forget——forgotten 是遗忘墓碑桶（喂「遗忘审计」视图），
+  // 而每日衰减任务把同一套 30 天/0.3 判准归档进 archived。同_criteria 两种状态语义 =
+  // 面板的归档视图与遗忘审计各看到一半。统一为归档后各归其位：forget 只留给用户的
+  // 主动遗忘（带墓碑），后台清理一律 archived。
+  try {
+    archived = await store.decay({ importanceBelow: options.importanceBelow, olderThanDays: options.olderThanDays })
+  } catch {
+    skipped += 1
   }
 
   // 阶段 2：合并相似条目（按 kind 分桶，桶内两两比对）。
   // 可选 mergeCandidateIds：仅把指定 id 当作「种子」参与比对（同桶内仍允许并入未指定条目）。
+  // 工作集封顶（审计 N12）：全量 active 进两两比对是 O(N²)，每日后台任务必须设界；
+  // 界内取 topActive（重要度序 = 合并价值最高的一批），界外交给归档/衰减处置。
+  // 限定种子模式不设顶：种子 id 可能重要度很低，按重要度截断会漏种；其内层比较
+  // 只发生在有向量的种子之间，代价 O(种子数²) 而非 O(N²)。
+  const seedIds = options.mergeCandidateIds !== undefined
+    ? new Set(options.mergeCandidateIds)
+    : null
+  const stats = await store.stats()
+  const records = await store.topActive(scope, seedIds === null ? Math.min(Math.max(stats.active, 0), CONSOLIDATION_MAX_RECORDS) : Math.max(stats.active, 0))
   const emb = await embedder
   const buckets = new Map<string, MemoryRecord[]>()
   for (const record of records) {
-    if (archivedIds.has(record.id)) continue
     const list = buckets.get(record.kind) ?? []
     list.push(record)
     buckets.set(record.kind, list)
   }
-  const seedIds = options.mergeCandidateIds !== undefined
-    ? new Set(options.mergeCandidateIds)
-    : null
   for (const list of buckets.values()) {
     if (list.length < 2) continue
     // 限定模式：桶内若无任何种子 id 则跳过该桶（仅在其他桶找到 seed 的关联条目时才合并）。
@@ -123,15 +123,27 @@ export async function runConsolidation(
     }
     // 嵌入可用：两两 cosine ≥ 阈值则合并（保留高 importance）。
     // 限定模式：以种子为起点向外扫；非种子桶内记录只有与某个种子相似才参与合并。
+    // 批式嵌入（审计 N12）：逐条 embed 是 N 次 ONNX 前向——批 32 条一次前向，
+    // 整块失败退回逐条（一条坏文本不废一批，与摄取候选同一纪律）。
     const vectors = new Map<string, Float32Array>()
-    for (const record of list) {
-      // 限定模式下只为种子 id 算向量（节省嵌入开销）。
-      if (seedIds !== null && !seedIds.has(record.id)) continue
+    const seedRecords = list.filter(record => seedIds === null || seedIds.has(record.id))
+    for (let offset = 0; offset < seedRecords.length; offset += EMBED_BATCH) {
+      const chunk = seedRecords.slice(offset, offset + EMBED_BATCH)
       try {
-        const vec = (await emb.embed([record.content]))[0]
-        if (vec !== undefined) vectors.set(record.id, vec)
+        const vecs = await emb.embed(chunk.map(record => record.content))
+        chunk.forEach((record, index) => {
+          const vec = vecs[index]
+          if (vec !== undefined) vectors.set(record.id, vec)
+        })
       } catch {
-        skipped += 1
+        for (const record of chunk) {
+          try {
+            const vec = (await emb.embed([record.content]))[0]
+            if (vec !== undefined) vectors.set(record.id, vec)
+          } catch {
+            skipped += 1
+          }
+        }
       }
     }
     const arr = list.filter(record => vectors.has(record.id))
@@ -143,6 +155,10 @@ export async function runConsolidation(
       for (let j = i + 1; j < list.length; j += 1) {
         const b = list[j]!
         if (visited.has(b.id)) continue
+        // 外层走 arr、内层走 list，下标不对应：b 可能就是 a 自己（向量少的记录排在
+        // 种子前面时），cosine(a, a)=1 ≥ 阈值 → 条目被自己 supersede（归档 + 复制出
+        // 新 id，每日一次）。跳过自身。
+        if (b.id === a.id) continue
         // 限定模式：b 必须与某个种子 a 相似才能被并入。
         const bVec = vectors.get(b.id)
         if (bVec === undefined) continue

@@ -147,6 +147,6 @@ export class PalaceGuard {
     const window = this.window
     if (window === null) return Math.max(0, Math.round(windowSec))
     const left = Math.round((windowSec * 1000 - (now - window.startedAt)) / 1000)
-    return left > 0 ? left : 0
+    return Math.max(left , 0)
   }
 }

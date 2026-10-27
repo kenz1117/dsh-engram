@@ -108,15 +108,15 @@ export async function aggregateTelemetry(
       countsAgg.ingestRequests += counts['ingest-request'] ?? 0
       countsAgg.ingestDones += counts['ingest-done'] ?? 0
       countsAgg.searches += counts['search-rewrite-request'] ?? 0
-      countsAgg.writes += counts['write'] ?? 0
-      countsAgg.updates += counts['update'] ?? 0
-      countsAgg.forgets += counts['forget'] ?? 0
-      countsAgg.restores += counts['restore'] ?? 0
+      countsAgg.writes += counts.write ?? 0
+      countsAgg.updates += counts.update ?? 0
+      countsAgg.forgets += counts.forget ?? 0
+      countsAgg.restores += counts.restore ?? 0
       countsAgg.distillRequests += counts['distill-request'] ?? 0
       countsAgg.compressRequests += counts['compress-request'] ?? 0
       countsAgg.searchRewrites += counts['search-rewrite-request'] ?? 0
       countsAgg.consumptions += (counts['outcome-report'] ?? 0)
-      countsAgg.consolidations += counts['consolidation'] ?? 0
+      countsAgg.consolidations += counts.consolidation ?? 0
       countsAgg.reviewAnswers += counts['review-answer'] ?? 0
       scopeViews.push({ scope, active: stats.active, total: stats.total, signalRatio: stats.signalRatio })
       for (const [day, n] of daily) dailyTotals.set(day, (dailyTotals.get(day) ?? 0) + n)

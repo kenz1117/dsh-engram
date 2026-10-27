@@ -20,13 +20,15 @@ afterEach(async () => {
 
 describe('Background Consolidation', () => {
   it('嵌入不可用时：归档老旧低重要性条目，启发式去重完全相同条目', async () => {
-    // 1) 老旧低 importance / 低 confidence → 应归档（write 默认 confidence=0.5，需手动改低）。
-    const old = await store.write({ scope: 'user', kind: 'fact', content: '旧且无关', importance: 0.1, confidence: 0.5 })
-    // 手动把 created_at 拨到 60 天前 + confidence 拨到 0.1（接口不暴露 lastAccessedAt / updateConfidence）。
+    // 1) 老旧低 importance → 应归档（decay 判准：importance < 阈值且 last_accessed_at 超龄）。
+    // initialReviewAt: null = 显式不进复习调度（与历史回填同口径）——进了调度队列的
+    // 条目按设计走翻新 demote 退出，不参与自动衰减（sqlDecay 的 next_review_at IS NULL）。
+    const old = await store.write({ scope: 'user', kind: 'fact', content: '旧且无关', importance: 0.1, confidence: 0.5, initialReviewAt: null })
+    // 手动把 last_accessed_at 拨到 60 天前（decay 检查的是访问时间，接口不暴露）。
     const path = join(dir, 'user.db')
     const { DatabaseSync } = await import('node:sqlite')
     const raw = new DatabaseSync(path)
-    raw.prepare('UPDATE nodes SET created_at = ?, confidence = 0.1 WHERE id = ?').run(Date.now() - 60 * 86_400_000, old.id)
+    raw.prepare('UPDATE nodes SET last_accessed_at = ? WHERE id = ?').run(Date.now() - 60 * 86_400_000, old.id)
     raw.close()
 
     // 2) 完全相同内容（启发式去重）：a(0.5) 与 b(0.6) 同文，b 留下、a 被归档。
@@ -47,7 +49,7 @@ describe('Background Consolidation', () => {
     expect(dbgBefore.filter(r => r.content === '偏好 TypeScript')).toHaveLength(2) // 整理前两条都在
 
     const stats = await store.stats()
-    // 期望 active=3：fresh(0.9) + b(0.6) + a(0.5)；old 已归档（forgotten），b 与 a 重要度不同不被合并。
+    // 期望 active=3：fresh(0.9) + b(0.6) + a(0.5)；old 已归档（archived——后台清理归一走 decay 语义）。
     expect(stats.active).toBe(3)
 
     // fresh 必须健在

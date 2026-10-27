@@ -273,7 +273,9 @@ function layoutRoom(nodes: GraphNode[], box: RoomBox): void {
     n.x = cx + Math.sqrt(t) * area.w * 0.44 * Math.cos(angle)
     n.y = cy + Math.sqrt(t) * area.h * 0.44 * Math.sin(angle)
   })
-  const ITER = 220
+  // 迭代数随房间规模缩档：O(n²·ITER) 在主线程一次算完——150+ 节点的大房间降到 60 轮
+  // （视觉上仍收敛，排斥力主导相位在前 30 轮），避免走廊页签数秒冻结（审计 N20）。
+  const ITER = nodes.length > 150 ? 60 : 220
   for (let iter = 0; iter < ITER; iter += 1) {
     const alpha = 1 - iter / ITER
     for (let i = 0; i < nodes.length; i += 1) {

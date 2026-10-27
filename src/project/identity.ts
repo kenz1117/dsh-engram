@@ -77,7 +77,7 @@ export function normalizeOriginUrl(raw: string): string | undefined {
  */
 export function resolveGitConfigPath(cwd: string): string | undefined {
   const dotGit = join(cwd, '.git')
-  let stat
+  let stat: import('node:fs').Stats | undefined
   try {
     stat = statSync(dotGit)
   } catch {
@@ -192,11 +192,11 @@ export function migrateProjectDb(
     if (policy === 'conservative') return 'deferred'
     renameSync(legacy, next)
     try {
-      writeFileSync(`${legacy}.migrated-to`, JSON.stringify({
+      writeFileSync(`${legacy}.migrated-to`, `${JSON.stringify({
         migratedTo: identity.dbName,
         claimedByCwd: identity.cwd,
         claimedAt: new Date().toISOString(),
-      } satisfies MigrationPointer) + '\n', { flag: 'wx', mode: 0o600 })
+      } satisfies MigrationPointer)}\n`, { flag: 'wx', mode: 0o600 })
     } catch (error) {
       // Do not attempt a rollback that could overwrite a concurrently restored old file.
       throw new Error(`dsh-engram: renamed ${identity.legacyDbName} to ${identity.dbName}, but could not record migration; inspect both paths before retrying`, { cause: error })

@@ -112,7 +112,7 @@ async function resolveBand(
         instructions: `Are Memory A and Memory B the same fact, i.e. restatements of one identical statement (both are "${kind}" memories)? Answer true only for genuine restatements.`,
       }],
     )
-    const p = answers['same_memory']
+    const p = answers.same_memory
     recordJevObservation({
       at: startedAt,
       site: 'band',
@@ -214,7 +214,7 @@ export async function confirmContradictions(
             instructions: 'Do Memory A and Memory B state facts that cannot both be true at the same time (a genuine contradiction)?',
           }],
         )
-        const p = answers['contradicts']
+        const p = answers.contradicts
         recordJevObservation({
           at: startedAt,
           site: 'contradiction',

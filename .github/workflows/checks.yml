@@ -33,6 +33,12 @@ jobs:
       # --ignore-scripts: `prepare` runs scripts/ensure-build.mjs, which builds
       # both bundles — and building needs the peers.
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      # biome 自带 TS/TSX 解析器（不依赖 tsc 的 JS API——typescript-eslint 截至最新版
+      # 只支持 TS <6.1，本仓用 TS 7），不需要 peers，hosted runner 可跑。
+      # 现存 34 条 warn 是已入册的 a11y/依赖数组债（audit-2026-10-27 §2/§5），
+      # biome 对 error 级退出非零——增量代码回退会在这里响。
+      - name: lint (biome)
+        run: pnpm lint
       - name: message dictionary parity
         run: node scripts/check-messages.mjs
       - name: language pattern acceptance

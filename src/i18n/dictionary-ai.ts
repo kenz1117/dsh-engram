@@ -257,7 +257,7 @@ export function parseFillAnswer(text: string, terms: readonly string[]): readonl
   /** Список переводов по порядку запроса: модель отвечает и так, без левых строк. */
   const byOrder = (list: readonly unknown[]): void => {
     if (list.length !== terms.length || !list.every(item => typeof item === 'string')) return
-    list.forEach((item, index) => accept(terms[index], item))
+    list.forEach((item, index) => { accept(terms[index], item) })
   }
 
   /** Карта: ключ — английская строка (или обёртка с массивом переводов внутри). */

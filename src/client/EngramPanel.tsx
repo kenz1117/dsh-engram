@@ -11,7 +11,7 @@ import { Component, Fragment, memo, useCallback, useEffect, useLayoutEffect, use
 import { createPortal } from 'react-dom'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
-import { KIND_KEY, NS, en, ru, zh, type EngramKey } from './locales/index.ts'
+import { KIND_KEY, type NS, en, ru, zh, type EngramKey } from './locales/index.ts'
 import { CorridorMap, EDGE_STYLE, FloorplanMap, KIND_PALETTE } from './CorridorMap.tsx'
 import { SpiralMap, type SpiralRecord } from './SpiralMap.tsx'
 import spiralStyles from './spiral.module.css'
@@ -128,47 +128,11 @@ interface ReviewView {
 /** 面板内部传递的翻译函数（渲染器按注册的 locale 声明合成的 t 的窄化签名）。 */
 type T = (key: EngramKey, params?: Record<string, unknown>) => string
 
-/** 中英词典（面板级语言覆盖用），与 locales.ts 注册给宿主的两份词典同源。 */
-/**
- * Языки панельного переключателя. Хост DSH поставляет zh и en; русский плагин
- * объявляет сам (см. src/client/index.ts), поэтому его можно выбрать и здесь.
- */
-type PanelLang = 'zh' | 'en' | 'ru'
-const DICTS: Record<PanelLang, Record<EngramKey, string>> = { zh, en, ru }
+// 面板级词典合成与俄语复数抽到 translate.ts（审计批次 3）：纯函数零 react 依赖，
+// client 测试直接可测。此处 re-export 维持既有引用面。
+export { makeT, ruPluralForm } from './translate.ts'
+import { makeT, type PanelLang } from './translate.ts'
 
-/** 俄语复数选形（审计 I2）：n%10==1 且 n%100!=11 → one；n%10∈2-4 且 n%100∉12-14 → few；其余 → many。 */
-function ruPluralForm(n: number): 0 | 1 | 2 {
-  const mod10 = Math.abs(n) % 10
-  const mod100 = Math.abs(n) % 100
-  if (mod10 === 1 && mod100 !== 11) return 0
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 1
-  return 2
-}
-
-/** 词典值插值：{param} 直替，缺参保留原样。 */
-function fillParams(raw: string, params: Record<string, unknown> | undefined): string {
-  return raw.replace(/\{(\w+)\}/g, (part: string, name: string) => {
-    const value = params?.[name]
-    return value === undefined ? part : String(value)
-  })
-}
-
-/** 合成面板级 t：与宿主词典同款 {param} 插值，未知键回退键名本身。
- *  俄语复数（审计 I2）：词典值为「one|few|many」三段式、且参数含数字 n 时按俄语复数
- *  规则选段（如 '{n} предложение|{n} предложения|{n} предложений'）；单段值行为不变。 */
-function makeT(lang: PanelLang): T {
-  const dict = DICTS[lang]
-  return (key, params) => {
-    const raw = dict[key] ?? String(key)
-    const n = params?.n
-    if (lang === 'ru' && typeof n === 'number' && raw.includes('|')) {
-      const forms = raw.split('|')
-      const form = forms[ruPluralForm(n)]
-      if (forms.length === 3 && form !== undefined) return fillParams(form, params)
-    }
-    return fillParams(raw, params)
-  }
-}
 
 /** kind 数据值（存储层英文枚举，编辑表单下拉的 value 保持英文）。 */
 const KINDS = ['fact', 'preference', 'decision', 'episode', 'skill'] as const
@@ -259,13 +223,13 @@ function formatOpDetail(t: T, op: string, detail: string | null): string {
       const to = Number(parsed.toVersion)
       const chars = Number(parsed.chars)
       if (parsed.action === 'edit' && parsed.fromVersion === null) {
-        return ' ' + t('profileOpCreate', { to, chars })
+        return ` ${t('profileOpCreate', { to, chars })}`
       }
       const from = Number(parsed.fromVersion)
-      if (parsed.action === 'edit') return ' ' + t('profileOpEdit', { from, to, chars })
+      if (parsed.action === 'edit') return ` ${t('profileOpEdit', { from, to, chars })}`
       const restored = Number(parsed.restoredFrom)
       if (parsed.action === 'rollback' && Number.isInteger(from) && Number.isInteger(to) && Number.isInteger(restored)) {
-        return ' ' + t('profileOpRollback', { from, to, restored, chars })
+        return ` ${t('profileOpRollback', { from, to, restored, chars })}`
       }
     } catch {
       // detail 不是预期的 JSON：落到底部原样展示。
@@ -277,12 +241,12 @@ function formatOpDetail(t: T, op: string, detail: string | null): string {
     // здесь читать нечего — он и писался так, чтобы человеку хватило одной строки.
     try {
       const parsed = JSON.parse(detail) as { site?: unknown, question?: unknown, reason?: unknown, elapsedMs?: unknown }
-      return ' ' + t('opJevFallbackDetail', {
+      return ` ${t('opJevFallbackDetail', {
         site: String(parsed.site ?? '—'),
         question: String(parsed.question ?? '—'),
         reason: String(parsed.reason ?? '—'),
         ms: Number(parsed.elapsedMs ?? 0),
-      })
+      })}`
     } catch {
       return ` ${detail}`
     }
@@ -290,7 +254,7 @@ function formatOpDetail(t: T, op: string, detail: string | null): string {
   if (op === 'vectors-missing') {
     try {
       const parsed = JSON.parse(detail) as { count?: unknown, scope?: unknown }
-      return ' ' + t('opVectorsMissingDetail', { count: Number(parsed.count ?? 0), scope: String(parsed.scope ?? '—') })
+      return ` ${t('opVectorsMissingDetail', { count: Number(parsed.count ?? 0), scope: String(parsed.scope ?? '—') })}`
     } catch {
       return ` ${detail}`
     }
@@ -300,13 +264,13 @@ function formatOpDetail(t: T, op: string, detail: string | null): string {
     const parsed = JSON.parse(detail) as Record<string, unknown>
     const entries = Object.entries(parsed)
     if (entries.length === 0) return ` ${detail}`
-    return ' ' + entries.map(([key, value]) => {
+    return ` ${entries.map(([key, value]) => {
       const label = DETAIL_KEY[key]
       if (label === undefined) return `${key}=${String(value)}`
       if (key === 'kind' && typeof value === 'string') return `${t(label)}=${kindLabel(t, value)}`
       if (key === 'scope' && (value === 'user' || value === 'project')) return `${t(label)}=${t(SCOPE_KEY[value])}`
       return `${t(label)}=${String(value)}`
-    }).join(' · ')
+    }).join(' · ')}`
   } catch {
     return ` ${detail}`
   }
@@ -322,92 +286,12 @@ function sourceLabel(t: T, record: Pick<MemoryRow, 'sourceSessionId' | 'sourceRo
   return t('sourceSession', { id: withRound })
 }
 
-/**
- * 当前项目宫殿的选择器（host 的项目分库 dbName）；null = 不注入，服务端走进程默认库。
- * 由 EngramSection 在**渲染期**赋值：父组件先于子组件渲染，保证子组件 effect 里的首批
- * 请求就带上选择器（放进 useEffect 会因「子 effect 先跑」而漏掉首帧那批请求）。
- */
-let activeProjectSelector: string | null = null
-
-/**
- * 固定的项目选择器失效时的自愈入口（host 回 404 unknown project）：
- * EngramSection 挂载时注册、卸载时清空——清掉固定的 library.project 回到 follow 并重载。
- */
-let healDeadProject: (() => void) | null = null
-
-/** 请求是否属于 project 作用域：URL 里的 scope=project，或 POST JSON body 的 scope === 'project'。 */
-function isProjectScoped(path: string, init?: RequestInit): boolean {
-  if (/(?:^|[?&])scope=project(?:&|$)/.test(path)) return true
-  const body = init?.body
-  if (typeof body !== 'string' || body === '') return false
-  try {
-    const parsed = JSON.parse(body) as { scope?: unknown } | null
-    return typeof parsed === 'object' && parsed !== null && parsed.scope === 'project'
-  } catch {
-    // body 不是 JSON：按「非 project 作用域」处理，不抛错（偏好类请求可能带自由文本）。
-    return false
-  }
-}
-
-/** 往 JSON 对象 body 里加 project 字段；不可解析或非对象时返回 undefined（调用方退回 query 兜底）。 */
-function withProjectField(body: string, selector: string): string | undefined {
-  try {
-    const parsed = JSON.parse(body) as unknown
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-    return JSON.stringify({ ...(parsed as Record<string, unknown>), project: selector })
-  } catch {
-    return undefined
-  }
-}
-
-/** 追加 project 查询参数（GET，以及无法改写 body 时的兜底路径）。 */
-function withProjectParam(path: string, selector: string): string {
-  return `${path}${path.includes('?') ? '&' : '?'}project=${encodeURIComponent(selector)}`
-}
-
-/**
- * 唯一的请求出口：project 作用域的请求统一注入当前项目宫殿选择器。
- * POST 优先写进 JSON body（host 契约：POST 经 body 传选择器），body 不可解析时退回 query。
- * project 请求收到 404 unknown project 时触发一次自愈（清固定值回到 follow），随后照常抛错。
- * @param path - `/api/engram/` 之后的路径（含 query）；不要以 `/` 开头。
- * @param init - fetch 参数。
- * @param forceProject - 显式要求注入（合并视图如管家日志：user 侧照旧、project 侧跟随选择器）。
- * @returns 解析后的响应体；非 2xx 抛错（错误文案取 body.error）。
- */
-async function api<T>(path: string, init?: RequestInit, forceProject = false): Promise<T> {
-  const selector = activeProjectSelector
-  let target = path
-  // Записи у сервера закрыты Content-Type-замком: POST без `application/json` отбивается
-  // ответом 415 unsupported content-type ещё до обработчика. Держим это правило здесь, в
-  // единственном выходе к серверу, а не в каждом вызове: иначе один забытый заголовок
-  // выглядит как «кнопка ничего не делает» — именно так и вышло с починкой баз.
-  let requestInit = init
-  if (init !== undefined && (init.method ?? '').toUpperCase() === 'POST') {
-    const headers = new Headers(init.headers)
-    if (!headers.has('content-type')) headers.set('content-type', 'application/json')
-    requestInit = { ...init, headers }
-  }
-  const projectScoped = selector !== null && (forceProject || isProjectScoped(path, requestInit))
-  if (projectScoped) {
-    const body = requestInit?.body
-    const fromBody = typeof body === 'string' && body !== '' ? withProjectField(body, selector) : undefined
-    if (fromBody !== undefined && init !== undefined) requestInit = { ...init, body: fromBody }
-    else target = withProjectParam(path, selector)
-  }
-  const response = await fetch(`/api/engram/${target}`, requestInit)
-  // 先读文本、后判 ok、再尝试按 JSON 解析：代理/宿主的错误页不是 JSON，
-  // 直接 json() 会把 HTTP 502 伪装成 «Unexpected token <» —— 状态码反而丢了。
-  const raw = await response.text()
-  let parsed: (T & { error?: string }) | undefined
-  try { parsed = raw === '' ? undefined : JSON.parse(raw) as T & { error?: string } } catch { parsed = undefined }
-  if (!response.ok) {
-    // 自愈：固定的分库已失效（工作区被删/改名）→ 回到跟随并重载，避免面板卡在错误态。
-    if (projectScoped && response.status === 404 && parsed?.error === 'unknown project') healDeadProject?.()
-    throw new Error(parsed?.error ?? `HTTP ${String(response.status)}`)
-  }
-  if (parsed === undefined) throw new Error(`HTTP ${String(response.status)}`)
-  return parsed
-}
+import { api, setActiveProjectSelector, setProjectHealHandler } from './rpc.ts'
+import { useApi } from './useApi.ts'
+// 请求出口与项目作用域注入抽到 rpc.ts（审计批次 3）：useApi 复用 api() 不构成循环导入。
+// api / setActiveProjectSelector / setProjectHealHandler 在此 re-export，组件内的既有
+// 调用点与测试都不必改 import 来源。
+export { api, setActiveProjectSelector, setProjectHealHandler } from './rpc.ts'
 
 /** Размер в человеческом виде: журнал показывает «сколько занимает на диске». */
 function formatBytes(bytes: number): string {
@@ -1619,7 +1503,7 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast, lang }:
         .catch((error: Error) => { toast.push('error', t('refurbActionFailed', { msg: error.message })) })
         .finally(() => { setBusy(false) })
     }
-  }, [reload, onSelect, onAfterAction, toast, t, scope])
+  }, [reload, onSelect, onAfterAction, toast.push, t, scope])
   if (failed !== null) return <LoadFailedLine t={t} msg={failed} onRetry={reload} />
   if (report === null) return <div className={styles.expandLoading}>{t('loading')}</div>
   return (
@@ -1858,7 +1742,7 @@ function SpiralPanel({ t, scope, project, reloadTick }: {
     let cancelled = false
     setRecords(null)
     setFailed(null)
-    api<SpiralTimelineView>('timeline?scope=' + scope + '&limit=500')
+    api<SpiralTimelineView>(`timeline?scope=${scope}&limit=500`)
       .then(data => { if (!cancelled) setRecords(data.records) })
       .catch(err => { if (!cancelled) setFailed(err instanceof Error ? err.message : String(err)) })
     return () => { cancelled = true }
@@ -2323,7 +2207,7 @@ function BeliefsView({ t, scope, project, reloadTick }: {
       {failed !== null && <div className={styles.expandLoading}>{t('loadFailed', { msg: failed })}</div>}
       {data === null && failed === null && <div className={styles.expandLoading}>{t('loading')}</div>}
       {data !== null && data.items.length === 0 && <EmptyState title={t('beliefNone')} hint={t('emptyHint')} />}
-      {data !== null && data.items.map(row => (
+      {data?.items.map(row => (
         <section key={row.id} className={`${styles.panelCard} ${styles.beliefCard}`}>
           <p className={styles.beliefText}>{row.belief}</p>
           <div className={styles.beliefMeta}>
@@ -2346,7 +2230,7 @@ function BeliefsView({ t, scope, project, reloadTick }: {
             <div className={styles.expand}>
               {evidenceBusy && <div className={styles.expandLoading}>{t('loading')}</div>}
               {evidence !== null && evidence.length === 0 && <div className={styles.expandLoading}>{t('beliefEvidenceEmpty')}</div>}
-              {evidence !== null && evidence.map(item => (
+              {evidence?.map(item => (
                 <div key={item.id} className={styles.episodeRow} title={item.id}>
                   <time className={styles.episodeRowTime}>{fmtTime(item.createdAt)}</time>
                   <span className={styles.episodeRowKind}>{kindLabel(t, item.kind)}</span>
@@ -2575,7 +2459,7 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
     }
     const id = setTimeout(() => { setLeft(left - 1) }, 1000)
     return () => { clearTimeout(id) }
-  }, [guard, left, windowSec, toast, t])
+  }, [guard, left, windowSec, toast?.push, t])
   useEffect(() => {
     if (dryRun === true) return
     let cancelled = false
@@ -2827,7 +2711,7 @@ function TodayHero({ t, overview, dueCount }: { t: T; overview: ReturnType<typeo
             {health === null ? t('healthLoading') : t('healthEvaluatedAt', { time: relTime(t, health.evaluatedAt) })}
           </span>
         </div>
-        {/* 隐私元数据：叹号图标 + 短标签 + hover/聚焦弹出长说明。 */}
+        {/* 隐私元数据：叹号图标 + 短标签 + hover/聚焦弹出长说明。tabIndex 让键盘用户也能聚焦出长说明。 */}
         <span className={styles.telePrivacy} role="note" aria-label={t('telePrivacyHint')} tabIndex={0}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.2"/>
@@ -2965,7 +2849,9 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
       .then((data) => { setEstimate(data.estimate) })
       .catch((error: Error) => { toast.push('error', error.message) })
       .finally(() => { setBusy(false) })
-  }, [query, toast])
+    // 依赖 toast.push（稳定引用）而非整个 toast 对象：后者每次渲染换新，
+    // 曾让本 effect 在每次父渲染时重拉估算（审计 N19）。
+  }, [query, toast.push])
   useEffect(() => { reload() }, [reload])
 
   // 进度轮询：运行中每 1.5 秒一次；空闲只拉一次拿最终态。
@@ -3302,7 +3188,9 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
       })
       .catch((error: Error) => { if (!cancelled) toast.push('error', `${t('jevLoadFailed')}: ${error.message}`) })
     return () => { cancelled = true }
-  }, [t, toast])
+    // 依赖 toast.push（稳定引用）而非整个 toast 对象——曾构成死循环：加载失败弹
+    // toast → 父组件重渲染 → toast 对象换新 → effect 重触发 → 再弹（审计 N19）。
+  }, [t, toast.push])
 
   /** Choose a provider and pre-fill the endpoint from its template (the field stays editable). */
   const chooseProvider = (id: string): void => {
@@ -3556,7 +3444,8 @@ function JevObservationsCard({ t, toast }: { t: T; toast: ToastController }): Re
     reload(true)
     const timer = window.setInterval(() => reload(false), 1500)
     return () => { cancelled = true; window.clearInterval(timer) }
-  }, [t, toast])
+    // toast.push 稳定引用：整个对象每渲染换新，曾让 1.5s 轮询器每次渲染拆了重建（审计 N19）。
+  }, [t, toast.push])
 
   if (items === null) return <span className={styles.jevMuted}>{t('loading')}</span>
   if (items.length === 0) return <span className={styles.jevMuted}>{t('jevObsEmpty')}</span>
@@ -3874,8 +3763,8 @@ function PalaceLanguageCard({ t, snapshot, onReload, blockRefs, toast }: {
   readonly t: T
   /** Снимок обслуживания: язык, модель, базы. */
   readonly snapshot: RegistrySnapshot
-  /** Перечитать снимок (после починки или смены языка). */
-  readonly onReload: () => Promise<void>
+  /** Перечитать снимок (после починки или смены языка); OpsTab 的 useApi.reload 返回 void。 */
+  readonly onReload: () => void | Promise<void>
   /** Узел блока для верхней навигации по странице обслуживания. */
   readonly blockRefs?: { readonly current: Record<string, HTMLElement | null> }
   /**
@@ -4427,7 +4316,7 @@ function PluginLanguageCard({ t, snapshot, onReload, overlayHost, lang, onTestPa
   /** Снимок обслуживания: реестр языков и список моделей. */
   readonly snapshot: RegistrySnapshot
   /** Перечитать снимок (после заведения словаря список языков меняется). */
-  readonly onReload: () => Promise<void>
+  readonly onReload: () => void | Promise<void>
   /** Якорь оверлеев панели (вне `.panel`): сюда порталом уходит экран правки словаря. */
   readonly overlayHost: { readonly current: HTMLDivElement | null }
   /** Язык самой панели: он же умолчание для выбора языка в блоке «Язык Плагина». */
@@ -4507,7 +4396,7 @@ function PluginLanguageCard({ t, snapshot, onReload, overlayHost, lang, onTestPa
   const canOpenDictionary = languages.some(row => row.code === dictLanguage && !row.builtin)
 
   /** Есть ли непереведённые строки: «заполнено» меньше, чем «всего строк». */
-  const dictIncomplete = dictStats !== null && dictStats.some(stat => dictFilledOf(stat.view) < stat.view.rows.length)
+  const dictIncomplete = dictStats?.some(stat => dictFilledOf(stat.view) < stat.view.rows.length)
 
   /**
    * Языки, для которых «Создать словарь» имеет смысл: их объявляют модели реестра,
@@ -4664,19 +4553,11 @@ function OpsTab({ t, overlayHost, lang, toast, onTestPanel }: {
   readonly toast: ToastController
   readonly onTestPanel: () => void
 }): React.ReactElement {
-  const [snapshot, setSnapshot] = useState<RegistrySnapshot | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  // 范式载体（审计批次 3）：注册表快照的获取/失败/重载走公共 useApi，
+  // 其余卡片迁移时照此收敛——busy 形态的卡片保留自有状态。
+  const { data: snapshot, failed: error, reload } = useApi<RegistrySnapshot>('registry')
   /** Узлы блоков: верхняя навигация прокручивает к ним. */
   const blocks = useRef<Record<string, HTMLElement | null>>({})
-  const reload = useCallback(async (): Promise<void> => {
-    try {
-      setSnapshot(await api<RegistrySnapshot>('registry'))
-      setError(null)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    }
-  }, [])
-  useEffect(() => { void reload() }, [reload])
 
   const tt = (key: EngramKey, params?: Record<string, string | number>): string => t(key, params)
   if (error !== null) {
@@ -5677,7 +5558,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   /** 实际选择器：follow + 已知工作区 → 该工作区分库；follow + 未知 → null（不注入）。 */
   const projectSelector = projectMode === 'follow' ? followedProject?.dbName ?? null : projectMode
   // 渲染期挂到 api() 的注入点：父先渲染，保证子组件 effect 的首批请求已带上选择器。
-  activeProjectSelector = projectSelector
+  setActiveProjectSelector(projectSelector)
   /** 固定的 dbName 不在 host 清单里（工作区被删除 / 只从会话 cwd 见过）：下拉补一项避免选中态丢失。 */
   const pinnedMissing = projectMode !== 'follow'
     && !(workspaceList?.items ?? []).some(item => item.dbName === projectMode)
@@ -5691,7 +5572,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   /** 失效选择器的自愈：同一轮只触发一次，回到 follow 后复位（见 api() 的 404 分支）。 */
   const healingRef = useRef(false)
   useEffect(() => {
-    healDeadProject = (): void => {
+    setProjectHealHandler((): void => {
       // 只在「固定到某个已失效分库」时自愈；跟随态 404 说明 host 清单与分库不一致，回退只会抖动。
       if (healingRef.current || projectMode === 'follow') return
       healingRef.current = true
@@ -5700,9 +5581,9 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
       setExpanded(null)
       setSelected(new Set())
       reload()
-    }
-    return () => { healDeadProject = null }
-  }, [projectMode, reload])
+    })
+    return () => { setProjectHealHandler(null) }
+  }, [projectMode, reload, setProjectMode])
   useEffect(() => {
     if (projectMode === 'follow') healingRef.current = false
   }, [projectMode])
@@ -5799,8 +5680,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   const toggleAllPage = (): void => {
     setSelected(current => {
       const next = new Set(current)
-      if (allSelected) pageRecords.forEach(record => next.delete(record.id))
-      else pageRecords.forEach(record => next.add(record.id))
+      if (allSelected) for (const record of pageRecords) next.delete(record.id)
+      else for (const record of pageRecords) next.add(record.id)
       return next
     })
   }

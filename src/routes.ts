@@ -184,12 +184,12 @@ function toBoolean(value: unknown): boolean | undefined {
 
 /** 从 query 或 body 收敛历史回填规则（未给或非法的字段留给配置默认值）。 */
 function historyRulesOf(raw: Readonly<Record<string, unknown>>): HistoryBackfillRules {
-  const days = toNumber(raw['days'])
-  const maxTurnsPerSession = toNumber(raw['maxTurnsPerSession'])
-  const maxTotalTurns = toNumber(raw['maxTotalTurns'])
-  const includeSubagents = toBoolean(raw['includeSubagents'])
-  const includeSeeded = toBoolean(raw['includeSeeded'])
-  const includeNoCwd = toBoolean(raw['includeNoCwd'])
+  const days = toNumber(raw.days)
+  const maxTurnsPerSession = toNumber(raw.maxTurnsPerSession)
+  const maxTotalTurns = toNumber(raw.maxTotalTurns)
+  const includeSubagents = toBoolean(raw.includeSubagents)
+  const includeSeeded = toBoolean(raw.includeSeeded)
+  const includeNoCwd = toBoolean(raw.includeNoCwd)
   return {
     ...(days === undefined ? {} : { days }),
     ...(maxTurnsPerSession === undefined ? {} : { maxTurnsPerSession }),
@@ -683,7 +683,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
         }
         /** POST body 里的项目选择器（面板所有写操作都会带）。 */
         const adoptBodySelector = (body: Record<string, unknown> | null): void => {
-          const raw = body?.['project']
+          const raw = body?.project
           if (typeof raw === 'string' && raw !== '') selectorRef.value = raw
         }
         try {
@@ -1190,9 +1190,15 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 if (s === 'active' || s === 'archived' || s === 'forgotten') includeStatuses.add(s)
               }
             }
+            // 截顶（审计 N18/N20）：按 重要度×置信 取前 N 条——过去整库返回让响应无界，
+            // 客户端 O(n²) 布局随库线性变慢（几千条 = 数秒冻结）。limit 可调但夹在 50–1000。
+            const limit = Math.min(1000, Math.max(50, Number(url.searchParams.get('limit') ?? 400) || 400))
             const data = await (await storeFor(scope)).exportAll()
-            const nodes = data.records
+            const capped = data.records
               .filter(r => includeStatuses.has(r.status))
+              .sort((a, b) => (b.importance * b.confidence) - (a.importance * a.confidence))
+              .slice(0, limit)
+            const nodes = capped
               .map(r => ({
                 id: r.id,
                 scope: r.scope,
@@ -1200,14 +1206,15 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 status: r.status,
                 importance: r.importance,
                 confidence: r.confidence,
+                // 只留 40 字标题：客户端标签经 fitText 截断，全文从未被消费；
+                // 客户端按 content ?? title 取词，老客户端在偏斜窗口内自动回落标题。
                 title: r.content.length > 40 ? `${r.content.slice(0, 40)}…` : r.content,
-                content: r.content,
               }))
             const allowedIds = new Set(nodes.map(n => n.id))
             const edges = data.edges
               .filter(e => allowedIds.has(e.from) && allowedIds.has(e.to))
               .map(e => ({ id: `${e.from}-${e.to}-${e.type}`, from: e.from, to: e.to, type: e.type }))
-            json(res, 200, { scope, nodes, edges })
+            json(res, 200, { scope, nodes, edges, total: data.records.filter(r => includeStatuses.has(r.status)).length })
             return
           }
           if (req.method === 'GET' && route === 'telemetry') {
@@ -1349,12 +1356,12 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // null = тело не прочиталось (битый JSON или больше 64 КиБ). Продолжать нельзя:
             // пустой список правок — это «снять всё», то есть молчаливая потеря слоя.
             if (body === null) return
-            const set = body['set']
+            const set = body.set
             if (!isDictionarySet(set)) {
               json(res, 400, { ok: false, error: `unknown dictionary set: ${String(set)}` })
               return
             }
-            json(res, 200, deps.dictionary.write(set, entriesFromRequest(body['entries']), languageOf(body['language'])))
+            json(res, 200, deps.dictionary.write(set, entriesFromRequest(body.entries), languageOf(body.language)))
             return
           }
           if (req.method === 'POST' && route === 'dictionary-create') {
@@ -1364,9 +1371,9 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             if (!guardWrite(req, res)) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
-            const language = languageOf(body['language'])
+            const language = languageOf(body.language)
             if (language === undefined) {
-              json(res, 400, { ok: false, error: `unknown language: ${String(body['language'])}` })
+              json(res, 400, { ok: false, error: `unknown language: ${String(body.language)}` })
               return
             }
             json(res, 200, { ok: true, written: deps.dictionary.create(language) })
@@ -1378,12 +1385,12 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             if (!guardWrite(req, res)) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
-            const set = body['set']
+            const set = body.set
             if (!isDictionarySet(set)) {
               json(res, 400, { ok: false, error: `unknown dictionary set: ${String(set)}` })
               return
             }
-            const raw = Array.isArray(body['terms']) ? body['terms'] as unknown[] : []
+            const raw = Array.isArray(body.terms) ? body.terms as unknown[] : []
             const terms = raw.filter((term): term is string => typeof term === 'string')
             json(res, 200, await deps.dictionaryFill(set, terms))
             return
@@ -1436,7 +1443,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             const verdict = deps.palaceGuard.check(
-              typeof body['language'] === 'string' ? body['language'] : '',
+              typeof body.language === 'string' ? body.language : '',
               Date.now(),
               deps.palaceChangeWindowSec,
             )
@@ -1447,7 +1454,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // Окно закрыто: следующая смена языка начнётся новым открытием, а не продолжит
             // это же окно.
             deps.palaceGuard.close()
-            const written = await deps.writePalaceLanguage(String(body['language']))
+            const written = await deps.writePalaceLanguage(String(body.language))
             if (!written.ok) { json(res, 200, { ...written, labels: null, convert: null }); return }
             // Что делать с базами, решает их новое состояние, а не клиент: после записи
             // языка целевая метка другая, и базы, стоявшие на прежнем языке, становятся
@@ -1473,7 +1480,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             if (!guardWrite(req, res)) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
-            const wanted = body['language']
+            const wanted = body.language
             if (typeof wanted !== 'string' || !isLanguageCode(wanted)) {
               json(res, 400, { ok: false, error: `unknown palace language: ${String(wanted)}` })
               return

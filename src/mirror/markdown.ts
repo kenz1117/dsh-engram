@@ -164,7 +164,7 @@ function renderMemory(record: MemoryRecord, edges: readonly MemoryEdge[]): strin
     })),
     '',
   ].join('\n')
-  return frontmatter + '\n' + body
+  return `${frontmatter}\n${body}`
 }
 
 /** 房间清单 _meta.json 模板。 */
@@ -175,7 +175,7 @@ function renderMeta(scope: EngramScope, data: ExportData, rooms: readonly Mirror
     total: data.records.length,
     rooms,
   }
-  return JSON.stringify(payload, null, 2) + '\n'
+  return `${JSON.stringify(payload, null, 2)}\n`
 }
 
 /** 计算房间摘要（按 kind 分组统计 active/archived/forgotten 的记忆条数）。 */
@@ -229,7 +229,7 @@ export async function writeMirror(rootDir: string, data: ExportData, language: E
   // P1-4 借阅归还清单：scope=shared 时附 share-manifest.json。
   if (scope === 'shared') {
     const manifest = buildShareManifest(data)
-    await writeFile(join(rootDir, 'share-manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 })
+    await writeFile(join(rootDir, 'share-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
     fileCount += 1
   }
   return { rootDir, fileCount, rooms, exportedAt: data.exportedAt }

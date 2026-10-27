@@ -57,6 +57,8 @@
     "bundle": "tsdown",
     "watch": "tsdown --watch",
     "test": "vitest run",
+    "lint": "biome check src tests",
+    "coverage": "vitest run --coverage",
     "check:hooks": "node scripts/check-hook-order.mjs",
     "typecheck": "tsc --noEmit",
     "backfill": "node scripts/backfill-embeddings.mjs"
@@ -123,9 +125,11 @@
     "@huggingface/transformers": "^4.2.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.6.3",
     "@types/node": "^26.4.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@vitest/coverage-v8": "^5.0.5",
     "lightningcss": "^1.32.0",
     "tsdown": "^0.23.1",
     "typescript": "^7.0.2",

@@ -76,6 +76,21 @@
 @media (prefers-reduced-motion: reduce) {
   .panel::before { animation: none; }
 }
+/* 全局动效关停：保留状态切换，但去掉位移/缩放/淡入。!important 是刻意的——
+   裸通配选择器打不过宿主的任何类选择器规则，不加保证就会被宿主主题盖掉
+   （biome 曾把整块当 noImportantStyles 违规删除，对抗审查抓回）。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: 无障碍覆盖需要压过宿主主题的类选择器规则 */
+    animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: 同上 */
+    animation-iteration-count: 1 !important;
+    /* biome-ignore lint/complexity/noImportantStyles: 同上 */
+    transition-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: 同上 */
+    scroll-behavior: auto !important;
+  }
+}
 /* 宿主设置弹窗滚动容器的默认滚动条又粗又贴着 Tab 行，视觉噪音大；顶层伪元素选择器在 CSS modules 里原样输出（全局生效），
    用半透明 currentColor 让滑块在明暗主题下都保持低调。 */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -89,10 +104,10 @@
 /* 全局动效关停：保留状态切换，但去掉位移/缩放/淡入。 */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+    transition-duration: 0.01ms;
+    scroll-behavior: auto;
   }
 }
 

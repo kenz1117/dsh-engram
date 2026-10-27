@@ -85,8 +85,8 @@ describe('createRemoteEmbedder', () => {
       : vectors([{ embedding: [1, 1] }, { embedding: [0, 1] }]))
     const embedder = await createRemoteEmbedder(OPTIONS)
     const [first, second] = await embedder.embed(['a', 'b'])
-    expect(first![0]).toBeCloseTo(0.7071, 3)
-    expect(first![1]).toBeCloseTo(0.7071, 3)
+    expect(first![0]).toBeCloseTo(Math.SQRT1_2, 3)
+    expect(first![1]).toBeCloseTo(Math.SQRT1_2, 3)
     expect(second![0]).toBeCloseTo(0, 5)
     expect(second![1]).toBeCloseTo(1, 5)
   })
@@ -147,35 +147,35 @@ describe('createRemoteEmbedder', () => {
   it('ключ из конфигурации уходит в Authorization, без ключа заголовка нет', async () => {
     const withKey = stubFetch(probe)
     await createRemoteEmbedder({ ...OPTIONS, apiKey: 'secret-config' })
-    expect(withKey[0]!.headers['Authorization']).toBe('Bearer secret-config')
+    expect(withKey[0]!.headers.Authorization).toBe('Bearer secret-config')
 
     vi.unstubAllGlobals()
     const withoutKey = stubFetch(probe)
     await createRemoteEmbedder(OPTIONS)
-    expect(withoutKey[0]!.headers['Authorization']).toBeUndefined()
+    expect(withoutKey[0]!.headers.Authorization).toBeUndefined()
   })
 
   it('ключ из переменной окружения читается в момент запроса, а не при сборке', async () => {
     process.env.ENGRAM_TEST_KEY = 'first'
     const calls = stubFetch(probe)
     const embedder = await createRemoteEmbedder({ ...OPTIONS, apiKeyEnv: 'ENGRAM_TEST_KEY', apiKey: 'conf' })
-    expect(calls[0]!.headers['Authorization']).toBe('Bearer first')
+    expect(calls[0]!.headers.Authorization).toBe('Bearer first')
 
     process.env.ENGRAM_TEST_KEY = 'second'
     await embedder.embed(['a'])
-    expect(calls[1]!.headers['Authorization']).toBe('Bearer second')
+    expect(calls[1]!.headers.Authorization).toBe('Bearer second')
   })
 
   it('переменная окружения главнее ключа из конфигурации, пустая — уступает ему', async () => {
     process.env.ENGRAM_TEST_KEY = 'from-env'
     const calls = stubFetch(probe)
     await createRemoteEmbedder({ ...OPTIONS, apiKeyEnv: 'ENGRAM_TEST_KEY', apiKey: 'conf' })
-    expect(calls[0]!.headers['Authorization']).toBe('Bearer from-env')
+    expect(calls[0]!.headers.Authorization).toBe('Bearer from-env')
 
     process.env.ENGRAM_TEST_KEY = ''
     vi.unstubAllGlobals()
     const fallback = stubFetch(probe)
     await createRemoteEmbedder({ ...OPTIONS, apiKeyEnv: 'ENGRAM_TEST_KEY', apiKey: 'conf' })
-    expect(fallback[0]!.headers['Authorization']).toBe('Bearer conf')
+    expect(fallback[0]!.headers.Authorization).toBe('Bearer conf')
   })
 })

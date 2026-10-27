@@ -184,7 +184,7 @@ export async function testJevConnection(connection: JevConnection): Promise<JevC
     return {
       ok: true,
       elapsedMs: Date.now() - startedAt,
-      probability: answers['ping'],
+      probability: answers.ping,
       error: undefined,
       status: 200,
       kind: undefined,

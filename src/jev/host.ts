@@ -124,7 +124,7 @@ function readPath(root: unknown, path: readonly string[]): unknown {
 
 /** Модели из конфигурации провайдера: `[{id, name}]`; битые записи пропускаем. */
 function readModels(profile: Record<string, unknown> | undefined): { id: string; name: string }[] {
-  const models = profile?.['models']
+  const models = profile?.models
   if (!Array.isArray(models)) return []
   const result: { id: string; name: string }[] = []
   for (const entry of models) {

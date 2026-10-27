@@ -27,5 +27,5 @@
  */
 export function windowLeft(startedAt: number, now: number, windowSec: number): number {
   const left = Math.round((windowSec * 1000 - (now - startedAt)) / 1000)
-  return left > 0 ? left : 0
+  return Math.max(left , 0)
 }

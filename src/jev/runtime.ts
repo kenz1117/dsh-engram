@@ -84,12 +84,12 @@ function collectOverride(value: unknown): JevOverride {
   const legacy = legacyJevFields(raw)
   if (legacy.length > 0) noteLegacyJevFields('jev-config.json', legacy)
   return {
-    ...(typeof raw['enabled'] === 'boolean' ? { enabled: raw['enabled'] } : {}),
-    ...(typeof raw['provider'] === 'string' && raw['provider'] !== '' ? { provider: raw['provider'] } : {}),
-    ...(typeof raw['model'] === 'string' && raw['model'] !== '' ? { model: raw['model'] } : {}),
-    ...(typeof raw['endpoint'] === 'string' && raw['endpoint'] !== '' ? { endpoint: raw['endpoint'] } : {}),
-    ...(typeof raw['timeoutMs'] === 'number' && Number.isInteger(raw['timeoutMs'])
-      ? { timeoutMs: raw['timeoutMs'] }
+    ...(typeof raw.enabled === 'boolean' ? { enabled: raw.enabled } : {}),
+    ...(typeof raw.provider === 'string' && raw.provider !== '' ? { provider: raw.provider } : {}),
+    ...(typeof raw.model === 'string' && raw.model !== '' ? { model: raw.model } : {}),
+    ...(typeof raw.endpoint === 'string' && raw.endpoint !== '' ? { endpoint: raw.endpoint } : {}),
+    ...(typeof raw.timeoutMs === 'number' && Number.isInteger(raw.timeoutMs)
+      ? { timeoutMs: raw.timeoutMs }
       : {}),
   }
 }
@@ -115,26 +115,26 @@ export function parseJevPatch(current: JevOverride, patch: Readonly<Record<strin
     endpoint?: string
     timeoutMs?: number
   } = { ...current }
-  if (patch['enabled'] !== undefined) {
-    if (typeof patch['enabled'] !== 'boolean') return message('misc.jevEnabledMustBeBoolean')
-    merged.enabled = patch['enabled']
+  if (patch.enabled !== undefined) {
+    if (typeof patch.enabled !== 'boolean') return message('misc.jevEnabledMustBeBoolean')
+    merged.enabled = patch.enabled
   }
-  if (patch['provider'] !== undefined) {
-    if (typeof patch['provider'] !== 'string') return message('misc.jevProviderMustBeString')
+  if (patch.provider !== undefined) {
+    if (typeof patch.provider !== 'string') return message('misc.jevProviderMustBeString')
     // Пустая строка = снять выбор провайдера; непустая — без крайних пробелов.
-    const trimmed = patch['provider'].trim()
+    const trimmed = patch.provider.trim()
     if (trimmed === '') delete merged.provider
     else merged.provider = trimmed
   }
-  if (patch['model'] !== undefined) {
-    if (typeof patch['model'] !== 'string') return message('misc.jevModelMustNotBeEmpty')
-    const trimmed = patch['model'].trim()
+  if (patch.model !== undefined) {
+    if (typeof patch.model !== 'string') return message('misc.jevModelMustNotBeEmpty')
+    const trimmed = patch.model.trim()
     if (trimmed === '') delete merged.model
     else merged.model = trimmed
   }
-  if (patch['endpoint'] !== undefined) {
-    if (typeof patch['endpoint'] !== 'string') return message('misc.jevEndpointMustBeHttp')
-    const trimmed = patch['endpoint'].trim()
+  if (patch.endpoint !== undefined) {
+    if (typeof patch.endpoint !== 'string') return message('misc.jevEndpointMustBeHttp')
+    const trimmed = patch.endpoint.trim()
     // Пустая строка = вернуться к шаблону от провайдера.
     if (trimmed === '') {
       delete merged.endpoint
@@ -149,8 +149,8 @@ export function parseJevPatch(current: JevOverride, patch: Readonly<Record<strin
       merged.endpoint = trimmed
     }
   }
-  if (patch['timeoutMs'] !== undefined) {
-    const value = patch['timeoutMs']
+  if (patch.timeoutMs !== undefined) {
+    const value = patch.timeoutMs
     if (typeof value !== 'number' || !Number.isInteger(value) || value < 1000 || value > 60000) {
       return message('misc.jevTimeoutMsMustBeInteger')
     }
