@@ -10,6 +10,32 @@
 
 ## [Unreleased]
 
+> 2026-10-27 全面审计（`docs/audit-2026-10-27.md`）的三个修复批次，尚未发版。
+
+### Added
+
+- 向量道进程内打包矩阵：检索与写入处置不再逐行反序列化+逐行余弦（5 万行封顶，超出回落流式扫描；维度取多数派）
+- 嵌入器句柄可重试：加载失败不缓存（下次调用自动重试）、`await` 带 15 秒宽限期（下载挂起不再让保存/检索无限等待）
+- op_log 保留窗口（366 天，状态型操作行永久保留）挂在 24 小时衰减班车上；遥测聚合改 SQL `GROUP BY`（不再单次物化数十万行阻塞进程），日折算对夏令时 stable
+- 面板 `useApi` hook 与 `rpc.ts` / `translate.ts` 抽取：15 处复制的数据获取模式开始收敛
+- Biome lint 接入 CI（error 级清零；typescript-eslint 不支持 TS 7，故选自带解析器的 biome）+ vitest coverage 棘轮（服务端基线 stmts 77.9 / lines 80.9）
+- 客户端测试从 0 起步：俄语复数选形、词典插值、api() 的 ok-first 解析 / project 注入 / 404 自愈
+
+### Fixed
+
+- 面板运维卡（宫殿语言/插件语言）改用 section 级 toast——私有实例的 viewport 从未挂载，修底座/换语言/词典操作的提示一直在往虚空里发
+- api() 先判 `response.ok` 再解析 JSON——代理错误页不再伪装成 «Unexpected token <»；project 注入分支不再丢 content-type（注入型 POST 曾被服务端 415 挡下）
+- importance/confidence 在入库单点收口 [0,1]（含 import 路径）——`engram_save` 直收模型给的数，越界值曾能永久霸榜 topActive 进会话注入
+- engram_search 的 limit 并入 parseCountParam（1–50，超界报可重试错误）
+- restore 改为先关后换：checkpoint 探测拒绝在外部 DSH 进程脚下换库文件，WAL 尾巴先刷进主文件再挪走
+- 打开/迁移中途失败的库句柄就地关闭——此前迁移失败泄漏连接，Windows 上砖死后续 restore
+- attachEmbeddings 补维度闸（import/backfill 曾是混维入库旁路）；四个向量池过滤损坏 BLOB——单坏行不再炸整个搜索/整场 reflect；NaN/∞ 向量拒入库
+- 摄取候选逐条隔离：单条失败不再弃掉整批后半；全败回合不写 done 键（保留 pending 重放，嵌入端点抖动不再永久丢一轮记忆）
+- 闭馆整理：归档统一走 decay 语义（此前 forget 混进遗忘墓碑桶）、批式嵌入、500 条工作集封顶；修掉种子可与自身合并的存量 bug
+- JevConfigCard 加载失败的 toast 死循环（toast→重渲染→新对象→再触发）断根
+- corridor 端点截顶（默认 400 节点）+ 大房间布局降迭代——整库返回曾让走廊页签数秒冻结
+- 删除 review-due 死复制品路由；CHANGELOG 补 [0.11.0] 链接引用；工具数文案统一为 23
+
 ## [0.11.0] - 2026-10-25
 
 > **0.11 是新的一批功能**：0.10.x 整批是「多语言与数据驱动」，0.11.x 整批是「面板重排与可靠性修复」。

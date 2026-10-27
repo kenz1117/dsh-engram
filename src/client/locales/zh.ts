@@ -430,6 +430,7 @@ export const zh: Record<EngramKey, string> = {
   corridorIndexStaying: '条驻留',
   corridorIndexRooms: '{n} 间房',
   skipEmptyAnswer: '提炼输出为空（重试后仍空）',
+  skipAllCandidatesFailed: '全部候选落库失败（保留待重放）',
   // Memory Spiral tab (v0.9.x)
   tabSpiral: '回忆螺旋',
   spiralAriaLabel: '回忆螺旋视图',

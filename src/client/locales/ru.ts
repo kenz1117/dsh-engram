@@ -441,6 +441,7 @@ export const ru: Record<EngramKey, string> = {
   corridorIndexStaying: 'хранится',
   corridorIndexRooms: 'комнат: {n}',
   skipEmptyAnswer: 'вывод дистилляции пуст (пуст и после повтора)',
+  skipAllCandidatesFailed: 'все кандидаты не записались (сохранено для повтора)',
   // Memory Spiral tab (v0.9.x)
   tabSpiral: 'Спираль воспоминаний',
   spiralAriaLabel: 'спираль воспоминаний',

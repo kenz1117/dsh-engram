@@ -2789,6 +2789,8 @@ const SKIP_KEY: Record<string, EngramKey> = {
   // 旧键 'unparsable' 从未与产出对上过，导致该原因一直以原始英文展示（#11）。
   'unparseable-output': 'skipUnparsable',
   'empty-answer': 'skipEmptyAnswer',
+  // 审计 F13 对偶面：全败回合保留 pending，面板要把它翻成人话而不是裸枚举。
+  'all-candidates-failed': 'skipAllCandidatesFailed',
 }
 
 /** 跳过原因的本地化标签（未知枚举回退原值）。 */

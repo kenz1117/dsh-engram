@@ -432,6 +432,7 @@ export type EngramKey =
   | 'corridorIndexStaying'
   | 'corridorIndexRooms'
   | 'skipEmptyAnswer'
+  | 'skipAllCandidatesFailed'
   // Memory Spiral tab (v0.9.x)
   | 'tabSpiral'
   | 'spiralAriaLabel'

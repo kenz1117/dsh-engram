@@ -40,6 +40,9 @@ damp air	сырость
 [dsh-engram] Replaying a pending ingest failed (pending kept, conversation unaffected):	[dsh-engram] Не удалось повторить отложенное извлечение (pending сохранён, диалог не затронут):
 [dsh-engram] Replaying one pending key failed (kept for next session):	[dsh-engram] Не удалось повторить один pending (сохранён, повтор в следующей сессии):
 [dsh-engram] Stale pending abandoned (session older than 14 days, still failing — dequeued):	[dsh-engram] Устаревший pending снят с очереди (сессия старше 14 дней, всё ещё падает):
+[dsh-engram] one ingest candidate failed to write (skipped; remaining candidates proceed as usual):	[dsh-engram] Не удалось записать одного кандидата извлечения (пропущен; остальные обрабатываются как обычно):
+embedding vector contains a non-finite component (NaN/∞); the write is refused — such a vector makes cosine comparisons meaningless and the memory would silently vanish from semantic retrieval	Вектор вложения содержит нечисловую компоненту (NaN/∞): запись отклонена — такой вектор делает косинусное сравнение бессмысленным, и запись молча исчезла бы из семантического поиска
+{file} still has a live connection writing (likely another open DeepSeek window); restore cancelled — close the other windows first, otherwise their writes would be lost	У файла {file} есть живая запись (вероятно, другое открытое окно DeepSeek); восстановление отменено — сначала закройте другие окна, иначе их записи будут потеряны
 [dsh-engram] Automatic ingest of this turn failed (skipped, conversation unaffected):	[dsh-engram] Автоматическое извлечение этого хода не удалось (пропущено, диалог не затронут):
 [dsh-engram] History backfill failed:	[dsh-engram] Заполнение истории не удалось:
 [dsh-engram] Session-end finalisation threw (conversation unaffected):	[dsh-engram] Ошибка завершающей обработки при закрытии сессии (диалог не затронут):

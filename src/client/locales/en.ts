@@ -430,6 +430,7 @@ export const en: Record<EngramKey, string> = {
   corridorIndexStaying: 'staying',
   corridorIndexRooms: '{n} rooms',
   skipEmptyAnswer: 'empty output (empty after retry)',
+  skipAllCandidatesFailed: 'every candidate failed to write (kept for replay)',
   // Memory Spiral tab (v0.9.x)
   tabSpiral: 'Memory Spiral',
   spiralAriaLabel: 'memory spiral view',
