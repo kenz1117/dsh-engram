@@ -395,12 +395,17 @@ async function api<T>(path: string, init?: RequestInit, forceProject = false): P
     else target = withProjectParam(path, selector)
   }
   const response = await fetch(`/api/engram/${target}`, requestInit)
-  const parsed = (await response.json()) as T & { error?: string }
+  // 先读文本、后判 ok、再尝试按 JSON 解析：代理/宿主的错误页不是 JSON，
+  // 直接 json() 会把 HTTP 502 伪装成 «Unexpected token <» —— 状态码反而丢了。
+  const raw = await response.text()
+  let parsed: (T & { error?: string }) | undefined
+  try { parsed = raw === '' ? undefined : JSON.parse(raw) as T & { error?: string } } catch { parsed = undefined }
   if (!response.ok) {
     // 自愈：固定的分库已失效（工作区被删/改名）→ 回到跟随并重载，避免面板卡在错误态。
-    if (projectScoped && response.status === 404 && parsed.error === 'unknown project') healDeadProject?.()
-    throw new Error(parsed.error ?? `HTTP ${String(response.status)}`)
+    if (projectScoped && response.status === 404 && parsed?.error === 'unknown project') healDeadProject?.()
+    throw new Error(parsed?.error ?? `HTTP ${String(response.status)}`)
   }
+  if (parsed === undefined) throw new Error(`HTTP ${String(response.status)}`)
   return parsed
 }
 
@@ -3865,7 +3870,7 @@ function languageLabel(code: string, known: readonly PalaceLanguageOption[], loc
  * Отдельная карточка, а не половина одной общей: таблицы моделей и баз живут в широкой
  * колонке, словари — в узкой. Снимок обслуживания приходит сверху, общий.
  */
-function PalaceLanguageCard({ t, snapshot, onReload, blockRefs }: {
+function PalaceLanguageCard({ t, snapshot, onReload, blockRefs, toast }: {
   readonly t: T
   /** Снимок обслуживания: язык, модель, базы. */
   readonly snapshot: RegistrySnapshot
@@ -3873,6 +3878,12 @@ function PalaceLanguageCard({ t, snapshot, onReload, blockRefs }: {
   readonly onReload: () => Promise<void>
   /** Узел блока для верхней навигации по странице обслуживания. */
   readonly blockRefs?: { readonly current: Record<string, HTMLElement | null> }
+  /**
+   * Общий контроллер тостов секции. Своего здесь быть не должно: вьюпорт тостов
+   * смонтирован один, в EngramSection, — приватный экземпляр рендерил уведомления
+   * в пустоту, и «Починить базы» выглядела кнопкой, которая ничего не делает.
+   */
+  readonly toast: ToastController
 }): React.ReactElement {
   const [busy, setBusy] = useState(false)
   /**
@@ -3906,7 +3917,6 @@ function PalaceLanguageCard({ t, snapshot, onReload, blockRefs }: {
   const [startedAt, setStartedAt] = useState<number | null>(null)
   /** Остаток окна в секундах: подпись у предохранителя и признак «ещё можно». */
   const [left, setLeft] = useState(0)
-  const toast = useToast()
   const tt = (key: EngramKey, params?: Record<string, string | number>): string => t(key, params)
   /**
    * Длина окна: считается по настройке, а не по константе — сервер проверяет тем же
@@ -3925,8 +3935,9 @@ function PalaceLanguageCard({ t, snapshot, onReload, blockRefs }: {
    * «ничего не произошло» здесь хуже всего: непонятно, сработало ли нажатие.
    *
    * Стоит до ранних выходов — порядок хуков не должен зависеть от того, пришёл ли снимок.
-   * Зависимости — стабильные ссылки (`t` меняется только вместе с языком панели); локальная
-   * `tt` создаётся на каждый рендер и в зависимостях перезапускала бы таймер вхолостую.
+   * Зависимости — стабильные ссылки: `t` меняется только вместе с языком панели, а в
+   * `toast` стабилен только `push` — сам контроллер пересоздаётся на каждый рендер
+   * секции, и быть зависимостью не может.
    */
   useEffect(() => {
     if (startedAt === null) {
@@ -3945,7 +3956,7 @@ function PalaceLanguageCard({ t, snapshot, onReload, blockRefs }: {
     tick()
     const id = setInterval(tick, 500)
     return () => { clearInterval(id) }
-  }, [startedAt, windowSec, toast, t])
+  }, [startedAt, windowSec, toast.push, t])
 
   /**
    * Языки реестра. Стоит до ранних выходов: от них зависят подписи языков в блоке
@@ -4411,7 +4422,7 @@ function PalaceLanguageCard({ t, snapshot, onReload, blockRefs }: {
 /**
  * Блок «Язык Плагина»: язык самой панели, её словари и заведение нового.
  */
-function PluginLanguageCard({ t, snapshot, onReload, overlayHost, lang, onTestPanel, blockRefs }: {
+function PluginLanguageCard({ t, snapshot, onReload, overlayHost, lang, onTestPanel, blockRefs, toast }: {
   readonly t: T
   /** Снимок обслуживания: реестр языков и список моделей. */
   readonly snapshot: RegistrySnapshot
@@ -4425,6 +4436,8 @@ function PluginLanguageCard({ t, snapshot, onReload, overlayHost, lang, onTestPa
   readonly onTestPanel?: () => void
   /** Узел блока для верхней навигации по странице обслуживания. */
   readonly blockRefs?: { readonly current: Record<string, HTMLElement | null> }
+  /** Общий контроллер тостов секции: вьюпорт один, в EngramSection, — приватный экземпляр здесь молчал бы. */
+  readonly toast: ToastController
 }): React.ReactElement {
   /** Открыт ли экран правки словаря: он перекрывает окно плагина целиком. */
   const [dictionaryOpen, setDictionaryOpen] = useState(false)
@@ -4443,7 +4456,6 @@ function PluginLanguageCard({ t, snapshot, onReload, overlayHost, lang, onTestPa
   /** Язык, выбранный справа в поле «Создать словарь» (подпись, а не код: так ищут глазами). */
   const [createLanguage, setCreateLanguage] = useState<string>('')
   const [dictError, setDictError] = useState<string | null>(null)
-  const toast = useToast()
   const tt = (key: EngramKey, params?: Record<string, string | number>): string => t(key, params)
   /**
    * Языки реестра. Список терпит отсутствие поля: клиент и сервер плагина едут разными
@@ -4696,7 +4708,7 @@ function OpsTab({ t, overlayHost, lang, toast, onTestPanel }: {
       </nav>
       <div className={styles.layout}>
         <div className={styles.mainCol}>
-          <PalaceLanguageCard t={t} snapshot={snapshot} onReload={reload} blockRefs={blocks} />
+          <PalaceLanguageCard t={t} snapshot={snapshot} onReload={reload} blockRefs={blocks} toast={toast} />
           <div className={`${styles.panelCard} ${styles.opsBlock}`} ref={element => { blocks.current.backfill = element }}>
             <div className={styles.cardHead}>
               <h3 className={styles.cardTitle}>{tt('tabBackfill')}</h3>
@@ -4707,7 +4719,7 @@ function OpsTab({ t, overlayHost, lang, toast, onTestPanel }: {
         </div>
         <div className={styles.sideCol}>
           <PluginLanguageCard t={t} snapshot={snapshot} onReload={reload} overlayHost={overlayHost}
-            lang={lang} onTestPanel={onTestPanel} blockRefs={blocks} />
+            lang={lang} onTestPanel={onTestPanel} blockRefs={blocks} toast={toast} />
           <div className={`${styles.panelCard} ${styles.opsBlock}`} ref={element => { blocks.current.jev = element }}>
             <div className={styles.cardHead}>
               <h3 className={styles.cardTitle}>{tt('tabJev')}</h3>

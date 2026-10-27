@@ -1,6 +1,6 @@
 /**
  * dsh-engram：DeepSeek Harness 跨会话长期记忆插件（host 半）。
- * 注册 18 个 engram_ 工具、会话开始注入画像（curated block 优先于派生画像）、
+ * 注册 23 个 engram_ 工具、会话开始注入画像（curated block 优先于派生画像）、
  * 自动摄取上一轮对话、蒸馏/衰减飞轮与审计能力。
  * @module @kenz1117/dsh-engram
  */
@@ -667,7 +667,7 @@ function persistPalaceLanguage(ctx: Context, language: EngramLanguage): void {
 }
 
 /**
- * 插件体：预热分库与嵌入器，注册 10 个工具、画像注入、自动摄取与衰减调度。
+ * 插件体：预热分库与嵌入器，注册 23 个工具、画像注入、自动摄取与衰减调度。
  * @param ctx - host 上下文。
  * @param config - cordis.yml 传入的可选配置；非法值在加载时 loud 失败。
  */

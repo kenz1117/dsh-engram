@@ -67,6 +67,17 @@ describe('engram tools', () => {
     expect(result.text).toContain('<engram_memory_context source="tool_search">')
   })
 
+  it('engram_search limit 与其余列表参数同规矩：越界报错并告知范围，缺省 8', async () => {
+    await expect(tools.get('engram_search')!.execute({ query: '端口', scope: 'user', limit: 10 ** 6 }, fakeExec))
+      .rejects.toThrow(/limit/)
+    await expect(tools.get('engram_search')!.execute({ query: '端口', scope: 'user', limit: 0 }, fakeExec))
+      .rejects.toThrow(/limit/)
+    // 缺省路径不受影响。
+    await store.write({ scope: 'user', kind: 'fact', content: '部署在 4000 端口' })
+    const result = await tools.get('engram_search')!.execute({ query: '端口', scope: 'user' }, fakeExec) as { text: string }
+    expect(result.text).toContain('4000')
+  })
+
   it('engram_search 输出包协议标签且当前请求为检索词', async () => {
     await store.write({ scope: 'user', kind: 'fact', content: '部署在 4000 端口' })
     const result = await tools.get('engram_search')!.execute({ query: '端口', scope: 'user' }, fakeExec) as { text: string }

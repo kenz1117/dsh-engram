@@ -326,7 +326,8 @@
 
 - 首个可用版本：`engram_*` 工具集、插件入口、画像注入、SQLite + FTS5 + 关系边 + op log 的本地存储。
 
-[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/kenz1117/dsh-engram/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kenz1117/dsh-engram/compare/v0.9.9...v0.10.0
 [0.9.9]: https://github.com/kenz1117/dsh-engram/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/kenz1117/dsh-engram/compare/v0.9.7...v0.9.8

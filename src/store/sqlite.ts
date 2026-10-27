@@ -221,6 +221,15 @@ function blobToVec(blob: Uint8Array): Float32Array {
   return new Float32Array(blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength))
 }
 
+/**
+ * 单位区间收口：NaN/∞/越界的 importance·confidence 一律拉回 [0,1]（非有限数取备用值）。
+ * 工具层不做这道检查（engram_save 直收模型给的数，`typeof NaN === 'number'` 也通过），
+ * 库层是最后一道闸——`importance: 42` 会永久霸榜 topActive，进 session-start 注入。
+ */
+function clampUnit(value: number, fallback: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback
+}
+
 /** 实体表的行结构（snake_case 对应列名）。 */
 interface EntityRow {
   id: string
@@ -502,6 +511,14 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     }
   }
 
+  // op_log 的查询索引：op_log 是唯一没有索引的表，而 hasAudit（WHERE op+detail）每个
+  // 摄取回合至少跑两次、listForgottenWithTombs 按 target_id 连接、面板按 at 取最近——
+  // 全是全表扫。op_log 的三列从 v1 起就存在，IF NOT EXISTS 幂等，新旧库同一条路，
+  // 因此不占 schema 版本（列依赖类索引才需要走 MIGRATIONS，见 nodes_slot 的注释）。
+  db.exec(`CREATE INDEX IF NOT EXISTS op_log_op_detail ON op_log (op, detail);
+    CREATE INDEX IF NOT EXISTS op_log_target ON op_log (target_id);
+    CREATE INDEX IF NOT EXISTS op_log_at ON op_log (at);`)
+
   /**
    * 库中已有向量的维度（按浮点数个数计，不按字节）。
    *
@@ -744,8 +761,10 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       : embedding instanceof Float32Array ? vecToBlob(embedding) : embedding
     // 初始排期：进入复习调度的条目 ease 从 SM-2 默认 2.5、间隔 0（等首次答题推进）起。
     const initialReview = input.initialReviewAt ?? null
+    const safeImportance = clampUnit(importance, 0.5)
+    const safeConfidence = clampUnit(confidence, 0.5)
     sqlInsert.run(
-      id, input.scope, input.kind, content, importance, confidence, at, at,
+      id, input.scope, input.kind, content, safeImportance, safeConfidence, at, at,
       sourceSessionId, input.sourceRound ?? null, input.sourceSeq ?? null, stored,
       imageryToJson(imagery),
       input.slot?.room ?? null, input.slot?.index ?? null, input.imageryScore ?? null,
@@ -1466,7 +1485,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
           const r = c.record
           const review = r.review
           sqlImportInsert.run(
-            r.id, r.scope, r.kind, c.content, r.importance, r.confidence, r.status,
+            r.id, r.scope, r.kind, c.content, clampUnit(r.importance, 0.5), clampUnit(r.confidence, 0.5), r.status,
             r.createdAt, r.lastAccessedAt, r.accessCount,
             r.sourceSessionId ?? null, r.sourceRound ?? null, r.sourceSeq ?? null,
             null, r.outcome ?? null, imageryToJson(r.imagery),

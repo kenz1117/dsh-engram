@@ -197,6 +197,34 @@ describe('EngramStore (sqlite)', () => {
     expect(top[0]!.content).toBe('高重要性')
   })
 
+  it('importance/confidence 落库前收口到 [0,1]（NaN 取备用值）——审计 P2-14', async () => {
+    // 工具层不检查（engram_save 直收模型给的数），库层是最后一道闸：越界值霸榜 topActive。
+    const over = await store.write({ scope: 'user', kind: 'fact', content: '越界重要性', importance: 42, confidence: 7 })
+    expect(over.importance).toBe(1)
+    expect(over.confidence).toBe(1)
+    const nan = await store.write({ scope: 'user', kind: 'fact', content: '非有限重要性', importance: Number.NaN })
+    expect(nan.importance).toBe(0.5)
+    const negative = await store.write({ scope: 'user', kind: 'fact', content: '负重要性', importance: -3 })
+    expect(negative.importance).toBe(0)
+    const top = await store.topActive('user', 3)
+    expect(top[0]!.content).toBe('越界重要性')
+    // update 路径同闸：新 importance 收口，旧值兜底。
+    const updated = await store.update({ id: nan.id, scope: 'user', kind: 'fact', content: '改后内容', importance: 99 })
+    expect(updated.importance).toBe(1)
+  })
+
+  it('op_log 建有三个查询索引（op+detail / target_id / at）——审计 N1', async () => {
+    // 与维度测试同一范式：另开只读连接看物理 schema，不经过被测对象自己嘴里的话。
+    await store.close()
+    const raw = new DatabaseSync(join(dir, 'user.db'))
+    const indexes = (raw.prepare('PRAGMA index_list(op_log)').all() as unknown as { name: string }[]).map(row => row.name)
+    raw.close()
+    store = await openEngramStore(join(dir, 'user.db'))
+    expect(indexes).toContain('op_log_op_detail')
+    expect(indexes).toContain('op_log_target')
+    expect(indexes).toContain('op_log_at')
+  })
+
   it('timeline 按 createdAt 倒序且 topic 过滤', async () => {
     const a = await store.write({ scope: 'user', kind: 'episode', content: '事件 A 描述' })
     await new Promise(resolve => setTimeout(resolve, 3))

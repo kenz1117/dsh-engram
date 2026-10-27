@@ -1,5 +1,5 @@
 /**
- * 21 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
+ * 23 个 engram_ 工具的定义与执行器。工具 schema 保持窄参数；
  * scope 决定读写哪个分库；嵌入缺失时检索结果显式标记降级。
  * @module @kenz1117/dsh-engram/tools/create
  */
@@ -274,8 +274,8 @@ async function rewriteQueries(deps: ToolDeps, exec: ToolRunContext, query: strin
 }
 
 /**
- * 构造 21 个工具定义（engram_save/search/facts/assess/timeline/episode_timeline/update/forget/report/review/review_queue/
- * stats/export/import/distill/examine/neighbors/audit_forgotten/tour/ingest_history/profile_edit）。
+ * 构造 23 个工具定义（engram_save/search/facts/assess/timeline/episode_timeline/update/forget/report/review/review_queue/
+ * stats/export/import/distill/reflect/examine/neighbors/tour/audit_forgotten/ingest_history/profile_edit/language_guide）。
  * @param baseDeps - 分库打开器、嵌入器、辅助 LLM、导出目录。
  * @returns 可直接 register 的工具定义数组（execute 已绑定会话 cwd 的项目宫殿路由）。
  */
@@ -684,7 +684,10 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const rooms = typeof input.room === 'string' && input.room.trim() !== ''
         ? [resolveRoomInput(input.room) ?? input.room.trim()]
         : undefined
-      const limit = input.limit ?? 8
+      // limit 与其余列表工具同规矩（parseCountParam）：超界报错并告知合法范围，
+      // 模型可以自行修正——裸收模型传来的数会把 10⁶ 限页变成全库捞取。
+      // `?? undefined`：JSON 里显式 null 与旧实现 `?? 8` 的走向一致（取缺省）。
+      const limit = parseCountParam(input.limit ?? undefined, 'engram_search', 'limit', 8, 1, 50)
       const asOfMs = parseTimeParam(typeof input.asOf === 'string' ? input.asOf : undefined, 'engram_search', 'asOf')
       // 多查询改写：辅助 LLM 可用时生成 ≤3 个互补查询分别检索后 RRF 融合；
       // 失败/不可用降级原查询单查。多查询会对同一 id 重复命中强化（accessCount、

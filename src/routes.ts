@@ -1028,32 +1028,6 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             json(res, 200, view)
             return
           }
-          if (req.method === 'GET' && route === 'review-due') {
-            // 今日待回忆队列：只给坐标与门牌线索，不给正文（检索练习——先主动回忆再由面板揭示核对）。
-            const scope = scopeOf(url.searchParams.get('scope'), 'user')
-            const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
-            const now = Date.now()
-            const due = await (await storeFor(scope)).dueReviews(now, limit)
-            json(res, 200, {
-              scope,
-              count: due.length,
-              now,
-              items: due.map(record => ({
-                id: record.id,
-                kind: record.kind,
-                scope: record.scope,
-                importance: record.importance,
-                confidence: record.confidence,
-                ...(record.slot === undefined ? {} : { slot: record.slot }),
-                ...(typeof record.imagery?.caption === 'string' ? { caption: record.imagery.caption } : {}),
-                ...(record.review?.nextReviewAt === null || record.review?.nextReviewAt === undefined
-                  ? {}
-                  : { overdueDays: Math.max(0, Math.floor((now - record.review.nextReviewAt) / 86_400_000)) }),
-                ...(record.review === undefined ? {} : { reps: record.review.reps, intervalDays: record.review.intervalDays }),
-              })),
-            })
-            return
-          }
           if (req.method === 'GET' && route === 'export') {
             const scope = scopeOf(url.searchParams.get('scope'), 'user')
             const format = url.searchParams.get('format') === 'json' ? 'json' : 'markdown'

@@ -97,6 +97,16 @@ describe('store.importPreview / importData', () => {
     expect(again.skippedDuplicates).toBe(1)
   })
 
+  it('import 的 importance/confidence 同样收口 [0,1]——对抗审查 P2：不能绕过入库闸', async () => {
+    // 第三方导出/被污染的备份带着 importance: 42 进来，同样不得霸榜 topActive。
+    const bad = recordOf({ id: 'n2', content: '越界导入', importance: 42, confidence: -1 })
+    const result = await store.importData({ exportedAt: 1, records: [bad], edges: [] })
+    expect(result.imported).toBe(1)
+    const fetched = await store.get(asMemoryId('n2'))
+    expect(fetched?.importance).toBe(1)
+    expect(fetched?.confidence).toBe(0)
+  })
+
   it('id 被占用且内容不同 → conflict 跳过；attachEmbeddings 回填向量', async () => {
     await store.write({ scope: 'user', kind: 'fact', content: '库内现行版本', importance: 0.5 })
     const all = await store.exportAll()
