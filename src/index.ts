@@ -42,7 +42,7 @@ import { setExtraRedactWords } from './i18n/patterns.ts'
 import { roomLabel } from './i18n/rooms.ts'
 import { createEmbedder, resolveBaseTarget, resolveLocalModel } from './embedder/select.ts'
 import type { LocalModelChoice } from './embedder/select.ts'
-import type { EngramEmbedder } from './embedder/interface.ts'
+import type { EmbedderHandle, EngramEmbedder } from './embedder/interface.ts'
 import { FINAL_INGEST_TIMEOUT_MS, ensureSessionSummary, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, lastTurnNumber, replayPendingIngests, userTexts } from './ingest/hook.ts'
 import { estimateHistoryBackfill, runHistoryBackfill } from './ingest/history.ts'
 import type {
@@ -54,7 +54,7 @@ import { reflectObservations } from './consolidation/reflect.ts'
 import type { IngestRequestEventData } from './ingest/hook.ts'
 import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
-import { registerEngramRoutes } from './routes.ts'
+import { LOG_KEEP_OPS, registerEngramRoutes } from './routes.ts'
 import type { BaseConvertResult, BaseLabelResult, BaseView, DictionarySaveResult, ProjectPalaceView, RegistryView, RouteDeps } from './routes.ts'
 import { judgeBase, labelToStamp, languageOfLabels, MODEL_LABEL_KEY } from './registry/base-state.ts'
 import type { CatalogModel } from './registry/base-state.ts'
@@ -287,7 +287,7 @@ async function preStep(
   openStore: (scope: EngramScope) => Promise<EngramStore>,
   openStoreForProjectCwd: (cwd: string) => Promise<EngramStore>,
   resolved: ResolvedEngramConfig,
-  embedder: Promise<EngramEmbedder | undefined>,
+  embedder: EmbedderHandle,
   state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null; lastProfileCompactions: number | null; lastAssessReminder: string | null; route: LlmRoute | undefined },
   logRequest: (data: IngestRequestEventData) => void,
   onDialogueLanguage: (language: EngramLanguage) => void,
@@ -981,18 +981,48 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
 
   // 嵌入器可选：下载/加载失败不阻塞插件加载，检索降级纯关键词并在结果中标记。
   // 后端由配置选择：本地离线模型或 OpenAI 兼容端点。
-  const embedder: Promise<EngramEmbedder | undefined> = createEmbedder(resolved, registry)
-    .catch((error: unknown) => {
-      console.warn(message('core.warnEmbedderUnavailable'), error)
-      return undefined
-    })
-  void embedder
+  //
+  // 审计 N11：嵌入器句柄是可重试的 thenable，不是一次性 Promise——
+  //  - 加载失败不缓存（下一次 await 自动重试，同分库缓存的 F17 范式）：旧实现一次
+  //    瞬时网络故障 = 纯关键词检索直到插件重挂载；
+  //  - await 有宽限期：模型下载挂起时消费者（save/search/摄取）先按 undefined 放行
+  //    降级，不再无限等待；下载在后台继续，成功后后续 await 自然拿到真嵌入器。
+  // 宽限期的量级：本地模型首次下载是分钟级，但那是「后台继续」的部分；这里只限制
+  // 「消费者愿意为一次嵌入等多久」——15s 覆盖本地磁盘缓存的常规加载。
+  const EMBEDDER_AWAIT_GRACE_MS = 15_000
+  let embedderPending: Promise<EngramEmbedder | undefined> | undefined
+  const embedderAttempt = (): Promise<EngramEmbedder | undefined> => {
+    if (embedderPending === undefined) {
+      embedderPending = createEmbedder(resolved, registry).catch((error: unknown) => {
+        console.warn(message('core.warnEmbedderUnavailable'), error)
+        embedderPending = undefined
+        return undefined
+      })
+    }
+    return embedderPending
+  }
+  const embedder: EmbedderHandle = {
+    then(onfulfilled, onrejected) {
+      const attempt = embedderAttempt()
+      return Promise.race([
+        attempt,
+        new Promise<undefined>(resolve => {
+          const timer = setTimeout(() => { resolve(undefined) }, EMBEDDER_AWAIT_GRACE_MS)
+          void attempt.then(() => { clearTimeout(timer) })
+        }),
+      ]).then(onfulfilled, onrejected)
+    },
+  }
+  // 预热：挂载即开始加载（旧实现 createEmbedder() 立即执行；句柄化后若无人 await，
+  // 首次语义操作才付模型加载延迟——冷启动时首回合候选会拿不到向量且无补救重嵌）。
+  void embedderAttempt()
   // Эмбеддер держит ONNX-инстанс и память под модель: при выгрузке плагина его надо
   // отпустить, иначе перемонтирование оставляет в процессе ещё один живой инстанс,
   // а память под модель не возвращается. Закрываем независимо от того, успел ли он
   // загрузиться: обещание разрешается в undefined, если модель не поднялась.
+  // peek 而非 then：卸载不该触发一次全新的下载尝试。
   ctx.effect(() => () => {
-    void embedder.then(active => active?.close()).catch(() => { /* закрытие не чинится */ })
+    void embedderPending?.then(active => active?.close()).catch(() => { /* закрытие не чинится */ })
   }, 'dsh-engram: close embedder')
 
   // 辅助请求写 engram 自己的操作日志（下游插件禁止向会话日志写未知事件类型）。
@@ -1277,7 +1307,8 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     }
     const dimensions = baseTargetNow().model?.dimensions
     if (dimensions === undefined) return result
-    const active = await embedder
+    // 显式长操作不吃 15s 宽限期：转换向量本来就值得等模型就绪（含失败后重建的尝试）。
+    const active = await embedderAttempt()
     if (active === undefined) {
       result.failed.push({ file: '*', table: null, error: message('store.embedderModelUnresolved') })
       return result
@@ -1767,7 +1798,8 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
             if (route === undefined) continue
             const outcome = await reflectObservations({
               store,
-              embedder: await embedder,
+              // 反思在会话收尾的后台路径上，等真模型而非宽限降级——缺向量的信念质量差。
+              embedder: await embedderAttempt(),
               scope: target.scope,
               call: params => streamText(ctx, { ...params, sessionId: session.id }),
               logRequest: data => {
@@ -1794,6 +1826,11 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   }
 
   // 衰减调度：启动即跑一次，此后每 24 小时一次；低重要性且长期未访问的条目归档（可恢复）。
+  // 同一班车顺带做 op_log 保留窗口（审计 N1）：366 天前、非状态型的操作行清除——
+  // op_log 是唯一只会被手动清空的表；窗口必须 ≥ 面板遥测能请求的最大跨度
+  // （telemetry 路由把 days 夹到 366，热力日历请求 182 天），否则长窗口会静默少数据。
+  // 状态型（ingest-done/pending/skip/nothing、reflect-pending）永久保留，重放与去重靠它们。
+  const OP_LOG_RETENTION_DAYS = 366
   const runDecay = async (): Promise<void> => {
     const targets: { label: string; open: () => Promise<EngramStore> }[] = [
       { label: 'user', open: () => openStore('user') },
@@ -1803,12 +1840,20 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       if (!existsSync(join(resolved.dbDir, palace.dbName))) continue
       targets.push({ label: message('core.decayTargetProject', { title: palace.title }), open: () => openDb(palace.dbName) })
     }
+    const pruneBefore = Date.now() - OP_LOG_RETENTION_DAYS * 86_400_000
     for (const target of targets) {
-      const archived = await (await target.open()).decay({
+      const store = await target.open()
+      const archived = await store.decay({
         importanceBelow: resolved.decayImportanceBelow,
         olderThanDays: resolved.decayAfterDays,
       })
       if (archived > 0) console.warn(message('core.warnDecayArchived', { label: target.label, count: archived }))
+      try {
+        await store.pruneOps(pruneBefore, LOG_KEEP_OPS)
+      } catch (error) {
+        // 保留窗口失败只影响磁盘占用，不影响任何功能——警告继续。
+        console.warn(message('core.warnDecayPeriodicFailed'), error)
+      }
     }
   }
   void runDecay().catch((error: unknown) => {

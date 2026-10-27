@@ -18,7 +18,7 @@ import type { EngramStore } from './store/interface.ts'
 import { embedImportedRecords, parseImportData, parseMarkdownExport } from './store/import.ts'
 import { formatBytes } from './body-limits.ts'
 import { IMPORT_BODY_LIMIT_BYTES, readJsonBody } from './http-body.ts'
-import type { EngramEmbedder } from './embedder/interface.ts'
+import type { EmbedderHandle } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
 import type { ProjectPalaceKind } from './project/registry.ts'
 import type { BaseActionId, BaseStateId } from './registry/base-state.ts'
@@ -505,7 +505,7 @@ export interface RouteDeps {
   }
   readonly exportDir: string
   /** 嵌入器承诺（search-test 的语义道）；undefined = 纯关键词。 */
-  readonly embedder: Promise<EngramEmbedder | undefined>
+  readonly embedder: EmbedderHandle
   /** 镜像根目录（默认 `${exportDir}/palaces`），面板「打开镜像目录」按钮会用到。 */
   readonly mirrorDir: string
   /** 备份目录（与 dbDir 同源），用于打包 .db 成 tar.gz。 */
@@ -1665,10 +1665,11 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               return
             }
             try {
-              const result = await restoreBackup(normalized, deps.dbDir)
-              // 审计 F16：rename 换掉了 .db 的 inode，必须让缓存连接全部失效，
-              // 否则「恢复成功」后读旧库、新写入进 .before-restore-* 且重启后静默丢失。
+              // 审计 N2：先关后换——交换发生时本进程的缓存连接已全部关闭，在途写不会
+              // 落到旧 inode；外部 DSH 进程由 restoreBackup 的 checkpoint 探测拒绝，
+              // 不再从活连接脚下换文件。失败路径下分库按 F17 范式惰性重开。
               await deps.closeStores()
+              const result = await restoreBackup(normalized, deps.dbDir)
               json(res, 200, { restored: result.restored, meta: result.archiveMeta })
             } catch (restoreError: unknown) {
               const message = restoreError instanceof Error ? restoreError.message : String(restoreError)

@@ -173,4 +173,24 @@ describe('宫殿备份 / 恢复 round-trip', () => {
     const created = await createBackup(dir, '0.6.1-test')
     await expect(restoreBackup(created.archivePath, dir)).resolves.toBeTruthy()
   })
+
+  it('restoreBackup 拒绝在活写者脚下换文件（checkpoint busy 探测）——审计 N2', async () => {
+    const created = await createBackup(dir, '0.6.1-test')
+    // 另一个「进程」持有未提交的写事务：模拟第二个开着面板的 DSH 窗口。
+    const { DatabaseSync } = await import('node:sqlite')
+    const foreign = new DatabaseSync(join(dir, 'user.db'))
+    foreign.exec('BEGIN EXCLUSIVE')
+    foreign.prepare("INSERT INTO meta (key, value) VALUES ('foreign-writer', '1')").run()
+    try {
+      await expect(restoreBackup(created.archivePath, dir)).rejects.toThrow(/活动连接|live connection/)
+      // 拒绝后原库未被动过（外部写者的数据还在）。
+      const stillThere = foreign.prepare("SELECT COUNT(*) AS n FROM meta WHERE key = 'foreign-writer'").get() as { n: number }
+      expect(stillThere.n).toBe(1)
+    } finally {
+      foreign.exec('ROLLBACK')
+      foreign.close()
+    }
+    // 外部写者退场后，同一份归档恢复成功。
+    await expect(restoreBackup(created.archivePath, dir)).resolves.toBeTruthy()
+  })
 })

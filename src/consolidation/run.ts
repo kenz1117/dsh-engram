@@ -9,7 +9,7 @@
  * @module @kenz1117/dsh-engram/consolidation/run
  */
 
-import type { EngramEmbedder } from '../embedder/interface.ts'
+import type { EmbedderHandle } from '../embedder/interface.ts'
 import type { EngramStore } from '../store/interface.ts'
 import type { MemoryRecord } from '../types.ts'
 // 余弦相似度：与 store 检索共享 src/vec.ts 的单一实现（维度不匹配告警一次）。
@@ -52,7 +52,7 @@ const DEFAULTS: Required<Omit<ConsolidateOptions, 'scope' | 'mergeCandidateIds'>
 /** 闭馆整理主函数：纯异步，不抛错（失败仅记日志 / 落 pending）。 */
 export async function runConsolidation(
   store: EngramStore,
-  embedder: Promise<EngramEmbedder | undefined>,
+  embedder: EmbedderHandle,
   opts: ConsolidateOptions = {},
 ): Promise<ConsolidateReport> {
   const start = Date.now()

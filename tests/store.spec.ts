@@ -767,4 +767,63 @@ describe('事实链（schema v11）', () => {
     const full = await store.factsOfEntity({ entityId: ken!.id, includeInvalid: true, limit: 10, offset: 0 })
     expect(full.total).toBe(0)
   })
+
+  it('损坏 BLOB 行不炸检索，也不进向量池——审计 N10', async () => {
+    await store.write({ scope: 'user', kind: 'fact', content: '正常的向量记忆', embedding: new Float32Array(384).fill(0.5) })
+    // 造一个长度非 4 倍数的坏 BLOB（blobToVec 对它会抛 RangeError）。
+    const stray = await store.write({ scope: 'user', kind: 'fact', content: '带着坏向量的记忆' })
+    await store.close()
+    const raw = new DatabaseSync(join(dir, 'user.db'))
+    raw.prepare('UPDATE nodes SET embedding = ? WHERE id = ?').run(new Uint8Array(7), stray.id)
+    raw.close()
+    store = await openEngramStore(join(dir, 'user.db'))
+    // 检索不抛错，且坏行不参与余弦（结果里正常行仍可命中）。
+    const result = await store.search({ text: '向量记忆', scopes: ['user'], limit: 10 }, new Float32Array(384).fill(0.5))
+    expect(result.hits.length).toBeGreaterThanOrEqual(1)
+    // 维度多数派不受坏行干扰：384 依旧可写，387 依旧被拒。
+    await store.write({ scope: 'user', kind: 'fact', content: '维度校验仍生效', embedding: new Float32Array(384).fill(0.1) })
+    await expect(store.write({ scope: 'user', kind: 'fact', content: '异维仍拒', embedding: new Float32Array(387).fill(0.1) }))
+      .rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
+  })
+
+  it('attachEmbeddings 与其余写路径同闸：异维拒绝、贴入定维——审计 N9', async () => {
+    // 空库首贴：512 合法定维（与首写定维同一规矩）。
+    const first = await store.write({ scope: 'user', kind: 'fact', content: '导入前已有的记忆' })
+    await store.attachEmbeddings([{ id: first.id, embedding: new Float32Array(512).fill(0.1) }])
+    // 定维之后，异维贴入被拒——此前这里绕过 guardDimension，是换模型后混维入库的旁路。
+    const second = await store.write({ scope: 'user', kind: 'fact', content: '另一条导入记忆' })
+    await expect(store.attachEmbeddings([{ id: second.id, embedding: new Float32Array(384).fill(0.2) }]))
+      .rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
+    // 同维写入照常（贴入后的维度画像与写路径一致）。
+    await store.write({ scope: 'user', kind: 'fact', content: '同维写入不受影响', embedding: new Float32Array(512).fill(0.3) })
+  })
+
+  it('NaN 向量入库被拒（distill 聚类平均可产出）——审计 P3', async () => {
+    const vector = new Float32Array(384).fill(0.3)
+    vector[7] = Number.NaN
+    await expect(store.write({ scope: 'user', kind: 'fact', content: '含 NaN 的向量', embedding: vector }))
+      .rejects.toMatchObject({ code: 'EMBEDDER_INVALID_VECTOR' })
+  })
+
+  it('countOps / countOpsByDay / pruneOps：SQL 聚合口径与保留窗口——审计 N1', async () => {
+    const now = Date.now()
+    await store.write({ scope: 'user', kind: 'fact', content: '窗口内写入' })
+    await store.audit('search-rewrite-request', 'user', 'q')
+    const counts = await store.countOps(now - 60_000)
+    expect(counts['write']).toBeGreaterThanOrEqual(1)
+    expect(counts['search-rewrite-request']).toBe(1)
+    const days = await store.countOpsByDay(now - 86_400_000, now, ['write'])
+    expect(days.reduce((sum, row) => sum + row.count, 0)).toBeGreaterThanOrEqual(1)
+    // 老行被清、keepOps 里的状态行永久保留。
+    await store.audit('ingest-done', 'session-1', 'k')
+    const raw = new DatabaseSync(join(dir, 'user.db'))
+    raw.prepare('UPDATE op_log SET at = ? WHERE op = ?').run(now - 91 * 86_400_000, 'write')
+    raw.close()
+    const pruned = await store.pruneOps(now - 90 * 86_400_000, ['ingest-done', 'ingest-pending'])
+    expect(pruned).toBeGreaterThanOrEqual(1)
+    const after = await store.countOps(0)
+    expect(after['write']).toBeUndefined()
+    expect(after['ingest-done']).toBe(1)
+    expect(after['search-rewrite-request']).toBe(1)
+  })
 })

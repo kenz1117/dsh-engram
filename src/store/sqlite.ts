@@ -389,12 +389,6 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(path)
-  // 审计 F15：全局 dbDir 被所有 DSH 进程共用，默认 rollback journal + 无 busy 等待时，
-  // 并发写直接 SQLITE_BUSY（摄取/衰减/面板路由全可触发，24h 定时任务必然周期撞车）。
-  // WAL 让读写不互斥；busy_timeout 给 5s 撞车缓冲；NORMAL 配 WAL 是官方推荐档。
-  db.exec('PRAGMA journal_mode = WAL;')
-  db.exec('PRAGMA busy_timeout = 5000;')
-  db.exec('PRAGMA synchronous = NORMAL;')
   /** 手工事务：BEGIN/COMMIT/ROLLBACK（兼容 ^22.19 引擎范围）。 */
   const withTransaction = (fn: () => void): void => {
     db.exec('BEGIN')
@@ -406,7 +400,40 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       throw error
     }
   }
-  db.exec(`
+  /**
+   * 库中已有向量的维度（按浮点数个数计，不按字节）。
+   *
+   * 打开时读一次，且两张带向量的表一起读：记忆与信念彼此比较，任何一边对不上
+   * 都会让语义检索失真。库里还没有向量时维度未知——由第一次写入定下来，在那之前
+   * 没有可拒绝的东西。
+   *
+   * 维度取占多数的那一批，而不是任意一行：库里混进过别的模型的向量时（换过模型、
+   * 从备份恢复过、旧模型的归档残留），任意一行会把整库的维度判给少数派，此后
+   * 正常模型的写入全部被拒，而原因（少数几行异维数据）在错误里看不见。多数派
+   * 保证「这库现在算谁的库」由库里的多数回答；少数派只是被晾在一边，不参与比较。
+   * 表格平局时取较小的维度：写入被拒是响的，静默沿用大维度才是危险的。
+   *
+   * 长度不是 4 的倍数的 BLOB 跳过：那是损坏的行，按它定维会得到 153.25 这样的
+   * 小数，此后每一次写入都被拒绝，而真正的原因（一行坏数据）却看不见。
+   */
+  const computeStoredDim = (): number | undefined => {
+    const dims = db.prepare(`SELECT dim, COUNT(*) AS rows FROM (
+      SELECT LENGTH(embedding) / ${Float32Array.BYTES_PER_ELEMENT} AS dim FROM nodes WHERE embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0
+      UNION ALL
+      SELECT LENGTH(embedding) / ${Float32Array.BYTES_PER_ELEMENT} AS dim FROM observations WHERE embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0
+    ) GROUP BY dim ORDER BY rows DESC, dim ASC`).all() as unknown as { dim: number; rows: number }[]
+    return dims.length === 0 ? undefined : dims[0]!.dim
+  }
+  let storedDim: number | undefined
+  try {
+    // 审计 F15：全局 dbDir 被所有 DSH 进程共用，默认 rollback journal + 无 busy 等待时，
+    // 并发写直接 SQLITE_BUSY（摄取/衰减/面板路由全可触发，24h 定时任务必然周期撞车）。
+    // WAL 让读写不互斥；busy_timeout 给 5s 撞车缓冲；NORMAL 配 WAL 是官方推荐档。
+    // 在 try 内：journal_mode 的 rollback→WAL 一次性转换撞上并发写也可能抛，句柄必须随失败释放。
+    db.exec('PRAGMA journal_mode = WAL;')
+    db.exec('PRAGMA busy_timeout = 5000;')
+    db.exec('PRAGMA synchronous = NORMAL;')
+    db.exec(`
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS nodes (
       id TEXT PRIMARY KEY, scope TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL,
@@ -460,90 +487,69 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     CREATE INDEX IF NOT EXISTS facts_entity ON facts (entity_id);
     CREATE INDEX IF NOT EXISTS observations_status ON observations (status, proof_count, updated_at);
   `)
-  // v6 索引不在此处建：旧库此刻还没有 slot_room / next_review_at 列（迁移在后面才跑），
-  // 对已存在的表建这两个索引会抛 no such column。新建库走下方补建，旧库由 MIGRATIONS['5'] 建。
-  const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string } | undefined
-  if (versionRow === undefined) {
-    db.exec(`CREATE INDEX IF NOT EXISTS nodes_slot ON nodes (slot_room, slot_index);
-      CREATE INDEX IF NOT EXISTS nodes_review_due ON nodes (next_review_at);`)
-    db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(String(SCHEMA_VERSION))
-  } else {
-    // 顺序增量迁移：按 MIGRATIONS 逐版升到当前版本（保数据）；更高版本或断链（缺迁移）拒绝加载。
-    let version = Number(versionRow.value)
-    if (!Number.isInteger(version) || version > SCHEMA_VERSION) {
-      db.close()
-      throw new EngramError('SCHEMA_INCOMPATIBLE', message('store.schemaVersionTooNew', { found: versionRow.value, supported: SCHEMA_VERSION, path }))
-    }
-    if (version < SCHEMA_VERSION) {
-      // 审计 F17：升版前做一次文件级快照（迁移有 bug 时可整文件回退）。
-      // 尽力而为：失败只警告不阻断升级；固定名字覆盖上次快照，避免无限累积（审计 F23）。
-      try {
-        await copyFile(path, `${path}.pre-migration`)
-      } catch (error) {
-        console.warn(message('store.preMigrationSnapshotFailed', { path, msg: error instanceof Error ? error.message : String(error) }))
+    // v6 索引不在此处建：旧库此刻还没有 slot_room / next_review_at 列（迁移在后面才跑），
+    // 对已存在的表建这两个索引会抛 no such column。新建库走下方补建，旧库由 MIGRATIONS['5'] 建。
+    const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string } | undefined
+    if (versionRow === undefined) {
+      db.exec(`CREATE INDEX IF NOT EXISTS nodes_slot ON nodes (slot_room, slot_index);
+        CREATE INDEX IF NOT EXISTS nodes_review_due ON nodes (next_review_at);`)
+      db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(String(SCHEMA_VERSION))
+    } else {
+      // 顺序增量迁移：按 MIGRATIONS 逐版升到当前版本（保数据）；更高版本或断链（缺迁移）拒绝加载。
+      let version = Number(versionRow.value)
+      if (!Number.isInteger(version) || version > SCHEMA_VERSION) {
+        throw new EngramError('SCHEMA_INCOMPATIBLE', message('store.schemaVersionTooNew', { found: versionRow.value, supported: SCHEMA_VERSION, path }))
+      }
+      if (version < SCHEMA_VERSION) {
+        // 审计 F17：升版前做一次文件级快照（迁移有 bug 时可整文件回退）。
+        // 尽力而为：失败只警告不阻断升级；固定名字覆盖上次快照，避免无限累积（审计 F23）。
+        try {
+          await copyFile(path, `${path}.pre-migration`)
+        } catch (error) {
+          console.warn(message('store.preMigrationSnapshotFailed', { path, msg: error instanceof Error ? error.message : String(error) }))
+        }
+      }
+      while (version < SCHEMA_VERSION) {
+        const migration = MIGRATIONS[String(version)]
+        if (migration === undefined) {
+          throw new EngramError('SCHEMA_INCOMPATIBLE', message('store.schemaMigrationMissing', { found: version, supported: SCHEMA_VERSION, path }))
+        }
+        withTransaction(() => {
+          // ALTER TABLE ADD COLUMN 不支持 IF NOT EXISTS；逐条 ALTER 在执行前探测列存在性
+          // （schema_version 已 ≤ 当前版本，但用户手工降级 + 部分列已存在时仍需幂等）。
+          const safe = migration
+            .split(';')
+            .map(stmt => stmt.trim())
+            .filter(stmt => stmt !== '')
+            .filter(stmt => {
+              const match = /^ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)/i.exec(stmt)
+              if (match === null) return true
+              const table = match[1]
+              const column = match[2]
+              const cols = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]
+              return !cols.some(c => c.name === column)
+            })
+          for (const stmt of safe) db.exec(stmt)
+          version += 1
+          db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(version))
+        })
       }
     }
-    while (version < SCHEMA_VERSION) {
-      const migration = MIGRATIONS[String(version)]
-      if (migration === undefined) {
-        db.close()
-        throw new EngramError('SCHEMA_INCOMPATIBLE', message('store.schemaMigrationMissing', { found: version, supported: SCHEMA_VERSION, path }))
-      }
-      withTransaction(() => {
-        // ALTER TABLE ADD COLUMN 不支持 IF NOT EXISTS；逐条 ALTER 在执行前探测列存在性
-        // （schema_version 已 ≤ 当前版本，但用户手工降级 + 部分列已存在时仍需幂等）。
-        const safe = migration
-          .split(';')
-          .map(stmt => stmt.trim())
-          .filter(stmt => stmt !== '')
-          .filter(stmt => {
-            const match = /^ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)/i.exec(stmt)
-            if (match === null) return true
-            const table = match[1]
-            const column = match[2]
-            const cols = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]
-            return !cols.some(c => c.name === column)
-          })
-        for (const stmt of safe) db.exec(stmt)
-        version += 1
-        db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(version))
-      })
-    }
-  }
 
-  // op_log 的查询索引：op_log 是唯一没有索引的表，而 hasAudit（WHERE op+detail）每个
-  // 摄取回合至少跑两次、listForgottenWithTombs 按 target_id 连接、面板按 at 取最近——
-  // 全是全表扫。op_log 的三列从 v1 起就存在，IF NOT EXISTS 幂等，新旧库同一条路，
-  // 因此不占 schema 版本（列依赖类索引才需要走 MIGRATIONS，见 nodes_slot 的注释）。
-  db.exec(`CREATE INDEX IF NOT EXISTS op_log_op_detail ON op_log (op, detail);
-    CREATE INDEX IF NOT EXISTS op_log_target ON op_log (target_id);
-    CREATE INDEX IF NOT EXISTS op_log_at ON op_log (at);`)
-
-  /**
-   * 库中已有向量的维度（按浮点数个数计，不按字节）。
-   *
-   * 打开时读一次，且两张带向量的表一起读：记忆与信念彼此比较，任何一边对不上
-   * 都会让语义检索失真。库里还没有向量时维度未知——由第一次写入定下来，在那之前
-   * 没有可拒绝的东西。
-   *
-   * 维度取占多数的那一批，而不是任意一行：库里混进过别的模型的向量时（换过模型、
-   * 从备份恢复过、旧模型的归档残留），任意一行会把整库的维度判给少数派，此后
-   * 正常模型的写入全部被拒，而原因（少数几行异维数据）在错误里看不见。多数派
-   * 保证「这库现在算谁的库」由库里的多数回答；少数派只是被晾在一边，不参与比较。
-   * 表格平局时取较小的维度：写入被拒是响的，静默沿用大维度才是危险的。
-   *
-   * 长度不是 4 的倍数的 BLOB 跳过：那是损坏的行，按它定维会得到 153.25 这样的
-   * 小数，此后每一次写入都被拒绝，而真正的原因（一行坏数据）却看不见。
-   */
-  const computeStoredDim = (): number | undefined => {
-    const dims = db.prepare(`SELECT dim, COUNT(*) AS rows FROM (
-      SELECT LENGTH(embedding) / ${Float32Array.BYTES_PER_ELEMENT} AS dim FROM nodes WHERE embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0
-      UNION ALL
-      SELECT LENGTH(embedding) / ${Float32Array.BYTES_PER_ELEMENT} AS dim FROM observations WHERE embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0
-    ) GROUP BY dim ORDER BY rows DESC, dim ASC`).all() as unknown as { dim: number; rows: number }[]
-    return dims.length === 0 ? undefined : dims[0]!.dim
+    // op_log 的查询索引：op_log 是唯一没有索引的表，而 hasAudit（WHERE op+detail）每个
+    // 摄取回合至少跑两次、listForgottenWithTombs 按 target_id 连接、面板按 at 取最近——
+    // 全是全表扫。op_log 的三列从 v1 起就存在，IF NOT EXISTS 幂等，新旧库同一条路，
+    // 因此不占 schema 版本（列依赖类索引才需要走 MIGRATIONS，见 nodes_slot 的注释）。
+    db.exec(`CREATE INDEX IF NOT EXISTS op_log_op_detail ON op_log (op, detail);
+      CREATE INDEX IF NOT EXISTS op_log_target ON op_log (target_id);
+      CREATE INDEX IF NOT EXISTS op_log_at ON op_log (at);`)
+    storedDim = computeStoredDim()
+  } catch (error) {
+    // 审计 N3：打开/迁移中途失败的句柄必须就地关掉——否则进程握着写锁直到退出，
+    // 盘上修好了进程内也无法重试；Windows 上还会 EBUSY 砖死后续 restore。
+    try { db.close() } catch { /* 目的是释放句柄；二次失败不遮盖原错误 */ }
+    throw error
   }
-  let storedDim = computeStoredDim()
 
   /** 维度不符导致读取降级时只提醒一次：检索是高频路径，逐次告警会淹掉日志。 */
   let warnedDegradedRead = false
@@ -562,6 +568,15 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     const expected = storedDim ?? length
     if (length !== expected || !Number.isInteger(length)) {
       throw new EngramError('EMBEDDER_DIMENSION_MISMATCH', message('store.embedderDimensionMismatch', { expected, found: length }))
+    }
+    // 长度对了还不够：NaN/∞ 的分量过得了长度检查（distill 聚类平均、上游数值错误都
+    // 产得出），落库后余弦恒不可比——整条记忆从此从语义检索里静默消失。入库前拦下。
+    if (vector instanceof Float32Array) {
+      for (let i = 0; i < vector.length; i += 1) {
+        if (!Number.isFinite(vector[i]!)) {
+          throw new EngramError('EMBEDDER_INVALID_VECTOR', message('store.embedderInvalidVector'))
+        }
+      }
     }
     storedDim = length
   }
@@ -602,6 +617,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     SELECT id FROM walk WHERE depth > 0
   )`)
   const sqlRecentOps = db.prepare('SELECT at, op, target_id, detail FROM op_log ORDER BY seq DESC LIMIT ?')
+  // 遥测聚合走 GROUP BY：不把十万行明细拖进 JS 再扔掉（审计 N1——node:sqlite 同步
+  // 驱动，物化即阻塞整个 DSH 进程）。两个语句都吃 op_log_at 索引的范围扫描。
+  const sqlCountOps = db.prepare('SELECT op, COUNT(*) AS n FROM op_log WHERE at >= ? GROUP BY op')
   const sqlRevisionInsert = db.prepare('INSERT INTO nodes_revisions (node_id, content, kind, importance, superseded_at) VALUES (?, ?, ?, ?, ?)')
   const sqlRevisionsById = db.prepare('SELECT content, kind, importance, superseded_at FROM nodes_revisions WHERE node_id = ? ORDER BY superseded_at DESC')
   const sqlTopActive = db.prepare("SELECT * FROM nodes WHERE scope = ? AND status = 'active' ORDER BY importance DESC, confidence DESC LIMIT ?")
@@ -717,7 +735,8 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlObservationSetStatus = db.prepare('UPDATE observations SET status = ?, updated_at = ?, last_validated_at = ? WHERE id = ?')
   const sqlObservationMarkStale = db.prepare('UPDATE observations SET status = \'stale\' WHERE id = ?')
   const sqlObservationRefute = db.prepare('UPDATE observations SET status = \'refuted\', updated_at = ? WHERE id = ?')
-  const sqlObservationActiveVectors = db.prepare('SELECT * FROM observations WHERE status != \'refuted\' AND embedding IS NOT NULL')
+  // 与三个 nodes 向量池同一坏行标准（审计 N10）：一个损坏行曾让整场 reflect 中止。
+  const sqlObservationActiveVectors = db.prepare(`SELECT * FROM observations WHERE status != 'refuted' AND embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0`)
   const sqlPurgeObservations = db.prepare('DELETE FROM observations')
 
   /** FTS 道：按 scope 集合检索（占位符动态生成，scope 集合由调用方去重）；rooms 非空时只查指定房间。 */
@@ -731,13 +750,15 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       ORDER BY bm25(nodes_fts) LIMIT ${RANK_POOL}`).all(match, ...scopes, ...(rooms ?? [])) as unknown as NodeRow[]
   }
 
-  /** 向量候选池：active 且带向量的条目，按 scope 集合过滤（占位符动态生成）；rooms 非空时只查指定房间。 */
+  /** 向量候选池：active 且带向量的条目，按 scope 集合过滤（占位符动态生成）；rooms 非空时只查指定房间。
+   *  长度非 4 倍数的 BLOB（损坏行）不进池：读道按 computeStoredDim 同一标准跳过，
+   *  否则一个坏行让 blobToVec 抛 RangeError，整个 engram_search 报错而不是降级（审计 N10）。 */
   const vectorPool = (scopes: readonly EngramScope[], rooms: readonly string[] | undefined): NodeRow[] => {
     const placeholders = scopes.map(() => '?').join(',')
     const roomCond = rooms === undefined || rooms.length === 0
       ? ''
       : ` AND slot_room IN (${rooms.map(() => '?').join(',')})`
-    return db.prepare(`SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND scope IN (${placeholders})${roomCond}`)
+    return db.prepare(`SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0 AND scope IN (${placeholders})${roomCond}`)
       .all(...scopes, ...(rooms ?? [])) as unknown as NodeRow[]
   }
 
@@ -1393,6 +1414,31 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       return rows.map(op => ({ at: op.at, op: op.op, targetId: op.target_id, detail: op.detail }))
     },
 
+    async countOps(sinceMs: number) {
+      const rows = sqlCountOps.all(sinceMs) as unknown as { op: string; n: number }[]
+      const counts: Record<string, number> = {}
+      for (const row of rows) counts[row.op] = row.n
+      return counts
+    },
+
+    async countOpsByDay(sinceMs: number, untilMs: number, ops: readonly string[]) {
+      // op 列表由调用方给常量集合（非用户输入），占位符按长度展开安全。
+      // 按 UTC 天整数分组（at / 86400000 截断）；本地日界在调用方用 UTC 正午法折算——
+      // SQL 里掺时区偏移会在夏令时切换日产生 ±1h 的错桶（审计 N1 对抗审查 P2-5）。
+      const placeholders = ops.map(() => '?').join(', ')
+      const rows = db.prepare(`SELECT at / 86400000 AS utcDay, COUNT(*) AS n FROM op_log
+        WHERE at >= ? AND at <= ? AND op IN (${placeholders}) GROUP BY utcDay`)
+        .all(sinceMs, untilMs, ...ops) as unknown as { utcDay: number; n: number }[]
+      return rows.map(row => ({ utcDay: Number(row.utcDay), count: row.n }))
+    },
+
+    async pruneOps(olderThanMs: number, keepOps: readonly string[]) {
+      const placeholders = keepOps.map(() => '?').join(', ')
+      const result = db.prepare(`DELETE FROM op_log WHERE at < ? AND op NOT IN (${placeholders})`)
+        .run(olderThanMs, ...keepOps)
+      return Number(result.changes)
+    },
+
     async stats(): Promise<StoreStats> {
       const statusRows = sqlCountBy.all() as unknown as { status: string; n: number }[]
       const kindRows = sqlCountKind.all() as unknown as { kind: string; n: number }[]
@@ -1534,12 +1580,24 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
 
     async attachEmbeddings(entries: readonly { readonly id: MemoryId; readonly embedding: Float32Array }[]): Promise<number> {
       let attached = 0
-      withTransaction(() => {
-        for (const entry of entries) {
-          const result = sqlImportAttachEmbedding.run(vecToBlob(entry.embedding), entry.id)
-          attached += Number(result.changes)
-        }
-      })
+      try {
+        withTransaction(() => {
+          for (const entry of entries) {
+            // import/backfill 与其余写路径同闸：维度一致 + 分量有限（审计 N9——此前这里
+            // 绕过 guardDimension，换模型后写进混维度向量，检索从此静默降级纯关键词）。
+            guardDimension(entry.embedding)
+            const result = sqlImportAttachEmbedding.run(vecToBlob(entry.embedding), entry.id)
+            attached += Number(result.changes)
+          }
+        })
+      } catch (error) {
+        // guard 在事务内推进了维度画像而事务回滚了写入：回滚后画像必须跟着回滚，
+        // 否则空库上半批贴入失败会让内存里留下没人支撑的维度，后续写入全被拒。
+        storedDim = computeStoredDim()
+        throw error
+      }
+      // 逐条 attach 同样可能改变库的有效维度画像（空库首嵌），与其他写路径同规重算。
+      storedDim = computeStoredDim()
       return attached
     },
 
@@ -1566,7 +1624,8 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     },
 
     async findContradictions(embedding: Float32Array, limit = 3) {
-      const pool = db.prepare("SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND scope IN ('user','project')").all() as unknown as NodeRow[]
+      // 与 vectorPool 同一坏行标准：损坏 BLOB 不进池（审计 N10）。
+      const pool = db.prepare(`SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0 AND scope IN ('user','project')`).all() as unknown as NodeRow[]
       return pool
         .map(row => ({ row, sim: cosine(embedding, blobToVec(row.embedding!)) }))
         .filter(entry => entry.sim >= CONTRADICTION_COSINE)
@@ -1580,8 +1639,8 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     },
 
     async nearestNeighbor(embedding: Float32Array) {
-      // 与 findContradictions 同一池口径（active 且有向量的 user/project 行），不夹阈值、保留相似度。
-      const pool = db.prepare("SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND scope IN ('user','project')").all() as unknown as NodeRow[]
+      // 与 findContradictions 同一池口径（active 且有向量的 user/project 行），不夹阈值、保留相似度；坏行同规跳过。
+      const pool = db.prepare(`SELECT * FROM nodes WHERE status = 'active' AND embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0 AND scope IN ('user','project')`).all() as unknown as NodeRow[]
       let best: { row: NodeRow; sim: number } | undefined
       for (const row of pool) {
         const sim = cosine(embedding, blobToVec(row.embedding!))

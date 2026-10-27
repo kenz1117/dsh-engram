@@ -136,6 +136,18 @@ export interface EngramStore {
   review(id: MemoryId): Promise<ReviewView | undefined>
   /** 最近操作日志（全库，时间倒序；管理面板活动视图用）。 */
   recentOps(limit: number): Promise<OperationLogRow[]>
+  /** 窗口内各 op 的计数（SQL GROUP BY，不物化明细行——遥测面板的量级安全闸）。 */
+  countOps(sinceMs: number): Promise<Record<string, number>>
+  /**
+   * 窗口内指定 op 的按日计数（热力日历用）。返回 utcDay = `at / 86400000` 的整数
+   * UTC 天序号——本地日界由调用方折算（UTC 正午法，对夏令时 stable）。
+   */
+  countOpsByDay(sinceMs: number, untilMs: number, ops: readonly string[]): Promise<ReadonlyArray<{ readonly utcDay: number; readonly count: number }>>
+  /**
+   * 保留窗口外的操作日志清除（keepOps 中的状态型 op 永久保留）。返回删除行数。
+   * 只 DELETE 不 VACUUM：文件大小交给手动清理（clearLog）负责，自动清理不背 I/O 峰值。
+   */
+  pruneOps(olderThanMs: number, keepOps: readonly string[]): Promise<number>
   /** 全库统计。 */
   stats(): Promise<StoreStats>
   /** 全库导出（任意状态条目 + 全部边），数据可携带。 */

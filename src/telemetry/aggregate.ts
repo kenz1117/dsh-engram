@@ -38,47 +38,39 @@ export interface TelemetrySnapshot {
   }>
   /**
    * 每日写入分布：v0.8.1+ 面板「活动热力日历」按此渲染。
-   * 长度 = windowDays（默认 7，最长支持 90），元素 = 该日 0 点的 UTC ms 与写入/摄取合计。
+   * 长度 = windowDays（默认 7；路由把上限夹在 366，面板热力日历请求 182），元素 = 该日 0 点的 UTC ms 与写入/摄取合计。
    * 取不到时不返回（undefined），UI 端走降级（不画 / 画灰格子）。
    */
   readonly dailyWrites?: ReadonlyArray<{ readonly dayMs: number; readonly count: number }>
 }
 
-/** 从单库 op_log 统计各 op 的计数（窗口内）。 */
+/** 从单库 op_log 统计各 op 的计数（窗口内）——SQL GROUP BY，不物化明细行（审计 N1）。 */
 async function countByOp(store: EngramStore, sinceMs: number): Promise<Record<string, number>> {
-  const ops = await store.recentOps(100_000)
-  const counts: Record<string, number> = {}
-  for (const op of ops) {
-    if (op.at < sinceMs) continue
-    counts[op.op] = (counts[op.op] ?? 0) + 1
-  }
-  return counts
+  return store.countOps(sinceMs)
 }
 
-/** 按天汇总 op_log 中的所有写侧活动（用于活动热力日历）。返回的 dayMs 是该日 0 点的本地时间戳。
- * 包含 write/update/ingest-done/ingest-request/distill-request/consolidation/restore/forget,排除纯读侧(search/outcome-report)。 */
+/** 按天汇总 op_log 中的写侧活动（热力日历）。返回的 dayMs 是该日 0 点的本地时间戳。
+ * 包含 write/update/ingest-done/ingest-request/distill-request/consolidation/restore/forget,
+ * 排除纯读侧(search/outcome-report)。折算两段走：SQL 按 UTC 天分组（吃 op_log_at 索引），
+ * JS 用「UTC 正午」过 setHours 映射成本地日——正午法对夏令时切换 stable（对抗审查 P2-5）。 */
 async function countByDay(
   store: EngramStore,
   sinceMs: number,
   untilMs: number,
 ): Promise<Map<number, number>> {
-  const ops = await store.recentOps(100_000)
+  // 写侧 op:任何改变记忆库状态的操作
+  const writeOps = ['write', 'update', 'ingest-done', 'ingest-request', 'distill-request', 'consolidation', 'restore', 'forget']
+  const rows = await store.countOpsByDay(sinceMs, untilMs, writeOps)
   const counts = new Map<number, number>()
   const dayMs = (ms: number): number => {
     const d = new Date(ms)
     d.setHours(0, 0, 0, 0)
     return d.getTime()
   }
-  const startDay = dayMs(sinceMs)
-  const endDay = dayMs(untilMs)
-  for (let t = startDay; t <= endDay; t += 86_400_000) counts.set(t, 0)
-  // 写侧 op:任何改变记忆库状态的操作
-  const writeOps = new Set(['write', 'update', 'ingest-done', 'ingest-request', 'distill-request', 'consolidation', 'restore', 'forget'])
-  for (const op of ops) {
-    if (op.at < sinceMs || op.at > untilMs) continue
-    if (!writeOps.has(op.op)) continue
-    const d = dayMs(op.at)
-    counts.set(d, (counts.get(d) ?? 0) + 1)
+  for (let t = dayMs(sinceMs); t <= dayMs(untilMs); t += 86_400_000) counts.set(t, 0)
+  for (const row of rows) {
+    const local = dayMs(row.utcDay * 86_400_000 + 43_200_000)
+    counts.set(local, (counts.get(local) ?? 0) + row.count)
   }
   return counts
 }

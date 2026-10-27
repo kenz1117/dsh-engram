@@ -731,6 +731,52 @@ describe('摄取写入四态', () => {
     expect(dup.merged).toBe(0)
   })
 
+  it('F13 逐条隔离：单条嵌入抛错不弃掉后续候选', async () => {
+    const flaky = {
+      model: 'flaky-test',
+      embed: async (texts: readonly string[]) => {
+        if (texts[0] === '这条候选的嵌入会失败') throw new Error('embed endpoint hiccup')
+        return [unitVec([0.5, Math.sqrt(0.75)])]
+      },
+      close: async () => undefined,
+    }
+    const outcome = await ingestPreviousTurn(baseDeps({
+      embedder: Promise.resolve(flaky),
+      call: async () => JSON.stringify([
+        { content: '这条候选的嵌入会失败', kind: 'fact' },
+        { content: '这条候选正常落库', kind: 'fact' },
+      ]),
+    }))
+    // 失败的那条计入 dropped，后续候选照常写入，回合整体仍是成功（done 键照写）。
+    expect(outcome.dropped).toBe(1)
+    expect(outcome.written).toBe(1)
+    expect(outcome.skipped).toBeNull()
+    const ops = await store.recentOps(10)
+    expect(ops.some(op => op.op === 'ingest-done')).toBe(true)
+  })
+
+  it('F13 对偶面：全败回合不写 done 键，报告 all-candidates-failed 以保留 pending', async () => {
+    const broken = {
+      model: 'broken-test',
+      embed: async (): Promise<Float32Array[]> => { throw new Error('embedder down for the whole turn') },
+      close: async () => undefined,
+    }
+    const outcome = await ingestPreviousTurn(baseDeps({
+      embedder: Promise.resolve(broken),
+      call: async () => JSON.stringify([
+        { content: '全败回合的候选甲', kind: 'fact' },
+        { content: '全败回合的候选乙', kind: 'fact' },
+      ]),
+    }))
+    expect(outcome.skipped).toBe('all-candidates-failed')
+    expect(outcome.written).toBe(0)
+    expect(outcome.dropped).toBe(2)
+    // done 键不存在（重放侧据此保留 pending）；库里零写入。
+    const ops = await store.recentOps(20)
+    expect(ops.some(op => op.op === 'ingest-done')).toBe(false)
+    expect((await store.stats()).total).toBe(0)
+  })
+
   it('merge 路径带实体：实体挂到被强化的既有条目，不新建记忆', async () => {
     const existing = await store.write({ scope: 'user', kind: 'preference', content: '既有偏好条目', embedding: unitVec([1, 0]) })
     const outcome = await ingestPreviousTurn(baseDeps({

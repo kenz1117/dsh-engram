@@ -17,7 +17,7 @@
  */
 
 import type { ResolvedHistoryRules } from '../config.ts'
-import type { EngramEmbedder } from '../embedder/interface.ts'
+import type { EmbedderHandle } from '../embedder/interface.ts'
 import type { LlmRoute, SessionEventLike } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
 import { INGEST_DONE_OP, encodeTurnKey, ensureSessionSummary, ingestPreviousTurn, ingestWriteRouting } from './hook.ts'
@@ -135,7 +135,7 @@ export interface HistoryBackfillDeps {
   readonly openUserStore: () => Promise<EngramStore>
   /** user 分库若已存在则打开，否则 undefined（估算用，避免创建空库）。 */
   readonly resolveExistingUserStore: () => Promise<EngramStore | undefined>
-  readonly embedder: Promise<EngramEmbedder | undefined>
+  readonly embedder: EmbedderHandle
   readonly mode: Exclude<IngestMode, 'off'>
   readonly routeOverride: LlmRoute | undefined
   readonly call: IngestDeps['call']

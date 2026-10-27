@@ -150,6 +150,36 @@ export async function restoreBackup(archivePath: string, dbDir: string, options:
     }
     if (incoming.length === 0) throw new Error(message('store.backupNoDatabases'))
 
+    // 审计 N2：换文件的前提是没人再往旧文件写。本进程的缓存连接由调用方先关（路由层
+    // 先 closeStores 再 swap）；这里对每个主库做 wal_checkpoint(TRUNCATE)，一石二鸟——
+    // ① 把 WAL 里已提交的尾部写刷进主文件（挪去 .before-restore-* 的旧库不丢尾巴）；
+    // ② busy=1 说明还有活的读写方（典型：另一个开着面板的 DSH 进程），拒绝交换——
+    //   照换的话对方后续写入仍落进被改名的旧文件，重启后静默消失。
+    // checkpoint 干净收尾会顺带删掉崩溃残留的 -wal/-shm 侧文件，所以挪移清单必须
+    // 在探测之后现读——否则清单里的侧文件已不存在，rename 报 ENOENT。
+    const { DatabaseSync } = await import('node:sqlite')
+    for (const name of await readdir(dbDir)) {
+      if (!name.endsWith('.db')) continue
+      const path = join(dbDir, name)
+      if (!(await stat(path)).isFile()) continue
+      let probe: InstanceType<typeof DatabaseSync> | undefined
+      try {
+        probe = new DatabaseSync(path)
+        const rows = probe.prepare('PRAGMA wal_checkpoint(TRUNCATE)').all() as unknown as { busy: number }[]
+        if (rows[0]?.busy !== 0) {
+          throw new Error(message('store.restoreBusyWriters', { file: name }))
+        }
+      } catch (error) {
+        // 非本插件的垃圾 *.db 也可能在 dbDir 里：sqlite 的「file is not a database」
+        // 裸抛出来没人看得懂——统一带上文件名再说原话。
+        if (error instanceof Error && error.message.includes(name)) throw error
+        const reason = error instanceof Error ? error.message : String(error)
+        throw new Error(`${name}: ${reason}`, { cause: error })
+      } finally {
+        try { probe?.close() } catch { /* 探测连接的关闭失败不改变判定结果 */ }
+      }
+    }
+
     // keepCurrent=false 只表示成功后不保留旧副本；替换期间仍须可回滚。
     const stamp = `${new Date().toISOString().replaceAll(':', '-').slice(0, 19)}-${randomUUID()}`
     const current: { readonly path: string; readonly backup: string }[] = []

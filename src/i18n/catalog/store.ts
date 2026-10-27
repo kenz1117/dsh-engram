@@ -59,6 +59,8 @@ export const zh = {
   // —— embedder/local.ts ——
   'store.embedderDownloadFailed': '嵌入模型下载/加载失败；检索已降级为纯关键词模式，可检查网络后重试',
   'store.embedderDimensionMismatch': '嵌入向量维度不一致：库里是 {expected} 维，嵌入器给出 {found} 维。比较与写入直接拒绝，而不是逐维截断——请把模型改回去，或用新模型重建库中向量',
+  'store.embedderInvalidVector': '嵌入向量含非有限分量（NaN/∞），写入被拒——这样的向量落库后余弦恒不可比，整条记忆会从语义检索里静默消失',
+  'store.restoreBusyWriters': '检测到 {file} 仍有活动连接在写入（可能是另一个打开着的 DeepSeek 窗口），已取消恢复——请先关闭其他窗口再试，否则那些窗口的写入会丢',
   // —— embedder/select.ts ——
   'store.embedderModelUnresolved': '未能按语言确定本地嵌入模型；检索已降级为纯关键词模式，请检查模型登记表',
 
@@ -125,6 +127,8 @@ export const en = {
   // —— embedder/local.ts ——
   'store.embedderDownloadFailed': 'embedding model download/load failed; retrieval has degraded to keyword-only mode — check the network and retry',
   'store.embedderDimensionMismatch': 'embedding dimension mismatch: the store holds {expected}-dimensional vectors, the embedder returned {found}. Comparison and writes are refused instead of being silently truncated — switch the model back, or re-embed the store with the new one',
+  'store.embedderInvalidVector': 'embedding vector contains a non-finite component (NaN/∞); the write is refused — such a vector makes cosine comparisons meaningless and the memory would silently vanish from semantic retrieval',
+  'store.restoreBusyWriters': '{file} still has a live connection writing (likely another open DeepSeek window); restore cancelled — close the other windows first, otherwise their writes would be lost',
   // —— embedder/select.ts ——
   'store.embedderModelUnresolved': 'could not resolve a local embedding model for this language; retrieval has degraded to keyword-only mode — check the model registry',
 

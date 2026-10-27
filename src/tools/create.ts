@@ -12,7 +12,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { distillMemories } from '../flywheel/distill.ts'
 import { reflectObservations } from '../consolidation/reflect.ts'
 import { writeMirror } from '../mirror/markdown.ts'
-import type { EngramEmbedder } from '../embedder/interface.ts'
+import type { EmbedderHandle } from '../embedder/interface.ts'
 import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
 import type { LlmRoute } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
@@ -51,7 +51,7 @@ export interface ToolDeps {
    */
   readonly resolveProjectStore: (cwd: string | undefined) => Promise<EngramStore>
   /** 嵌入器承诺；undefined = 嵌入不可用，检索降级纯关键词、矛盾检测停用。 */
-  readonly embedder: Promise<EngramEmbedder | undefined>
+  readonly embedder: EmbedderHandle
   /** 辅助 LLM 调用（index.ts 用 ctx.llm.stream 构造）；undefined = distill 不可用。sessionId 由调用点补齐。 */
   readonly call: ((params: { route: LlmRoute; system: string; userText: string; maxTokens: number; purpose: string; signal: AbortSignal; sessionId: string | undefined }) => Promise<string>) | undefined
   /** 显式路由覆盖（Config provider+model）；缺省从会话日志解析。 */

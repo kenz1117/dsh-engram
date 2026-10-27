@@ -12,7 +12,7 @@ import type { LlmRoute, SessionEventLike } from '../llm/client.ts'
 import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
 import { message } from '../i18n/messages.ts'
 import { chitchatPatterns, noCapturePatterns } from '../i18n/patterns.ts'
-import type { EngramEmbedder } from '../embedder/interface.ts'
+import type { EmbedderHandle } from '../embedder/interface.ts'
 import type { EngramStore } from '../store/interface.ts'
 import type { EngramEntityKind, EngramKind, EngramScope, EntityMention, FactMention, FactWriteInput, MemoryId } from '../types.ts'
 import { normalizeEntityName } from '../types.ts'
@@ -169,7 +169,7 @@ export interface IngestDeps {
   /** user 分库打开器。 */
   readonly openStore: () => Promise<EngramStore>
   /** 嵌入器承诺；undefined = 无法去重（候选全量写入，重复风险由低置信度体现）。 */
-  readonly embedder: Promise<EngramEmbedder | undefined>
+  readonly embedder: EmbedderHandle
   /** 档位。 */
   readonly mode: Exclude<IngestMode, 'off'>
   /** 显式路由覆盖（Config provider+model 成对）；缺省从日志解析。 */
@@ -537,6 +537,8 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   let merged = 0
   let deferred = 0
   let dropped = 0
+  // 异常落榜的候选数（区别于内容非法等确定性淘汰）——全败回合保留 pending 用（审计 F13）。
+  let failedDrops = 0
   for (const item of parsed.slice(0, limits.maxCandidates)) {
     const candidate = item as { content?: unknown; kind?: unknown; scope?: unknown; importance?: unknown; entities?: unknown; facts?: unknown }
     if (typeof candidate.content !== 'string' || candidate.content.trim() === '') { dropped += 1; continue }
@@ -551,73 +553,90 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     const scope: EngramScope = deps.perCandidateScope === true && modelScope !== undefined
       ? modelScope
       : deps.writeScope ?? 'user'
-    const target = deps.resolveStore === undefined ? store : await deps.resolveStore(scope)
     const importance = typeof candidate.importance === 'number' && Number.isFinite(candidate.importance)
       ? Math.min(1, Math.max(0, candidate.importance))
       : 0.5
-    // 实体关联（schema v10）：候选自带的 entities 消解为词典实体后挂到最终条目上。
-    // 事实链（schema v11）：候选自带的 facts 按归一化实体名对上消解结果后写进事实表。
-    // 增强数据：消解/关联/事实写入失败只跳过，不改变该候选的写入处置结果。
-    const linkEntities = async (nodeId: MemoryId): Promise<void> => {
-      const mentions = parseEntityMentions(candidate.entities)
-      if (mentions.length === 0) return
-      try {
-        const entities = await target.resolveEntities(mentions)
-        await target.linkNodeEntities(nodeId, entities.map(entity => entity.id))
-        const factInputs: FactWriteInput[] = []
-        const byName = new Map(entities.map(entity => [normalizeEntityName(entity.name), entity]))
-        for (const mention of parseFactMentions(candidate.facts)) {
-          const entity = byName.get(normalizeEntityName(mention.entity))
-          if (entity === undefined) continue
-          factInputs.push({ entityId: entity.id, content: mention.content, sourceNodeId: nodeId })
-        }
-        if (factInputs.length > 0) await target.writeFacts(factInputs)
-      } catch {
-        // 实体词典/事实表写入失败（如 EMPTY_ENTITY_NAME）不影响记忆条目本身的落库。
-      }
-    }
     // 同批重复内容直接 DROP。
     if (writtenContents.includes(content)) { dropped += 1; continue }
-    // 四态处置（嵌入可用时）：复述并入强化既有条目（MERGE，不新建）；
-    // 疑似矛盾/修正落库并建 contradicts 边待裁决（DEFER）；其余 ACCEPT。
-    const vector = embedder === undefined ? undefined : (await embedder.embed([content]))[0]
-    // judge + content 成对提供时，DEFER 模糊带（0.88-0.92 之外按阈值）交 Jev 三路裁决；失败静默降级回 defer。
-    const decision = await decideWrite(target, kind, vector, judge === undefined ? {} : { judge, content })
-    if (decision.disposition === 'merge') {
-      await applyMerge(target, decision, content)
-      await linkEntities(decision.into.id)
-      writtenContents.push(content)
-      merged += 1
-      continue
-    }
-    const record = await target.write({
-      scope,
-      kind,
-      content,
-      importance,
-      confidence: limits.confidence,
-      sourceSessionId: deps.sessionId,
-      sourceRound: round,
-      ...(minSeq === null ? {} : { sourceSeq: minSeq }),
-      ...(vector === undefined ? {} : { embedding: vector }),
-      ...(deps.history === true ? { initialReviewAt: null } : {}),
-    })
-    if (decision.disposition === 'defer') {
-      // judge 在场时矛盾边先经 Jev 确认（失败返回 undefined = 降级为全量建边，与旧行为一致）。
-      const neighbors = judge === undefined
-        ? [decision.neighbor]
-        : (await confirmContradictions(judge, content, [decision.neighbor], target)) ?? [decision.neighbor]
-      for (const neighbor of neighbors) {
-        // Запись уже сохранена: защитно пропускаем саму себя, чтобы не создать
-        // связь «противоречит сама себе» (см. то же место в tools/create.ts).
-        if (neighbor.id === record.id) continue
-        await target.linkEdge(record.id, neighbor.id, 'contradicts')
+    // 审计 F13 · 逐候选隔离：嵌入/裁决/落库失败只属于这一条——计入 dropped、警告、
+    // 继续余下候选。此前一条抛错会弃掉整批后半，且 done 键不写（:622 被跳过），
+    // 重放于是整轮重跑：第二个付费 LLM 调用换回同一批候选。批内自愈的范式同
+    // tools/create.ts 的 saveBatch。
+    try {
+      const target = deps.resolveStore === undefined ? store : await deps.resolveStore(scope)
+      // 实体关联（schema v10）：候选自带的 entities 消解为词典实体后挂到最终条目上。
+      // 事实链（schema v11）：候选自带的 facts 按归一化实体名对上消解结果后写进事实表。
+      // 增强数据：消解/关联/事实写入失败只跳过，不改变该候选的写入处置结果。
+      const linkEntities = async (nodeId: MemoryId): Promise<void> => {
+        const mentions = parseEntityMentions(candidate.entities)
+        if (mentions.length === 0) return
+        try {
+          const entities = await target.resolveEntities(mentions)
+          await target.linkNodeEntities(nodeId, entities.map(entity => entity.id))
+          const factInputs: FactWriteInput[] = []
+          const byName = new Map(entities.map(entity => [normalizeEntityName(entity.name), entity]))
+          for (const mention of parseFactMentions(candidate.facts)) {
+            const entity = byName.get(normalizeEntityName(mention.entity))
+            if (entity === undefined) continue
+            factInputs.push({ entityId: entity.id, content: mention.content, sourceNodeId: nodeId })
+          }
+          if (factInputs.length > 0) await target.writeFacts(factInputs)
+        } catch {
+          // 实体词典/事实表写入失败（如 EMPTY_ENTITY_NAME）不影响记忆条目本身的落库。
+        }
       }
-      deferred += 1
+      // 四态处置（嵌入可用时）：复述并入强化既有条目（MERGE，不新建）；
+      // 疑似矛盾/修正落库并建 contradicts 边待裁决（DEFER）；其余 ACCEPT。
+      const vector = embedder === undefined ? undefined : (await embedder.embed([content]))[0]
+      // judge + content 成对提供时，DEFER 模糊带（0.88-0.92 之外按阈值）交 Jev 三路裁决；失败静默降级回 defer。
+      const decision = await decideWrite(target, kind, vector, judge === undefined ? {} : { judge, content })
+      if (decision.disposition === 'merge') {
+        await applyMerge(target, decision, content)
+        await linkEntities(decision.into.id)
+        writtenContents.push(content)
+        merged += 1
+        continue
+      }
+      const record = await target.write({
+        scope,
+        kind,
+        content,
+        importance,
+        confidence: limits.confidence,
+        sourceSessionId: deps.sessionId,
+        sourceRound: round,
+        ...(minSeq === null ? {} : { sourceSeq: minSeq }),
+        ...(vector === undefined ? {} : { embedding: vector }),
+        ...(deps.history === true ? { initialReviewAt: null } : {}),
+      })
+      if (decision.disposition === 'defer') {
+        // judge 在场时矛盾边先经 Jev 确认（失败返回 undefined = 降级为全量建边，与旧行为一致）。
+        const neighbors = judge === undefined
+          ? [decision.neighbor]
+          : (await confirmContradictions(judge, content, [decision.neighbor], target)) ?? [decision.neighbor]
+        for (const neighbor of neighbors) {
+          // Запись уже сохранена: защитно пропускаем саму себя, чтобы не создать
+          // связь «противоречит сама себе» (см. то же место в tools/create.ts).
+          if (neighbor.id === record.id) continue
+          await target.linkEdge(record.id, neighbor.id, 'contradicts')
+        }
+        deferred += 1
+      }
+      await linkEntities(record.id)
+      writtenContents.push(content)
+      written += 1
+    } catch (error) {
+      dropped += 1
+      failedDrops += 1
+      console.warn(message('ingest.candidateFailed'), content.slice(0, 80), error)
     }
-    await linkEntities(record.id)
-    writtenContents.push(content)
-    written += 1
+  }
+  // 审计 F13 的对偶面：逐条隔离不能把「整回合瞬时失败」（嵌入端点抖动、库短暂锁死）
+  // 洗成「成功零写入」——done 键照写会关掉 pending 重放这条恢复路，那轮对话的记忆
+  // 就永久丢了。此时不写 done 键、以 skipped 报告，重放侧保留 pending 下个会话再试。
+  // 判定用 failedDrops（异常落榜）而不是 dropped（含空内容等确定性淘汰——那种重放也不会成功）。
+  if (failedDrops > 0 && written === 0 && merged === 0 && deferred === 0) {
+    return { scannedEvents: slice.length, candidates: parsed.length, written, merged, deferred, dropped, skipped: 'all-candidates-failed' }
   }
   await auditStore.audit(INGEST_DONE_OP, deps.sessionId, doneKey)
   return { scannedEvents: slice.length, candidates: parsed.length, written, merged, deferred, dropped, skipped: null }
@@ -762,7 +781,7 @@ export interface ReplayIngestDeps {
   /** 按会话 cwd 解析项目分库（模型判 project 时的落点）。 */
   readonly resolveStore: (cwd: string) => Promise<EngramStore>
   /** 嵌入器承诺。 */
-  readonly embedder: Promise<EngramEmbedder | undefined>
+  readonly embedder: EmbedderHandle
   /** 档位。 */
   readonly mode: Exclude<IngestMode, 'off'>
   /** 显式路由覆盖；缺省从日志解析。 */
@@ -841,7 +860,7 @@ export async function replayPendingIngests(deps: ReplayIngestDeps): Promise<Repl
         ...(deps.resolveJudge === undefined ? {} : { resolveJudge: deps.resolveJudge }),
         signal: deps.signal,
       })
-      if (outcome.skipped === 'unparseable-output' || outcome.skipped === 'empty-answer') {
+      if (outcome.skipped === 'unparseable-output' || outcome.skipped === 'empty-answer' || outcome.skipped === 'all-candidates-failed') {
         kept += 1
         if (stale) {
           await store.clearAudit(INGEST_PENDING_OP, detail)
