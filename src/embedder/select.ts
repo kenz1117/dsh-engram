@@ -125,10 +125,13 @@ export function resolveBaseTarget(
  * Построить эмбеддер по конфигурации и реестру.
  * @param config - разрешённая конфигурация плагина.
  * @param registry - прочитанные каталог моделей и привязки.
+ * @param languageOverride - язык выбора локальной модели вместо `config.language`
+ *   (issue #39: метка существующей базы главнее системной локали — locale читается
+ *   не на всех платформах, а промах уводит готовую базу на чужую размерность).
  * @returns готовый EngramEmbedder.
  * @throws EngramError EMBEDDER_MODEL_UNRESOLVED — язык не привязан ни к одной модели; EMBEDDER_DOWNLOAD_FAILED / EMBEDDER_REMOTE_FAILED — бэкенд не поднялся.
  */
-export function createEmbedder(config: ResolvedEngramConfig, registry: LoadedRegistry): Promise<EngramEmbedder> {
+export function createEmbedder(config: ResolvedEngramConfig, registry: LoadedRegistry, languageOverride?: string): Promise<EngramEmbedder> {
   const embedder = config.embedder
   const remote = embedder.remote
   if (remote !== undefined) {
@@ -143,7 +146,7 @@ export function createEmbedder(config: ResolvedEngramConfig, registry: LoadedReg
       timeoutMs: remote.timeoutMs,
     })
   }
-  const spec = resolveLocalModel(registry, config.language, embedder.localModel, embedder.localPooling)
+  const spec = resolveLocalModel(registry, languageOverride ?? config.language, embedder.localModel, embedder.localPooling)
   if (spec === undefined) {
     return Promise.reject(new EngramError('EMBEDDER_MODEL_UNRESOLVED', message('store.embedderModelUnresolved')))
   }

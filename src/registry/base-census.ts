@@ -17,7 +17,7 @@
  */
 
 import { existsSync } from 'node:fs'
-import { MODEL_LABEL_KEY, type BaseFacts, type DimCount } from './base-state.ts'
+import { MODEL_LABEL_KEY, languageOfLabels, type BaseFacts, type DimCount } from './base-state.ts'
 import type { VectorTableSpec } from './vector-schema.ts'
 
 /** Претензия к базе: почему факты неполные. */
@@ -141,4 +141,34 @@ export async function readBaseCensus(input: {
     dims: [...dims].map(([value, count]): DimCount => ({ dims: value, rows: count })),
   }
   return { facts, schemaVersion: baseVersion, checkable, problems }
+}
+
+/**
+ * Язык, на котором стоит база, — по метке `meta.model_label`, лёгкое чтение.
+ *
+ * Отдельно от `readBaseCensus`: выбору модели при сборке плагина (issue #39) нужен
+ * только язык существующей базы, а не полная опись векторов. Те же гарантии, что и
+ * у описи: read-only соединение, отсутствие файла — «базы нет», а не ошибка,
+ * любая проблема чтения — `undefined`, а не догадка.
+ * @param path - путь к файлу базы.
+ * @returns код языка из метки либо undefined (файла нет, метки нет, читать не удалось).
+ */
+export async function readStoreLanguageLabel(path: string): Promise<string | undefined> {
+  if (!existsSync(path)) return undefined
+  const { DatabaseSync } = await import('node:sqlite')
+  let db: InstanceType<typeof DatabaseSync> | undefined
+  try {
+    db = new DatabaseSync(path, { readOnly: true })
+    db.exec('PRAGMA busy_timeout = 2000')
+    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(MODEL_LABEL_KEY) as unknown as { value: string } | undefined
+    if (row === undefined) return undefined
+    // Правило разбора одно на весь формат метки — `languageOfLabels`; локальная копия
+    // здесь рано или поздно разошлась бы с ним (например, по подтегам вроде zh-Hans).
+    const language = languageOfLabels([row.value])
+    return typeof language === 'string' ? language : undefined
+  } catch {
+    return undefined
+  } finally {
+    try { db?.close() } catch { /* Закрытие read-only соединения чинить нечем. */ }
+  }
 }

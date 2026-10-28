@@ -103,7 +103,11 @@ function appleLocaleBase(): string {
  *
  * Порядок чтения: переменные окружения (если в них **настоящий** язык — их
  * ставили руками, и это более узкое намерение, чем настройка ОС), затем на macOS
- * — `AppleLocale`, иначе ничего.
+ * — `AppleLocale`, затем — локаль по умолчанию из ICU (`Intl`): на Windows ICU
+ * берёт её из `GetUserDefaultLocaleName`, и это единственный надёжный источник —
+ * `LC_ALL`/`LC_MESSAGES`/`LANG` там обычно не заданы вовсе (issue #39: без этой
+ * ступени китайская Windows читалась как пустая строка и падала в умолчание
+ * поставки, снося готовую 512-мерную базу на 384-мерную модель).
  *
  * Нужна там, где важно не «каким словарём мы располагаем», а на каком языке человек
  * на самом деле работает: панель первого старта подставляет язык локали в выбор,
@@ -114,8 +118,26 @@ function appleLocaleBase(): string {
 export function systemLocaleBase(): string {
   const fromEnv = parseLocaleTag(process.env.LC_ALL ?? process.env.LC_MESSAGES ?? process.env.LANG ?? '')
   if (fromEnv !== '') return fromEnv
-  if (process.platform === 'darwin') return appleLocaleBase()
-  return ''
+  if (process.platform === 'darwin') {
+    const apple = appleLocaleBase()
+    if (apple !== '') return apple
+  }
+  return icuLocaleBase()
+}
+
+/**
+ * Локаль по умолчанию из ICU: Node (full-icu) резолвит её из настроек ОС —
+ * на Windows это региональный формат пользователя (`GetUserDefaultLocaleName`),
+ * на Linux/macOS — соответствующие системные источники. Отличать от «локали
+ * процесса» больше не нужно: здесь это как раз источник последней надежды, когда
+ * переменные окружения пусты, а своего чтения у платформы нет.
+ */
+export function icuLocaleBase(): string {
+  try {
+    return parseLocaleTag(Intl.DateTimeFormat().resolvedOptions().locale)
+  } catch {
+    return ''
+  }
 }
 
 /**

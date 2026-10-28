@@ -20,7 +20,7 @@ import type { ResolvedHistoryRules } from '../config.ts'
 import type { EmbedderHandle } from '../embedder/interface.ts'
 import type { LlmRoute, SessionEventLike } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
-import { INGEST_DONE_OP, encodeTurnKey, ensureSessionSummary, ingestPreviousTurn, ingestWriteRouting } from './hook.ts'
+import { INGEST_DONE_OP, INGEST_SKIP_OP, encodeTurnKey, ensureSessionSummary, ingestPreviousTurn, ingestWriteRouting } from './hook.ts'
 import type { IngestDeps, IngestMode, IngestWriteRouting } from './hook.ts'
 import { message } from '../i18n/messages.ts'
 import type { JudgeProvider } from '../write-disposition.ts'
@@ -325,7 +325,11 @@ export async function estimateHistoryBackfill(
     // 幂等键固定在 user 库（与写入落哪个宫殿无关）：只查已存在的库，不因估算产生空库文件。
     if (auditStore === undefined) continue
     for (const turn of candidate.turns) {
-      if (await auditStore.hasAudit(INGEST_DONE_OP, encodeTurnKey(candidate.header.id, turn))) alreadyIngested += 1
+      // 已摄取（done）或已被确定性规则跳过（skip，issue #40）都算已处理：
+      // 只认 done 时，被节流的轮次永远滞留在「待处理」，估算永不动。
+      const key = encodeTurnKey(candidate.header.id, turn)
+      if (await auditStore.hasAudit(INGEST_DONE_OP, key)) alreadyIngested += 1
+      else if (await auditStore.hasAudit(INGEST_SKIP_OP, key)) alreadyIngested += 1
     }
   }
   return {

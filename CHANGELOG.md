@@ -10,7 +10,10 @@
 
 ## [Unreleased]
 
-> 2026-10-27 全面审计（`docs/audit-2026-10-27.md`）的三个修复批次，尚未发版。
+## [0.11.1] - 2026-10-28
+
+> 2026-10-27 全面审计（`docs/audit-2026-10-27.md`）的三个修复批次 + 两个用户报告的升级事故
+> （#39 / #40），以对抗式审查收口每一批（审查自身抓出 9 个问题并回修，含 2 个由修复引入的）。
 
 ### Added
 
@@ -23,6 +26,8 @@
 
 ### Fixed
 
+- **#39（升级事故）**：Windows 上系统语言读不到（`LC_ALL`/`LC_MESSAGES`/`LANG` 在 Windows 默认不设），中文库被绑定到 384 维多语言模型，升级后写入整体被维度守卫拒绝。两层修复：① locale 读取补 ICU 兜底（`Intl` 默认 locale，Windows 上即 `GetUserDefaultLocaleName` 的结果）；② 语言设置为 auto 时，**存量库自己的 `model_label` 优先于系统 locale**——标签记录了「这些向量是谁写的」，locale 读错也不再把现成库推到异维模型上。新建库无标签，走原判定；显式语言设置与 `embedder.localModel` 覆盖的优先级不变。
+- **#40**：回填的「待处理轮数」永远降不到零——被节流/无正文/无路由跳过的轮次不写任何幂等键，每次回填重新扫描重新跳过。现在确定性跳过会落 `ingest-skip` 标记（target_id 携带原因），估算把「有 done 或有 skip」都算已处理，且已标记轮次直接跳过不再重判。
 - 面板运维卡（宫殿语言/插件语言）改用 section 级 toast——私有实例的 viewport 从未挂载，修底座/换语言/词典操作的提示一直在往虚空里发
 - api() 先判 `response.ok` 再解析 JSON——代理错误页不再伪装成 «Unexpected token <»；project 注入分支不再丢 content-type（注入型 POST 曾被服务端 415 挡下）
 - importance/confidence 在入库单点收口 [0,1]（含 import 路径）——`engram_save` 直收模型给的数，越界值曾能永久霸榜 topActive 进会话注入
@@ -352,7 +357,8 @@
 
 - 首个可用版本：`engram_*` 工具集、插件入口、画像注入、SQLite + FTS5 + 关系边 + op log 的本地存储。
 
-[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/kenz1117/dsh-engram/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/kenz1117/dsh-engram/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kenz1117/dsh-engram/compare/v0.9.9...v0.10.0
 [0.9.9]: https://github.com/kenz1117/dsh-engram/compare/v0.9.8...v0.9.9

@@ -58,7 +58,7 @@ import { LOG_KEEP_OPS, registerEngramRoutes } from './routes.ts'
 import type { BaseConvertResult, BaseLabelResult, BaseView, DictionarySaveResult, ProjectPalaceView, RegistryView, RouteDeps } from './routes.ts'
 import { judgeBase, labelToStamp, languageOfLabels, MODEL_LABEL_KEY } from './registry/base-state.ts'
 import type { CatalogModel } from './registry/base-state.ts'
-import { readBaseCensus } from './registry/base-census.ts'
+import { readBaseCensus, readStoreLanguageLabel } from './registry/base-census.ts'
 import { planBaseVectors, runVectorConvert, vectorConversionComplete } from './registry/convert.ts'
 import { PalaceGuard } from './registry/palace-guard.ts'
 import { loadVectorSchema } from './registry/vector-schema.ts'
@@ -756,7 +756,21 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   // Выбор модели считается здесь, а не внутри снимка: та же строка нужна карточке баз —
   // она называет метку, которой подписываются базы (`ru-minilm-l12`), и разойтись эти
   // два места не должны.
-  const localModel = resolveLocalModel(registry, resolved.language, resolved.embedder.localModel, resolved.embedder.localPooling)
+  //
+  // issue #39：系统 locale 的读取在任何平台都可能落空——Windows 的 LC_*/LANG 通常
+  // 不设、容器里同样如此——落空就走包默认，把已建好的库推到异维模型上，写入全拒。
+  // 存量库自己的 model_label 是更可靠的语言事实（它记录了「这些向量是谁写的」）：
+  // 优先级 = 显式语言设置 > embedder.localModel 覆盖（resolveLocalModel 内部处理）
+  // > 库标签 > 系统 locale > 包默认。仅 auto 且库标签的绑定真实存在时沿用；
+  // 新建库没有标签，走原判定。库标签不改输出语言（message/UI），只改模型选择。
+  const storeLanguage = resolved.embedder.remote === undefined
+    && (resolved.languageSetting === undefined || resolved.languageSetting === 'auto')
+    ? await readStoreLanguageLabel(join(resolved.dbDir, 'user.db'))
+    : undefined
+  const mountLanguage = storeLanguage !== undefined && registry.bindings.has(storeLanguage)
+    ? storeLanguage
+    : resolved.language
+  const localModel = resolveLocalModel(registry, mountLanguage, resolved.embedder.localModel, resolved.embedder.localPooling)
   /** Снимок обслуживания по прочитанным словарям: собирается заново после правки из панели. */
   /**
    * Язык дворца в снимке обслуживания. Здесь всегда null: язык диалога появляется
@@ -829,7 +843,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
    * базы подписало и пересчитало под старый — и человек получил бы ровно то расхождение,
    * от которого условие защищает.
    */
-  let basesLanguage: EngramLanguage = resolved.language
+  let basesLanguage: EngramLanguage = mountLanguage
   /**
    * Предохранитель смены языка: одно окно на процесс, состояние — в памяти.
    *
@@ -993,7 +1007,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   let embedderPending: Promise<EngramEmbedder | undefined> | undefined
   const embedderAttempt = (): Promise<EngramEmbedder | undefined> => {
     if (embedderPending === undefined) {
-      embedderPending = createEmbedder(resolved, registry).catch((error: unknown) => {
+      embedderPending = createEmbedder(resolved, registry, mountLanguage).catch((error: unknown) => {
         console.warn(message('core.warnEmbedderUnavailable'), error)
         embedderPending = undefined
         return undefined

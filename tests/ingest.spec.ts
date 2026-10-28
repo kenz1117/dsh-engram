@@ -347,14 +347,25 @@ describe('摄取节流', () => {
 
   it('集成：低活动轮摄取直接跳过且不写库、不调 LLM', async () => {
     let called = 0
+    const lowEvents = [turnStart(1), userMsg('我最喜欢 TypeScript', 2), turnStart(2), userMsg('现在的问题', 200)]
     const outcome = await ingestPreviousTurn(baseDeps({
-      events: [turnStart(1), userMsg('我最喜欢 TypeScript', 2), turnStart(2), userMsg('现在的问题', 200)],
+      events: lowEvents,
       call: async () => { called += 1; return VALID_LLM_OUTPUT },
     }))
     expect(outcome.skipped).toBe('low-activity')
     expect(outcome.written).toBe(0)
     expect(called).toBe(0)
     expect(await store.topActive('user', 10)).toHaveLength(0)
+    // issue #40：跳过要留下幂等标记——否则回填的「待处理」永远降不到零。
+    const ops = await store.recentOps(10)
+    expect(ops.some(op => op.op === 'ingest-skip' && op.targetId === 'low-activity')).toBe(true)
+    // 第二次：按已处理直接跳过（skip 键 = 幂等键）。
+    const again = await ingestPreviousTurn(baseDeps({
+      events: lowEvents,
+      call: async () => { called += 1; return VALID_LLM_OUTPUT },
+    }))
+    expect(again.skipped).toBe('already-ingested')
+    expect(called).toBe(0)
   })
 
   it('活动门槛常量为 5（协议内定值）', () => {

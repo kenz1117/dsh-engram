@@ -39,6 +39,13 @@ const INGEST_MAX_TOKENS = 4000
 export const INGEST_DONE_OP = 'ingest-done'
 /** op_log pending 键 op：disposed 末轮摄取失败/超时，待下次会话重放补做。 */
 export const INGEST_PENDING_OP = 'ingest-pending'
+/**
+ * op_log 跳过标记 op：该 (sessionId, turn) 被确定性的前置检查跳过（节流/无正文/无路由）。
+ * 不记它，估算与重跑就永远把这些轮当待处理（issue #40：回填的「待处理」降不到零）。
+ * 跳过判定由轮内容决定、逐字可复现，标记因此不掩盖内容；target_id 存原因
+ * （turn key 已含 sessionId，用它携带原因供日后按规则版本清理），detail 与 done 同键。
+ */
+export const INGEST_SKIP_OP = 'ingest-skip'
 /** disposed 末轮摄取的超时（fire-and-forget 观察器，进程退出可能打断，必须限时）。 */
 export const FINAL_INGEST_TIMEOUT_MS = 5000
 
@@ -473,11 +480,17 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   if (await auditStore.hasAudit(INGEST_DONE_OP, doneKey)) {
     return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'already-ingested' }
   }
+  // 已被确定性规则跳过过的轮次同样直接跳过（issue #40）：不查这个键，回填每跑一次
+  // 都把它们重新扫描、重新判定、重新跳过，估算的「待处理」永远不动。
+  if (await auditStore.hasAudit(INGEST_SKIP_OP, doneKey)) {
+    return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'already-ingested' }
+  }
 
   // 节流（默认只限 previous 自动摄取）：低活动/寒暄/显式禁记的轮次不值得起一次辅助 LLM。
   if (sliceMode === 'previous' || deps.throttle === true) {
     const throttled = throttleDecision(slice)
     if (throttled !== null) {
+      await auditStore.audit(INGEST_SKIP_OP, throttled, doneKey)
       return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: throttled }
     }
   }
@@ -488,11 +501,16 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   // 入库前协议剥离 + 密钥脱敏；交给提取模型的 userText 同样脱敏。
   const cleaned = texts.map(text => redactSecrets(sanitizeProtocolText(text)))
   if (cleaned.every(text => text === '')) {
+    await auditStore.audit(INGEST_SKIP_OP, 'no-user-content', doneKey)
     return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'no-user-content' }
   }
 
   const route = deps.routeOverride ?? routeFromEvents(deps.events)
-  if (route === undefined) return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'no-route-in-log' }
+  if (route === undefined) {
+    // 路由取自会话日志自身，对既有历史是确定性的：无路由头的历史轮不会再有路由。
+    await auditStore.audit(INGEST_SKIP_OP, 'no-route-in-log', doneKey)
+    return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'no-route-in-log' }
+  }
 
   // 防回声室附注：上一轮调用过召回工具时，提示提取模型既有记忆的复述不是新信息。
   const recallNote = hasRecallToolCalls(scoped)

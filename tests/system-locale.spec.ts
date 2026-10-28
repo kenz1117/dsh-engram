@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { parseLocaleTag, systemLocaleBase } from '../src/i18n/language.ts'
+import { icuLocaleBase, parseLocaleTag, systemLocaleBase } from '../src/i18n/language.ts'
 
 describe('локаль окружения', () => {
   it('C/POSIX — «язык не задан», а не английский', () => {
@@ -48,22 +48,37 @@ describe('язык системы', () => {
     }
   })
 
-  it('C/POSIX в окружении не превращается в английский', () => {
+  it('C/POSIX в окружении уводит чтение дальше — в настоящий язык ОС (issue #39)', () => {
     const before = { LC_ALL: process.env.LC_ALL, LC_MESSAGES: process.env.LC_MESSAGES, LANG: process.env.LANG }
     try {
       process.env.LC_ALL = ''
       process.env.LC_MESSAGES = ''
       process.env.LANG = 'C.UTF-8'
       const detected = systemLocaleBase()
-      // На macOS дальше читается AppleLocale (настоящий язык ОС), на прочих
-      // платформах — ничего: пустая строка честнее чужого языка.
+      // «C» не считается языком (см. тест parseLocaleTag выше) — чтение уходит на
+      // следующий уровень: AppleLocale на macOS, ICU на всём прочем. ICU на Windows
+      // — единственный надёжный источник (LC_*/LANG там обычно не заданы вовсе),
+      // поэтому пустой строкой здесь честнее назвать только «ICU не ответил».
+      // Английский результат на английской машине — законный, а не подмена.
       expect(detected === '' || /^[a-z]{2,3}$/.test(detected)).toBe(true)
-      expect(detected).not.toBe('en')
+      if (process.platform === 'darwin') {
+        // На macOS настоящий язык ОС лежит в AppleLocale — до ICU очередь не доходит.
+        expect(detected).not.toBe('en')
+      }
     } finally {
       for (const [key, value] of [['LC_ALL', before.LC_ALL], ['LC_MESSAGES', before.LC_MESSAGES], ['LANG', before.LANG]] as const) {
         if (value === undefined) delete process.env[key]
         else process.env[key] = value
       }
     }
+  })
+
+  it('ICU-ступень читает локаль по умолчанию и сводит её к базе (issue #39)', () => {
+    const base = icuLocaleBase()
+    // На нормальной машине full-icu всегда отвечает; пустая строка допустима только
+    // там, где Intl сломан целиком — потому assert на форму, а не на непустоту.
+    expect(base === '' || /^[a-z]{2,3}$/.test(base)).toBe(true)
+    expect(base).not.toBe('c')
+    expect(base).not.toBe('posix')
   })
 })

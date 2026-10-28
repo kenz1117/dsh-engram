@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ResolvedHistoryRules } from '../src/config.ts'
 import { estimateHistoryBackfill, mergeHistoryRules, runHistoryBackfill } from '../src/ingest/history.ts'
 import type { HistoryBackfillDeps, HistoryLogSource } from '../src/ingest/history.ts'
-import { INGEST_DONE_OP, encodeTurnKey } from '../src/ingest/hook.ts'
+import { INGEST_DONE_OP, INGEST_SKIP_OP, encodeTurnKey } from '../src/ingest/hook.ts'
 import { openEngramStore } from '../src/store/sqlite.ts'
 import type { EngramStore } from '../src/store/interface.ts'
 
@@ -66,7 +66,15 @@ interface SessionFixture {
   readonly turns: readonly number[]
   /** 读取时抛错（模拟日志损坏）。 */
   readonly unreadable?: boolean
+  /** 低活动轮（只有一句短用户消息，不过节流阈值）。 */
+  readonly quiet?: boolean
 }
+
+/** 低活动轮的事件序列：单句短消息，无工具无回答（活动评分 0 < 阈值 5）。 */
+const quietTurnEvents = (turn: number): unknown[] => [
+  { type: 'turn/start', data: { turn }, seq: turn * 100, time: Date.now() },
+  { type: 'user/message', data: { content: [{ type: 'text', text: '好的' }] }, seq: turn * 100 + 1, time: Date.now() },
+]
 
 /** 事件源替身：header 来自 fixture，events 按 turns 生成。 */
 function makeSource(fixtures: readonly SessionFixture[]): HistoryLogSource {
@@ -76,7 +84,8 @@ function makeSource(fixtures: readonly SessionFixture[]): HistoryLogSource {
       const fixture = fixtures.find(item => item.id === id)
       if (fixture === undefined) throw new Error(`unknown session ${id}`)
       if (fixture.unreadable === true) throw new Error('corrupted log')
-      return { events: fixture.turns.flatMap(turn => turnEvents(turn)) }
+      const eventsOf = fixture.quiet === true ? quietTurnEvents : turnEvents
+      return { events: fixture.turns.flatMap(turn => eventsOf(turn)) }
     },
   }
 }
@@ -203,6 +212,24 @@ describe('estimateHistoryBackfill', () => {
     const after = await estimateHistoryBackfill(deps, DEFAULTS)
     expect(after.alreadyIngested).toBe(2)
     expect(after.pendingTurns).toBe(0)
+  })
+
+  it('被节流跳过的轮次也计入已处理（issue #40：待处理必须能降到零）', async () => {
+    const source = makeSource([{ id: 'a', createdAt: NOW - 1000, cwd: '/repo/a', turns: [1, 2], quiet: true }])
+    const deps = { ...makeDeps(source, { count: 0 }), now: () => NOW }
+    const before = await estimateHistoryBackfill(deps, DEFAULTS)
+    expect(before.pendingTurns).toBe(2)
+    await runHistoryBackfill(deps, DEFAULTS, {}, () => undefined, new AbortController().signal)
+    // 修复前：节流轮不写任何幂等键，这里的估算永远是 2——用户以为回填没跑完。
+    const userStore = await storeFor('user')
+    expect(await userStore.hasAudit(INGEST_SKIP_OP, encodeTurnKey('a', 1))).toBe(true)
+    expect(await userStore.hasAudit(INGEST_SKIP_OP, encodeTurnKey('a', 2))).toBe(true)
+    // skip 键的 target_id 携带原因，供日后按规则版本清理。
+    const ops = await userStore.recentOps(20)
+    expect(ops.some(op => op.op === 'ingest-skip' && op.targetId === 'low-activity')).toBe(true)
+    const after = await estimateHistoryBackfill(deps, DEFAULTS)
+    expect(after.pendingTurns).toBe(0)
+    expect(after.alreadyIngested).toBe(2)
   })
 })
 

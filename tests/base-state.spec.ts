@@ -5,14 +5,14 @@
  * 'active'`), и что архивные записи с чужой длиной вектора состоянием базы не
  * считаются.
  */
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { judgeBase, labelToStamp, languageOfLabels, MODEL_LABEL_KEY } from '../src/registry/base-state.ts'
 import type { BaseFacts, BaseTarget, CatalogModel } from '../src/registry/base-state.ts'
-import { readBaseCensus } from '../src/registry/base-census.ts'
+import { readBaseCensus, readStoreLanguageLabel } from '../src/registry/base-census.ts'
 import type { VectorTableSpec } from '../src/registry/vector-schema.ts'
 
 /** Каталог поставки: две модели, как в `registry/models.json`. */
@@ -244,5 +244,25 @@ describe('метка при открытии базы', () => {
 
   it('метки для выбранной модели нет — подписывать нечем', () => {
     expect(stamp({}, { label: undefined, model: undefined })).toBeUndefined()
+  })
+})
+
+
+describe('readStoreLanguageLabel: язык существующей базы по метке (issue #39)', () => {
+  it('метка отдаёт язык, включая подтег zh-Hans', async () => {
+    await expect(readStoreLanguageLabel(fixture([{ status: 'active', dims: 512 }], '13', 'zh-bge-small-zh'))).resolves.toBe('zh')
+    await expect(readStoreLanguageLabel(fixture([], '13', 'ru-minilm-l12'))).resolves.toBe('ru')
+  })
+
+  it('файла нет, метки нет, база не sqlite — undefined, а не догадка', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'engram-label-'))
+    roots.push(dir)
+    await expect(readStoreLanguageLabel(join(dir, 'absent.db'))).resolves.toBeUndefined()
+    // База без метки.
+    await expect(readStoreLanguageLabel(fixture([{ status: 'active', dims: 384 }]))).resolves.toBeUndefined()
+    // Не-sqlite файл: чтение падает — undefined, а не «какой-нибудь язык».
+    const junk = join(dir, 'junk.db')
+    writeFileSync(junk, 'not a database at all')
+    await expect(readStoreLanguageLabel(junk)).resolves.toBeUndefined()
   })
 })
