@@ -1073,3 +1073,37 @@ select.input { padding-right: 28px; appearance: none; }
 .dictInput:hover { border-color: var(--dsw-alias-border-l2); }
 .dictInput:focus { outline: none; border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, var(--dsw-alias-border-l2)); background: var(--dsw-alias-bg-layer-1); }
 .dictRowEdited .dictInput { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, transparent); }
+
+/* ---------- 版本卡 + 更多作品（画像下方）：品牌渐变图章 + 彩虹描边广告位 ---------- */
+.pluginCard { display: flex; flex-direction: column; gap: var(--space-3); }
+.pluginHead { display: flex; align-items: center; gap: var(--space-3); }
+.pluginGlyph { width: 36px; height: 36px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 10px; color: var(--brand-2); background: linear-gradient(135deg, color-mix(in srgb, var(--brand-1) 16%, transparent), color-mix(in srgb, var(--brand-2) 16%, transparent)); border: 1px solid color-mix(in srgb, var(--brand-2) 26%, var(--dsw-alias-border-l2)); }
+.pluginGlyphIcon { width: 19px; height: 19px; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+.pluginTitle { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pluginNameRow { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.pluginName { font-size: var(--fs-body); font-weight: 600; color: var(--dsw-alias-label-primary); overflow-wrap: anywhere; }
+.pluginTag { padding: 1px 7px; border-radius: 999px; font-size: var(--fs-micro); font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--brand-2) 70%, var(--dsw-alias-label-primary)); background: color-mix(in srgb, var(--brand-2) 12%, transparent); border: 1px solid color-mix(in srgb, var(--brand-2) 26%, var(--dsw-alias-border-l2)); }
+.pluginDesc { margin: 0; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); word-break: keep-all; }
+.pluginMeta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3) var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--dsw-alias-border-l1); }
+.pluginMetaItem { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.pluginMetaLabel { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+.pluginMetaLink { font-size: var(--fs-body); color: var(--dsw-alias-brand-primary); text-decoration: none; overflow-wrap: anywhere; transition: color var(--dur-fast) var(--ease-spring); }
+.pluginMetaLink:hover { text-decoration: underline; }
+.pluginMetaVal { font-size: var(--fs-body); color: var(--dsw-alias-label-secondary); }
+.moreWorks { display: flex; flex-direction: column; }
+.moreWorkRow { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-control); background: var(--dsw-alias-bg-layer-1); color: inherit; text-decoration: none; transition: border-color var(--dur-fast) var(--ease-spring), background var(--dur-fast) var(--ease-spring), transform 80ms var(--ease-spring); }
+.moreWorkRow:hover { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsw-alias-label-primary) 3%, var(--dsw-alias-bg-layer-1)); transform: translateY(-1px); }
+.moreWorkRow + .moreWorkRow { margin-top: var(--space-3); }
+.moreWorkRowRainbow:hover { border-color: color-mix(in srgb, var(--room-preference) 45%, var(--dsw-alias-border-l2)); }
+.moreWorkGlyph { width: 34px; height: 34px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; }
+.moreWorkGlyphIcon { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.moreWorkGlyphBilling { color: var(--room-decision); background: color-mix(in srgb, var(--room-decision) 12%, transparent); }
+.moreWorkGlyphRainbow { background: linear-gradient(135deg, color-mix(in srgb, #e0533f 14%, transparent), color-mix(in srgb, #e0a33f 14%, transparent) 28%, color-mix(in srgb, #4ba05a 14%, transparent) 52%, color-mix(in srgb, #3b6ef5 14%, transparent) 76%, color-mix(in srgb, #a45cf0 14%, transparent)); }
+.moreWorkText { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.moreWorkName { font-size: var(--fs-body); font-weight: 600; color: var(--dsw-alias-label-primary); word-break: keep-all; transition: color var(--dur-fast) var(--ease-spring); }
+.moreWorkRow:hover .moreWorkName { color: var(--dsw-alias-brand-primary); }
+.moreWorkRowRainbow:hover .moreWorkName { color: var(--room-preference); }
+.moreWorkDesc { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); word-break: keep-all; }
+.moreWorkArrow { width: 13px; height: 13px; flex: none; align-self: center; stroke: var(--dsw-alias-label-tertiary); stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; fill: none; opacity: 0; transform: translate(-2px, 2px); transition: opacity var(--dur-fast) var(--ease-spring), transform var(--dur-fast) var(--ease-spring), stroke var(--dur-fast) var(--ease-spring); }
+.moreWorkRow:hover .moreWorkArrow { opacity: 1; transform: translate(0, 0); stroke: var(--dsw-alias-brand-primary); }
+.moreWorkRowRainbow:hover .moreWorkArrow { stroke: var(--room-preference); }

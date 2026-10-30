@@ -388,7 +388,7 @@ describe('вшитые наборы панели не разъезжаются �
     // Совпадение с английским законно там, где текст и не переводится: знак (`—`,
     // букв нет) или имя подсистемы (`Jev`, `HTTP`). Список имён закрытый — новая
     // забытая строка обязана упасть здесь, а не дойти до панели английским текстом.
-    const names = new Set(['tabJev', 'jevKindHttp'])
+    const names = new Set(['tabJev', 'jevKindHttp', 'aboutNpm', 'adBillingName', 'adRainbowName'])
     const same = Object.keys(panelEn).filter(key =>
       panelRu[key as keyof typeof panelRu] === panelEn[key as keyof typeof panelEn]
       && /\p{L}/u.test(panelEn[key as keyof typeof panelEn])

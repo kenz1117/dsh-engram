@@ -1138,6 +1138,115 @@ function ProfileCard({ t, scope, project }: { t: T; scope: 'user' | 'project' | 
   )
 }
 
+/* ---------- 版本卡 + 更多作品（画像下方的插件自述与同作者广告位）：全部为外链导航（新窗），不取数 ---------- */
+
+/** 发布元信息（版本卡）：包名/版本取自包 package.json 单一来源；仓库链接由 repository.url 归一化。 */
+const PLUGIN_REPO_URL: string = pluginPackageJson.repository.url.replace(/^git\+/, '').replace(/\.git$/, '')
+const PLUGIN_NPM_URL = `https://www.npmjs.com/package/${pluginPackageJson.name}`
+const PLUGIN_AUTHOR_URL = 'https://github.com/kenz1117'
+const PLUGIN_LICENSE = 'MIT'
+
+/**
+ * 版本卡：包名 + 版本 tag + 一句话定位 + 作者/仓库/npm/许可证 2×2 元信息。
+ * 版本号与版本握手横幅同源（包 package.json），不存在第二处可失同步的版本常量。
+ */
+function PluginCard({ t }: { t: T }): React.ReactElement {
+  return (
+    <div className={styles.pluginCard}>
+      <div className={styles.pluginHead}>
+        <span className={styles.pluginGlyph} aria-hidden="true">
+          <svg className={styles.pluginGlyphIcon} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 21h16" />
+            <path d="M6 21v-8.5L12 7l6 5.5V21" />
+            <path d="M12 7V4" />
+            <path d="M10 21v-4a2 2 0 0 1 4 0v4" />
+          </svg>
+        </span>
+        <div className={styles.pluginTitle}>
+          <div className={styles.pluginNameRow}>
+            <span className={styles.pluginName}>{pluginPackageJson.name}</span>
+            <span className={styles.pluginTag}>{`v${CLIENT_VERSION}`}</span>
+          </div>
+          <p className={styles.pluginDesc}>{t('aboutDesc')}</p>
+        </div>
+      </div>
+      <div className={styles.pluginMeta}>
+        <div className={styles.pluginMetaItem}>
+          <span className={styles.pluginMetaLabel}>{t('aboutAuthor')}</span>
+          <a className={styles.pluginMetaLink} href={PLUGIN_AUTHOR_URL} target="_blank" rel="noreferrer">KenZ (kenz1117)</a>
+        </div>
+        <div className={styles.pluginMetaItem}>
+          <span className={styles.pluginMetaLabel}>{t('aboutRepo')}</span>
+          <a className={styles.pluginMetaLink} href={PLUGIN_REPO_URL} target="_blank" rel="noreferrer">GitHub</a>
+        </div>
+        <div className={styles.pluginMetaItem}>
+          <span className={styles.pluginMetaLabel}>{t('aboutNpm')}</span>
+          <a className={styles.pluginMetaLink} href={PLUGIN_NPM_URL} target="_blank" rel="noreferrer">{pluginPackageJson.name}</a>
+        </div>
+        <div className={styles.pluginMetaItem}>
+          <span className={styles.pluginMetaLabel}>{t('aboutLicense')}</span>
+          <span className={styles.pluginMetaVal}>{PLUGIN_LICENSE}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 更多作品：同作者的两个配套插件（usage-billing / rainbowspeak），整行外链新窗。
+ * 虹语行的图标用真彩虹渐变描边——产品即彩虹，广告位即演示；账单行走账单色徽章。
+ * 与 usage-billing 面板「设置-关于」的同名广告位互为镜像（那边推荐本插件与虹语）。
+ */
+function MoreWorksCard({ t }: { t: T }): React.ReactElement {
+  return (
+    <div className={styles.moreWorks}>
+      <a className={styles.moreWorkRow} href="https://github.com/kenz1117/dsh-ui-usage-billing" target="_blank" rel="noreferrer">
+        <span className={`${styles.moreWorkGlyph} ${styles.moreWorkGlyphBilling}`} aria-hidden="true">
+          <svg className={styles.moreWorkGlyphIcon} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" />
+            <path d="M9.5 8h5" />
+            <path d="M9.5 12h5" />
+          </svg>
+        </span>
+        <span className={styles.moreWorkText}>
+          <span className={styles.moreWorkName}>{t('adBillingName')}</span>
+          <span className={styles.moreWorkDesc}>{t('adBillingDesc')}</span>
+        </span>
+        <svg className={styles.moreWorkArrow} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M7 17L17 7" />
+          <path d="M9 7h8v8" />
+        </svg>
+      </a>
+      <a className={`${styles.moreWorkRow} ${styles.moreWorkRowRainbow}`} href="https://github.com/kenz1117/dsh-ui-rainbowspeak" target="_blank" rel="noreferrer">
+        <span className={`${styles.moreWorkGlyph} ${styles.moreWorkGlyphRainbow}`} aria-hidden="true">
+          <svg className={styles.moreWorkGlyphIcon} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <defs>
+              <linearGradient id="engram-ad-rainbow" x1="3" y1="18" x2="21" y2="9" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stopColor="#e0533f" />
+                <stop offset="0.28" stopColor="#e0a33f" />
+                <stop offset="0.52" stopColor="#4ba05a" />
+                <stop offset="0.76" stopColor="#3b6ef5" />
+                <stop offset="1" stopColor="#a45cf0" />
+              </linearGradient>
+            </defs>
+            <path d="M3 18a9 9 0 0 1 18 0" fill="none" stroke="url(#engram-ad-rainbow)" />
+            <path d="M7 18a5 5 0 0 1 10 0" fill="none" stroke="url(#engram-ad-rainbow)" />
+            <path d="M10.5 18a1.5 1.5 0 0 1 3 0" fill="none" stroke="url(#engram-ad-rainbow)" />
+          </svg>
+        </span>
+        <span className={styles.moreWorkText}>
+          <span className={styles.moreWorkName}>{t('adRainbowName')}</span>
+          <span className={styles.moreWorkDesc}>{t('adRainbowDesc')}</span>
+        </span>
+        <svg className={styles.moreWorkArrow} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M7 17L17 7" />
+          <path d="M9 7h8v8" />
+        </svg>
+      </a>
+    </div>
+  )
+}
+
 /** 加载失败行（紧凑）：文案 + 重试按钮，用于卡片内失败态；整页失败态用 EmptyState。
  *  #S3（审计）：禁止 catch 里把失败伪装成空态——失败与健康必须可区分。 */
 function LoadFailedLine({ t, msg, onRetry }: { t: T; msg: string; onRetry: () => void }): React.ReactElement {
@@ -6127,6 +6236,21 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
                 </div>
                 <div className={styles.panelCard}>
                   <ProfileCard t={t} scope={scope} project={projectSelector} />
+                </div>
+              </section>
+              {/* 版本卡：包名/版本/作者/仓库/npm/许可证自述；版本与握手横幅同源。 */}
+              <section className={styles.section}>
+                <div className={styles.panelCard}>
+                  <PluginCard t={t} />
+                </div>
+              </section>
+              {/* 更多作品：同作者两个配套插件的外链广告位（与 usage-billing 面板互为镜像）。 */}
+              <section className={styles.section}>
+                <div className={styles.sectionHead}>
+                  <h4 className={styles.sectionTitle}>{t('moreWorksTitle')}</h4>
+                </div>
+                <div className={styles.panelCard}>
+                  <MoreWorksCard t={t} />
                 </div>
               </section>
             </aside>
