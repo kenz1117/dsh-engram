@@ -79,4 +79,60 @@ describe('Background Consolidation', () => {
     expect(report).toBeDefined()
     expect(report.tookMs).toBeGreaterThanOrEqual(0)
   })
+
+  it('#42 回归：嵌入路径同内容副本合并后收敛到一条，重复整理幂等', async () => {
+    // 假嵌入器：同内容 → cosine=1（命中 0.92 阈值），不同内容 → cosine=0（不命中）。
+    const vec = new Float32Array([1, 0, 0])
+    const embedder = {
+      model: 'fake',
+      close: async () => {},
+      embed: async (texts: readonly string[]) =>
+        texts.map(text => (text === '时区 fact' ? vec : new Float32Array([0, 1, 0]))),
+    }
+    // 同文两条 fact：a(0.5) 与 b(0.6)；合并后幸存者 importance 取组内最大。
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '时区 fact', importance: 0.5, confidence: 0.5 })
+    const b = await store.write({ scope: 'user', kind: 'fact', content: '时区 fact', importance: 0.6, confidence: 0.5 })
+
+    const report = await runConsolidation(store, Promise.resolve(embedder), { olderThanDays: 30, importanceBelow: 0.3 })
+    expect(report.merged).toBe(1)
+
+    // 幸存者唯一：content 不变，importance = max(0.5, 0.6) = 0.6。
+    const actives = await store.topActive('user', 10)
+    expect(actives).toHaveLength(1)
+    expect(actives[0]!.content).toBe('时区 fact')
+    expect(actives[0]!.importance).toBe(0.6)
+    const survivor = actives[0]!
+
+    // 直查 edges：幸存者的 supersedes 链覆盖两条旧 id（#42：种子也必须入链，否则不收敛）。
+    const path = join(dir, 'user.db')
+    const { DatabaseSync } = await import('node:sqlite')
+    const raw = new DatabaseSync(path)
+    const superseded = (raw.prepare(`SELECT to_id FROM edges WHERE from_id = ? AND type = 'supersedes'`).all(survivor.id) as unknown as { to_id: string }[])
+      .map(row => row.to_id)
+      .sort()
+    expect(superseded).toHaveLength(2)
+    const expectedIds = [a.id, b.id].sort()
+    expect(superseded[0]).toBe(expectedIds[0])
+    expect(superseded[1]).toBe(expectedIds[1])
+
+    // 幸存节点 embedding 列非空（继承种子向量，不再落在向量检索盲区）。
+    const survivorRow = raw.prepare('SELECT embedding FROM nodes WHERE id = ?').get(survivor.id) as unknown as { embedding: Uint8Array | null } | undefined
+    expect(survivorRow).toBeDefined()
+    expect(survivorRow?.embedding).not.toBeNull()
+    raw.close()
+
+    // 两条旧 id 均已随链归档。
+    expect((await store.get(a.id))?.status).toBe('archived')
+    expect((await store.get(b.id))?.status).toBe('archived')
+
+    // 幂等：重跑一轮不再匹配重复组、不再刻写副本。
+    const rerun = await runConsolidation(store, Promise.resolve(embedder), { olderThanDays: 30, importanceBelow: 0.3 })
+    expect(rerun.merged).toBe(0)
+    expect(await store.topActive('user', 10)).toHaveLength(1)
+    // nodes 总行数不变：2 条归档 + 1 条幸存。
+    const rawAgain = new DatabaseSync(path)
+    const { n } = rawAgain.prepare('SELECT COUNT(*) AS n FROM nodes').get() as unknown as { n: number }
+    expect(n).toBe(3)
+    rawAgain.close()
+  })
 })

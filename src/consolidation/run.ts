@@ -110,12 +110,20 @@ export async function runConsolidation(
         if (existing === undefined) {
           seen.set(key, record)
         } else if (record.importance > existing.importance) {
-          await store.supersedeMany(
-            { scope, kind: record.kind, content: record.content, importance: record.importance, confidence: record.confidence },
-            [existing.id],
-          ).catch(() => { skipped += 1 })
-          merged += 1
-          seen.set(key, record)
+          // #42：合并必须把双方都送进 supersedes 链。只归档 existing 会留下
+          // 「新节点 + record」这对重复 active，下一轮整理重新匹配、重新刻写，永不收敛。
+          try {
+            const survivor = await store.supersedeMany(
+              { scope, kind: record.kind, content: record.content, importance: record.importance, confidence: record.confidence },
+              [existing.id, record.id],
+            )
+            merged += 1
+            seen.set(key, survivor)
+          } catch {
+            // 合并失败：库未变，record 仍 active——继续作 seen 种子（下一对重复仍可合并）。
+            skipped += 1
+            seen.set(key, record)
+          }
         }
         // existing 已胜：不动。
       }
@@ -165,18 +173,31 @@ export async function runConsolidation(
         const sim = cosine(vectors.get(a.id)!, bVec)
         if (sim >= options.mergeThreshold) dupes.push(b)
       }
-      if (dupes.length === 0) continue
-      const ids = dupes.map(record => record.id)
-      try {
-        await store.supersedeMany(
-          { scope, kind: a.kind, content: a.content, importance: a.importance, confidence: a.confidence },
-          ids,
-        )
-        for (const id of ids) visited.add(id)
-        visited.add(a.id)
-        merged += 1
-      } catch {
-        skipped += 1
+      if (dupes.length > 0) {
+        // #42：种子必须随行——只 supersede dupes 会留下「种子 + 新节点」这对重复
+        // active，下一轮整理重新匹配、重新刻写（issue #42：3 天 54 份副本的根因）。
+        // 种子入链后每轮合并净减一组重复，一轮收敛；新节点继承种子的向量，幸存者
+        // 不再是向量检索盲区。importance 取组内最大（路径注释的既定意图：保留高 importance）。
+        const ids = [...dupes.map(record => record.id), a.id]
+        const embedding = vectors.get(a.id)
+        try {
+          await store.supersedeMany(
+            {
+              scope,
+              kind: a.kind,
+              content: a.content,
+              importance: Math.max(a.importance, ...dupes.map(record => record.importance)),
+              confidence: a.confidence,
+              ...(embedding === undefined ? {} : { embedding }),
+            },
+            ids,
+          )
+          // a.id 已在 ids 内，visited 一并覆盖。
+          for (const id of ids) visited.add(id)
+          merged += 1
+        } catch {
+          skipped += 1
+        }
       }
     }
   }

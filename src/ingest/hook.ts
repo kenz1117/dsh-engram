@@ -35,6 +35,63 @@ const MODE_LIMITS: Readonly<Record<Exclude<IngestMode, 'off'>, { maxCandidates: 
     答案为空（实测 600/2000 都会出现，4000 未复现），上限给足余量而非按答案长度估。 */
 const INGEST_MAX_TOKENS = 4000
 
+/** 提取切块的最小文本粒度（字符）：切到低于此长度仍超输出预算的块直接放弃（贡献 0 条候选）。
+    正常文本到这个量级输出预算绰绰有余；触发即说明模型输出退化（复读死循环），再切只是空烧。 */
+const EXTRACT_MIN_CHUNK = 80
+
+/** max-tokens 终止错误的判别（llm/client.ts 的 finishError 打上 LLM_MAX_TOKENS code）。 */
+function isMaxTokensError(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === 'LLM_MAX_TOKENS'
+}
+
+/** 单块提取的解析失败（含空答案重试后仍失败）——携带原始输出，交上层按 reason 分类报告。 */
+class ExtractFailure extends Error {
+  constructor(readonly raw: string) {
+    super('extract-parse-failed')
+    this.name = 'ExtractFailure'
+  }
+}
+
+/**
+ * 提取候选，输出超预算（max-tokens）时对半切块重试（#42 附带报告：长转写/数百行日志的
+ * 轮次提取输出必然超 4000 输出预算，且同样输入重跑永远失败——回填轮次被永久卡死）。
+ * 切块让这类轮次自愈：多段文本对半分；单段文本按换行边界对半切；切到最小粒度仍超限的
+ * 块放弃（贡献 0 条候选），其余块照常提取，整轮照常收口为 done 而非永久 pending。
+ * 语义边界：只有 max-tokens 触发切块；解析失败（ExtractFailure）与瞬时错误原样上抛，
+ * 轮次保持「可重试」状态，与旧行为一致。
+ */
+async function extractChunked(
+  callOnce: (texts: readonly string[]) => Promise<unknown[]>,
+  texts: readonly string[],
+): Promise<unknown[]> {
+  try {
+    return await callOnce(texts)
+  } catch (error) {
+    if (!isMaxTokensError(error)) throw error
+    if (texts.length > 1) {
+      const mid = Math.ceil(texts.length / 2)
+      const first = await extractChunked(callOnce, texts.slice(0, mid))
+      const second = await extractChunked(callOnce, texts.slice(mid))
+      return [...first, ...second]
+    }
+    const text = texts[0] ?? ''
+    if (text.length < EXTRACT_MIN_CHUNK) return []
+    // 对半切：优先在离中点最近的换行处断开，取不到换行则硬切中点。
+    const half = Math.floor(text.length / 2)
+    const before = text.lastIndexOf('\n', half)
+    const after = text.indexOf('\n', half)
+    const positions = [before, after].filter(position => position !== -1)
+    const cut = positions.length === 0
+      ? half
+      : positions.reduce((best, position) => (Math.abs(position - half) < Math.abs(best - half) ? position : best))
+    // 两半各自独立调用——若两半重新合入同一请求，请求体几乎不比原文小，真实模型下
+    // 会再次超限、空烧一轮。
+    const first = await extractChunked(callOnce, [text.slice(0, cut)])
+    const second = await extractChunked(callOnce, [text.slice(cut + 1)])
+    return [...first, ...second]
+  }
+}
+
 /** op_log 幂等键 op：该 (sessionId, turn) 已完成摄取。 */
 export const INGEST_DONE_OP = 'ingest-done'
 /** op_log pending 键 op：disposed 末轮摄取失败/超时，待下次会话重放补做。 */
@@ -516,34 +573,37 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   const recallNote = hasRecallToolCalls(scoped)
     ? message('llm.ingestRecallNote')
     : ''
-  const userText = `${message('llm.ingestUserPrompt')}\n${JSON.stringify(cleaned)}${recallNote === '' ? '' : `\n${recallNote}`}`
-  deps.logRequest({ route, round, userText, maxTokens: INGEST_MAX_TOKENS, mode: deps.mode })
-  let raw = await deps.call({
-    route,
-    system: ingestSystemPrompt(),
-    userText,
-    maxTokens: INGEST_MAX_TOKENS,
-    purpose: 'engram-ingest',
-    signal: deps.signal,
-  })
-  let parsed = parseJsonArray(raw)
-  // 空答案重试一次：推理模型的 reasoning_tokens 计入 completion 预算，预算可能耗在思考上
-  // （答案为空），一整轮对话因此静默丢失。重试给该轮第二次机会；非空但不可解析的输出
-  // 已有 parseJsonArray 前缀抢救，不重试（避免为坏输出双倍计费）。
-  if (parsed === undefined && raw.trim() === '') {
-    raw = await deps.call({
+  // 单块提取调用：每次真实调用先 logRequest（model-visible ⟺ logged）。空答案（推理预算
+  // 耗在思考上）重试一次——旧实现的重试调用漏记 logRequest，一并补上。解析失败抛
+  // ExtractFailure，由 extractChunked 的调用方按 reason 分类报告。
+  const callExtract = async (texts: readonly string[]): Promise<unknown[]> => {
+    const userText = `${message('llm.ingestUserPrompt')}\n${JSON.stringify(texts)}${recallNote === '' ? '' : `\n${recallNote}`}`
+    deps.logRequest({ route, round, userText, maxTokens: INGEST_MAX_TOKENS, mode: deps.mode })
+    const args = {
       route,
       system: ingestSystemPrompt(),
       userText,
       maxTokens: INGEST_MAX_TOKENS,
       purpose: 'engram-ingest',
       signal: deps.signal,
-    })
-    parsed = parseJsonArray(raw)
+    }
+    let raw = await deps.call(args)
+    let parsed = parseJsonArray(raw)
+    if (parsed === undefined && raw.trim() === '') {
+      deps.logRequest({ route, round, userText, maxTokens: INGEST_MAX_TOKENS, mode: deps.mode })
+      raw = await deps.call(args)
+      parsed = parseJsonArray(raw)
+    }
+    if (parsed === undefined) throw new ExtractFailure(raw)
+    return parsed
   }
-  if (parsed === undefined) {
+  let parsed: unknown[]
+  try {
+    parsed = await extractChunked(callExtract, cleaned)
+  } catch (error) {
+    if (!(error instanceof ExtractFailure)) throw error
     // 失败原因细分：空答案（重试后仍空）与不可解析分开记，事后排查不必回放请求。
-    return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: raw.trim() === '' ? 'empty-answer' : 'unparseable-output' }
+    return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: error.raw.trim() === '' ? 'empty-answer' : 'unparseable-output' }
   }
 
   const embedder = await deps.embedder

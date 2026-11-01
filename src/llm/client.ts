@@ -63,8 +63,12 @@ function finishError(finish: FinishReason): Error | undefined {
       error.code = finish.failure.code
       return error
     }
-    case 'max-tokens':
-      return new Error(message('llm.finishMaxTokens'))
+    case 'max-tokens': {
+      // code 打上可判别标记：摄取端按 code 识别「输出超预算」并触发切块重试（#42 附带报告）。
+      const error = new Error(message('llm.finishMaxTokens')) as Error & { code?: string }
+      error.code = 'LLM_MAX_TOKENS'
+      return error
+    }
     case 'tool-calls':
       return new Error(message('llm.finishUnexpectedToolCalls'))
     default:

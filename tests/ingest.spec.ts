@@ -288,6 +288,89 @@ describe('ingestPreviousTurn', () => {
     expect(outcome.skipped).toBe('already-ingested')
     expect(outcome.written).toBe(0)
   })
+
+  it('提取输出超预算（max-tokens）时对半切块重试，整轮收口为 done', async () => {
+    const logged: IngestRequestEventData[] = []
+    let calls = 0
+    // 首次（全文）必超预算；切块后的调用返回合法候选。
+    const outcome = await ingestPreviousTurn(baseDeps({
+      call: async () => {
+        calls += 1
+        if (calls === 1) {
+          const error = new Error('max-tokens') as Error & { code?: string }
+          error.code = 'LLM_MAX_TOKENS'
+          throw error
+        }
+        return JSON.stringify([{ content: `切块候选 ${calls}`, kind: 'fact', importance: 0.7 }])
+      },
+      logRequest: data => { logged.push(data) },
+    }))
+    // 单段文本对半切后两块都产出候选并写入；整轮正常收口（done 键在，不再永久 pending）。
+    expect(outcome.written).toBe(2)
+    expect(outcome.skipped).toBeNull()
+    expect(await store.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-ingest-1', 1))).toBe(true)
+    // 全文 1 次 + 两半各 1 次 = 3 次真实调用，且每次真实调用都记入会话日志。
+    expect(calls).toBe(3)
+    expect(logged).toHaveLength(calls)
+  })
+
+  it('空答案重试的第二次调用同样记入会话日志（model-visible ⟺ logged 补口）', async () => {
+    const logged: IngestRequestEventData[] = []
+    let calls = 0
+    const outcome = await ingestPreviousTurn(baseDeps({
+      call: async () => {
+        calls += 1
+        return calls === 1 ? '' : VALID_LLM_OUTPUT
+      },
+      logRequest: data => { logged.push(data) },
+    }))
+    expect(outcome.written).toBe(2)
+    // 重试请求与首次请求同文，同样必须先落日志。
+    expect(logged).toHaveLength(2)
+    expect(logged[1]!.userText).toBe(logged[0]!.userText)
+  })
+
+  it('多段文本超预算按段对半分块，各块独立提取', async () => {
+    const logged: IngestRequestEventData[] = []
+    let calls = 0
+    const outcome = await ingestPreviousTurn(baseDeps({
+      mode: 'eager',
+      call: async () => {
+        calls += 1
+        if (calls === 1) {
+          const error = new Error('max-tokens') as Error & { code?: string }
+          error.code = 'LLM_MAX_TOKENS'
+          throw error
+        }
+        return calls === 2
+          ? JSON.stringify([{ content: '前半候选', kind: 'fact', importance: 0.7 }])
+          : JSON.stringify([{ content: '后半候选', kind: 'fact', importance: 0.7 }])
+      },
+      logRequest: data => { logged.push(data) },
+    }))
+    expect(outcome.written).toBe(2)
+    expect(logged).toHaveLength(3)
+    // 全量请求在前，切块请求只含一半内容。
+    expect(logged[0]!.userText.length).toBeGreaterThan(logged[1]!.userText.length)
+  })
+
+  it('最小粒度仍超预算：放弃该块（贡献 0 候选），整轮仍收口为 done', async () => {
+    let calls = 0
+    const outcome = await ingestPreviousTurn(baseDeps({
+      call: async () => {
+        calls += 1
+        const error = new Error('max-tokens') as Error & { code?: string }
+        error.code = 'LLM_MAX_TOKENS'
+        throw error
+      },
+    }))
+    // 任何粒度都超预算 = 模型输出退化：切块放弃该块贡献 0 候选，整轮照常写 done 键收口
+    // （不再永久 pending）；至少 2 次调用证明切块确实发生了。
+    expect(calls).toBeGreaterThanOrEqual(2)
+    expect(outcome.written).toBe(0)
+    expect(outcome.skipped).toBeNull()
+    expect(await store.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-ingest-1', 1))).toBe(true)
+  })
 })
 
 describe('摄取节流', () => {
