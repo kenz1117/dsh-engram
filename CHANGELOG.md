@@ -10,6 +10,13 @@
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-11-01
+
+### Fixed
+
+- **#42（整理合并不收敛）**：合并相似条目时只归档重复项、种子条目保持 active，留下「种子 + 新节点」这对重复 active——每次插件重载触发整理都重新匹配、重新刻写一份副本（issue 报告：同一条 fact 3 天累积 54 份、53 份归档）。现在两条合并路径（嵌入可用 / 不可用）都把双方送进 supersedes 链，每轮合并净减一组重复、一轮收敛；幸存节点继承种子向量（不再是向量检索盲区），importance 取组内最大。
+- **#42 附带（摄取输出超预算永久卡轮）**：`INGEST_MAX_TOKENS` 硬编码 4000，长转写/一次贴进数百行日志的轮次提取输出必然超限，且同样输入重跑永远失败——回填轮次被永久卡死（184 轮回填中 2 轮因此失败）。现在超预算（max-tokens）自动对半切块重试：多段文本按段对半分、单段文本按换行边界对半切，切到最小粒度仍超限的块放弃（贡献 0 候选），整轮照常收口为 done 而非永久 pending；每块真实调用均先落会话日志（model-visible ⟺ logged），空答案重试漏记日志的破口一并补上。
+
 ## [0.11.2] - 2026-10-30
 
 ### Added
@@ -367,7 +374,9 @@
 
 - 首个可用版本：`engram_*` 工具集、插件入口、画像注入、SQLite + FTS5 + 关系边 + op log 的本地存储。
 
-[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/kenz1117/dsh-engram/compare/v0.11.2...v0.11.3
+[0.11.2]: https://github.com/kenz1117/dsh-engram/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/kenz1117/dsh-engram/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/kenz1117/dsh-engram/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kenz1117/dsh-engram/compare/v0.9.9...v0.10.0
