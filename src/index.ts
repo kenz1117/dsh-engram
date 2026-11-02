@@ -1780,6 +1780,10 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   }
 
   if (resolved.reflect !== 'off') {
+    // 后台巩固的限时（自审 P1）：分片改造后一次巩固是 3+ 次串行辅助调用，沿用末轮摄取的
+    // 5 秒预算等于让后台巩固几乎必然中途夭折（且只 console.warn 不可见）。给独立的宽预算——
+    // fire-and-forget 观察器仍有上界（进程退出照旧可能先打断），但真实模型跑得完三片。
+    const REFLECT_TIMEOUT_MS = 120_000
     // 信念巩固：disposed 是 fire-and-forget 观察器。auto 后台巩固（user 库 + cwd 已建库的项目库）；
     // suggest 只登记 reflect-pending（出口是 engram_reflect 工具）。与末轮摄取相互独立——
     // reflect 取材幂等（已成为信念证据的记忆排除），并发漏抓由下次会话结束或手动调用补。
@@ -1820,7 +1824,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
                 void store.audit('reflect-request', 'AUX', JSON.stringify(data)).catch(() => { /* 审计失败不影响巩固 */ })
               },
               route,
-              signal: AbortSignal.timeout(FINAL_INGEST_TIMEOUT_MS),
+              signal: AbortSignal.timeout(REFLECT_TIMEOUT_MS),
             })
             if (outcome.formed + outcome.refined + outcome.confirmed + outcome.refuted > 0) {
               console.log(message('core.logReflectDone', {

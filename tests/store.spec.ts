@@ -812,7 +812,9 @@ describe('事实链（schema v11）', () => {
     const counts = await store.countOps(now - 60_000)
     expect(counts.write).toBeGreaterThanOrEqual(1)
     expect(counts['search-rewrite-request']).toBe(1)
-    const days = await store.countOpsByDay(now - 86_400_000, now, ['write'])
+    // 上界不采样先前的 now:audit 的行时间戳在其后产生,毫秒竞态会把行挤到窗外
+    // (自审 P1:晚间挂过的日期边界抖动)。+60s 松弛一并覆盖天桶边界。
+    const days = await store.countOpsByDay(now - 86_400_000, Date.now() + 60_000, ['write'])
     expect(days.reduce((sum, row) => sum + row.count, 0)).toBeGreaterThanOrEqual(1)
     // 老行被清、keepOps 里的状态行永久保留。
     await store.audit('ingest-done', 'session-1', 'k')

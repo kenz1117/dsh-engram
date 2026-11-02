@@ -31,38 +31,49 @@ describe('Background Consolidation', () => {
     raw.prepare('UPDATE nodes SET last_accessed_at = ? WHERE id = ?').run(Date.now() - 60 * 86_400_000, old.id)
     raw.close()
 
-    // 2) 完全相同内容（启发式去重）：a(0.5) 与 b(0.6) 同文，b 留下、a 被归档。
-    await store.write({ scope: 'user', kind: 'fact', content: '偏好 TypeScript', importance: 0.5, confidence: 0.7 })
-    const b = await store.write({ scope: 'user', kind: 'fact', content: '偏好 TypeScript', importance: 0.6, confidence: 0.7 })
-    // 完全相同被去重：b (更高 importance) 留下
-    void b // sanity
+    // 2) 完全相同内容（启发式去重，自审 P1 起生效）：a(0.5) 与 b(0.6) 同文，合并为一条，
+    //    幸存节点取组内最大 importance/confidence。
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '偏好 TypeScript', importance: 0.5, confidence: 0.7 })
+    const b = await store.write({ scope: 'user', kind: 'fact', content: '偏好 TypeScript', importance: 0.6, confidence: 0.5 })
 
     // 3) 不应被归档的（创建新鲜）
     const fresh = await store.write({ scope: 'user', kind: 'fact', content: '新鲜高重要', importance: 0.9, confidence: 0.9 })
 
-    // 设计：existing 胜出保留（高 importance 不被覆盖），所以 b(0.6) 留下，a(0.5) 不动。
-    // 后续断言只看归档发生；merged 视具体 importance 顺序，本测试不强制。
     const dbgBefore = await store.topActive('user', 10)
     const report = await runConsolidation(store, Promise.resolve(undefined), { olderThanDays: 30, importanceBelow: 0.3 })
     expect(report.archived).toBe(1) // 仅 old 命中归档阈值
-    expect(report.merged).toBe(0) // b 重要度更高，保留；a 不动
+    expect(report.merged).toBe(1) // a/b 同文合并（旧判准在降序里永假，自审 P1 修复后生效）
     expect(dbgBefore.filter(r => r.content === '偏好 TypeScript')).toHaveLength(2) // 整理前两条都在
 
     const stats = await store.stats()
-    // 期望 active=3：fresh(0.9) + b(0.6) + a(0.5)；old 已归档（archived——后台清理归一走 decay 语义）。
-    expect(stats.active).toBe(3)
+    // 期望 active=2：fresh(0.9) + a/b 的幸存者；old 归档、a/b 双双入 supersedes 链。
+    expect(stats.active).toBe(2)
 
-    // fresh 必须健在
-    const freshRow = (await store.topActive('user', 10)).find(record => record.id === fresh.id)
-    expect(freshRow).toBeDefined()
+    // 幸存者唯一且取组内最大：content 不变，importance 0.6 / confidence 0.7。
+    const actives = await store.topActive('user', 10)
+    const survivors = actives.filter(r => r.content === '偏好 TypeScript')
+    expect(survivors).toHaveLength(1)
+    expect(survivors[0]!.importance).toBe(0.6)
+    expect(survivors[0]!.confidence).toBe(0.7)
+    expect((await store.get(a.id))?.status).toBe('archived')
+    expect((await store.get(b.id))?.status).toBe('archived')
 
-    // op_log 应记录 consolidation 摘要
+    // op_log 应记录 consolidation 摘要（读首轮的——重跑会再写一条，recentOps 取最新）。
     const ops = await store.recentOps(50)
     const summary = ops.find(op => op.op === 'consolidation')
     expect(summary).toBeDefined()
     const detail = JSON.parse(summary!.detail!) as { archived: number; merged: number }
     expect(detail.archived).toBe(report.archived)
     expect(detail.merged).toBe(report.merged)
+
+    // 重跑幂等：同文只剩一条，不再合并。
+    const rerun = await runConsolidation(store, Promise.resolve(undefined), { olderThanDays: 30, importanceBelow: 0.3 })
+    expect(rerun.merged).toBe(0)
+    expect(await store.topActive('user', 10)).toHaveLength(2)
+
+    // fresh 必须健在
+    const freshRow = (await store.topActive('user', 10)).find(record => record.id === fresh.id)
+    expect(freshRow).toBeDefined()
   })
 
   it('空库调用不报错，summary 全 0', async () => {

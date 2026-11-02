@@ -109,12 +109,19 @@ export async function runConsolidation(
         const existing = seen.get(key)
         if (existing === undefined) {
           seen.set(key, record)
-        } else if (record.importance > existing.importance) {
-          // #42：合并必须把双方都送进 supersedes 链。只归档 existing 会留下
-          // 「新节点 + record」这对重复 active，下一轮整理重新匹配、重新刻写，永不收敛。
+        } else {
+          // #42：同文重复一律合并（自审 P1：旧判准 record.importance > existing.importance
+          // 在 topActive 的 importance 降序里永假——嵌入器不可用的部署从未有过去重守卫）。
+          // 双方入 supersedes 链、每对净减一组重复；幸存节点取组内最大 importance/confidence。
           try {
             const survivor = await store.supersedeMany(
-              { scope, kind: record.kind, content: record.content, importance: record.importance, confidence: record.confidence },
+              {
+                scope,
+                kind: record.kind,
+                content: record.content,
+                importance: Math.max(existing.importance, record.importance),
+                confidence: Math.max(existing.confidence, record.confidence),
+              },
               [existing.id, record.id],
             )
             merged += 1
@@ -125,7 +132,6 @@ export async function runConsolidation(
             seen.set(key, record)
           }
         }
-        // existing 已胜：不动。
       }
       continue
     }
