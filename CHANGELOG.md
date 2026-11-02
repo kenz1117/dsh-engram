@@ -10,6 +10,14 @@
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-11-02
+
+### Fixed
+
+- **自审批 P1（后台巩固限时失配）**：会话结束的后台信念巩固沿用末轮摄取的 5 秒限时——分片改造后一次巩固是 3+ 次串行辅助调用挤同一窗口，真实模型下几乎必然中途夭折，且只 console.warn 不可见（#45 报告者攒 110 条 pending 的帮凶之一）。改为独立的 120 秒预算（fire-and-forget 观察器仍有上界，进程退出照旧可能先打断）。
+- **自审批 P1（启发式去重死支）**：无嵌入器部署的同文去重从未生效过——判准 `record.importance > existing.importance` 在 topActive 的 importance 降序里永假，嵌入不可用时 #42 同款重复刻写在该群体无守卫。现在同文重复不论重要度一律合并（双方入 supersedes 链、每对净减一组重复），幸存节点取组内最大 importance/confidence，重跑幂等。
+- **自审批 P1（CI 抖动）**：`store.spec` 的 countOpsByDay 用例存在毫秒级日期边界竞态（查询窗口上界在写入前采样，行时间戳可落在窗外），晚间时段随机挂 CI——上界改写入后采样并加松弛。
+
 ## [0.11.4] - 2026-11-02
 
 ### Fixed
@@ -382,7 +390,8 @@
 
 - 首个可用版本：`engram_*` 工具集、插件入口、画像注入、SQLite + FTS5 + 关系边 + op log 的本地存储。
 
-[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.11.4...HEAD
+[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.11.5...HEAD
+[0.11.5]: https://github.com/kenz1117/dsh-engram/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/kenz1117/dsh-engram/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/kenz1117/dsh-engram/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/kenz1117/dsh-engram/compare/v0.11.1...v0.11.2
