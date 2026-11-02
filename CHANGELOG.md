@@ -10,6 +10,14 @@
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-11-02
+
+### Fixed
+
+- **#44（回填估算的内存雪崩）**：`engram_ingest_history` 估算模式（dryRun）为统计轮次把时间窗内**每个候选会话的完整转写**载入内存并全程持有——内存随会话数线性增长（报告者实测约 5.5MB/会话、峰值 5910MB），桌面宿主 4GB V8 堆顶直接 SIGABRT。现在转写延迟加载：估算数完轮次即弃（峰值 O(并发 4)），执行路径处理到该会话时再读（峰值 O(1)）；执行期读取失败（选中后被删/损坏）跳过该会话继续（`session-unreadable`），不再中断整批。
+- **#45（信念巩固整批丢弃）**：`engram_reflect` 把最多 30 条候选**全文**塞进一次调用，输出预算却固定 900——输出必然截断、整批丢弃、 beliefs 页永远空着且无任何报错（报告者一晚攒了 110 条 pending）。现在候选原文截断（200 字，与 stale 证据同纪律）、按 10 条分片调用、输出预算按动作数缩放（底价 + 单动作配额，封顶 8000）、超预算对半递归重试；解析失败或单片仍超限时该片计入新的 `dropped` 计数，工具体明说可重跑补做——失败可见。
+- **#46（Jev/OpenCode Go 协议不符）**：opencode.ai 系端点的 System One 通道要求稳定的 `x-opencode-session` 头，插件此前不发，Go 订阅下所有裁决请求必然 400 MissingSessionID。现在 opencode 端点自动带进程级稳定会话头；非 2xx 错误带上游响应体摘录（此前只有裸 `HTTP 400`），MissingSessionID / Model is unavailable / Insufficient funds 可直接分辨。订阅侧模型可用性（jev-1.13 不在 Go 的 /models 列表）属上游问题，插件无法修复。
+
 ## [0.11.3] - 2026-11-01
 
 ### Fixed
@@ -374,7 +382,8 @@
 
 - 首个可用版本：`engram_*` 工具集、插件入口、画像注入、SQLite + FTS5 + 关系边 + op log 的本地存储。
 
-[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.11.4...HEAD
+[0.11.4]: https://github.com/kenz1117/dsh-engram/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/kenz1117/dsh-engram/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/kenz1117/dsh-engram/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/kenz1117/dsh-engram/compare/v0.11.0...v0.11.1
