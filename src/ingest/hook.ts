@@ -9,7 +9,7 @@
  */
 
 import type { LlmRoute, SessionEventLike } from '../llm/client.ts'
-import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
+import { isMaxTokensError, parseJsonArray, routeFromEvents } from '../llm/client.ts'
 import { message } from '../i18n/messages.ts'
 import { chitchatPatterns, noCapturePatterns } from '../i18n/patterns.ts'
 import type { EmbedderHandle } from '../embedder/interface.ts'
@@ -38,11 +38,6 @@ const INGEST_MAX_TOKENS = 4000
 /** 提取切块的最小文本粒度（字符）：切到低于此长度仍超输出预算的块直接放弃（贡献 0 条候选）。
     正常文本到这个量级输出预算绰绰有余；触发即说明模型输出退化（复读死循环），再切只是空烧。 */
 const EXTRACT_MIN_CHUNK = 80
-
-/** max-tokens 终止错误的判别（llm/client.ts 的 finishError 打上 LLM_MAX_TOKENS code）。 */
-function isMaxTokensError(error: unknown): boolean {
-  return (error as { code?: unknown } | null)?.code === 'LLM_MAX_TOKENS'
-}
 
 /** 单块提取的解析失败（含空答案重试后仍失败）——携带原始输出，交上层按 reason 分类报告。 */
 class ExtractFailure extends Error {

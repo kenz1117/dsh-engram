@@ -13,9 +13,27 @@
  * @module @kenz1117/dsh-engram/jev/client
  */
 
+import { randomUUID } from 'node:crypto'
 import type { ResolvedJevConfig } from '../config.ts'
 import type { JudgeQuestion, JudgeAnswers, MemoryJudge } from '../write-disposition.ts'
 import type { JevConnection } from './host.ts'
+
+/**
+ * opencode.ai 系端点的稳定会话头（#46）：Go 通道对缺该头的 System One 请求一律
+ * 400 MissingSessionID。进程内生成一次、全程稳定（opencode 文档要求「每次对话带
+ * 稳定的 x-opencode-session」；插件即一个客户端）。
+ */
+const OPENCODE_SESSION_ID = randomUUID()
+
+/** 端点是否属于 opencode.ai（该家要求 x-opencode-session；别家不发多余的头）。 */
+function isOpencodeEndpoint(endpoint: string): boolean {
+  try {
+    const host = new URL(endpoint).hostname
+    return host === 'opencode.ai' || host.endsWith('.opencode.ai')
+  } catch {
+    return false
+  }
+}
 
 /** Тело ответа по одному вопросу (потребляем только поле вероятности `noul`). */
 interface JevAnswerBody {
@@ -42,6 +60,22 @@ export class JevCallError extends Error {
     this.name = 'JevCallError'
     this.kind = kind
     this.status = status
+  }
+}
+
+/**
+ * 从上游错误响应体提取可读摘录（#46）：JSON 时取 error.message（兼容 {error:{message}}
+ * 与 {type:'error',error:{...}} 两种形状），非 JSON 取原文截断。空体返回空串。
+ */
+function jevUpstreamDetail(body: string): string {
+  if (body.trim() === '') return ''
+  const excerpt = (text: string): string => (text.length > 200 ? `${text.slice(0, 200)}…` : text)
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: unknown } }
+    const upstream = typeof parsed.error?.message === 'string' ? parsed.error.message : body
+    return ` — ${excerpt(upstream.trim())}`
+  } catch {
+    return ` — ${excerpt(body.trim())}`
   }
 }
 
@@ -80,6 +114,7 @@ export async function askNoul(
       headers: {
         Authorization: `Bearer ${connection.apiKey}`,
         'Content-Type': 'application/json',
+        ...(isOpencodeEndpoint(connection.endpoint) ? { 'x-opencode-session': OPENCODE_SESSION_ID } : {}),
       },
       body: JSON.stringify({
         model: connection.model,
@@ -95,7 +130,10 @@ export async function askNoul(
     throw new JevCallError(failureKind(error), error instanceof Error ? error.message : String(error))
   }
   if (!response.ok) {
-    throw new JevCallError('http', `jev: HTTP ${response.status} from ${connection.endpoint}`, response.status)
+    // #46：带上游响应体摘录——「失败（HTTP）」不给排查线索，MissingSessionID /
+    // Model is unavailable / Insufficient funds 三种处境的可操作信息全在上游消息里。
+    const body = await response.text().catch(() => '')
+    throw new JevCallError('http', `jev: HTTP ${response.status} from ${connection.endpoint}${jevUpstreamDetail(body)}`, response.status)
   }
   const payload = (await response.json()) as { answers?: Record<string, JevAnswerBody> | null }
   if (payload.answers === undefined || payload.answers === null) {

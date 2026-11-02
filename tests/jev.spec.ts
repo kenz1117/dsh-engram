@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { askNoul, createMemoryJudge, testJevConnection } from '../src/jev/client.ts'
+import { askNoul, createMemoryJudge, JevCallError, testJevConnection } from '../src/jev/client.ts'
 import { clearJevObservations, listJevObservations, recordJevObservation } from '../src/jev/observe.ts'
 import { confirmContradictions, decideWrite } from '../src/write-disposition.ts'
 import type { ResolvedJevConfig } from '../src/config.ts'
@@ -118,6 +118,61 @@ describe('askNoul', () => {
     await expect(askNoul(connection, 's', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/noul probability/)
     stubFetch({ answers: { q: { noul: 1.5 } } })
     await expect(askNoul(connection, 's', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/noul probability/)
+  })
+
+  // #46：opencode.ai 系端点的 Go 通道对缺稳定会话头的 System One 请求一律 400
+  // MissingSessionID——客户端要进程内生成一次、全程带上；别家端点不发多余的头。
+  it('#46 回归:opencode 端点带 x-opencode-session 头,两次调用同一会话', async () => {
+    const opencode: JevConnection = { ...connection, endpoint: 'https://opencode.ai/v1/systemone' }
+    const fetchMock = stubFetch({ answers: { q: { noul: 0.5 } } })
+    await askNoul(opencode, 's', [{ id: 'q', instructions: 'i' }])
+    await askNoul(opencode, 's', [{ id: 'q', instructions: 'i' }])
+    const headersOf = (index: number): Record<string, string> =>
+      (fetchMock.mock.calls[index] as [string, RequestInit])[1].headers as Record<string, string>
+    expect(headersOf(0)?.['x-opencode-session']).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    // 插件即一个客户端：进程内生成一次、全程稳定（opencode 文档要求「每次对话带稳定会话头」）。
+    expect(headersOf(1)?.['x-opencode-session']).toBe(headersOf(0)?.['x-opencode-session'])
+  })
+
+  it('#46 回归:opencode 子域同样带会话头,别家端点不发多余的头', async () => {
+    const subdomain: JevConnection = { ...connection, endpoint: 'https://api.opencode.ai/v1/systemone' }
+    const fetchMock = stubFetch({ answers: { q: { noul: 0.5 } } })
+    await askNoul(subdomain, 's', [{ id: 'q', instructions: 'i' }])
+    await askNoul(connection, 's', [{ id: 'q', instructions: 'i' }])
+    expect(((fetchMock.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>)['x-opencode-session']).toBeDefined()
+    expect(((fetchMock.mock.calls[1] as [string, RequestInit])[1].headers as Record<string, string>)['x-opencode-session']).toBeUndefined()
+  })
+
+  // #46：「失败（HTTP）」不给排查线索——MissingSessionID / Model is unavailable /
+  // Insufficient funds 三种处境的可操作信息全在上游响应体里，要摘录进错误文案。
+  it('#46 回归:HTTP 错误带上游 error.message 摘录（两种 JSON 形状）', async () => {
+    stubFetch({ error: { message: '400 MissingSessionID: missing x-opencode-session header' } }, 400)
+    await expect(askNoul(connection, 's', [{ id: 'q', instructions: 'i' }]))
+      .rejects.toThrow(/HTTP 400.*MissingSessionID: missing x-opencode-session header/)
+    stubFetch({ type: 'error', error: { message: 'Insufficient funds' } }, 402)
+    await expect(askNoul(connection, 's', [{ id: 'q', instructions: 'i' }]))
+      .rejects.toThrow(/HTTP 402.*Insufficient funds/)
+  })
+
+  it('#46 回归:非 JSON 错误体取原文截断（200 字符加省略号）', async () => {
+    const body = 'Model is unavailable. '.repeat(20)
+    // 直接给非 JSON 原文（stubFetch 会 stringify 成合法 JSON，走的是另一条摘录分支）。
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 503 })))
+    const caught: unknown = await askNoul(connection, 's', [{ id: 'q', instructions: 'i' }]).catch(
+      (reason: unknown) => reason,
+    )
+    expect(caught).toBeInstanceOf(JevCallError)
+    const error = caught as JevCallError
+    expect(error.kind).toBe('http')
+    expect(error.status).toBe(503)
+    expect(error.message).toContain(` — ${body.slice(0, 200)}…`)
+    expect(error.message.endsWith('…')).toBe(true)
+  })
+
+  it('#46 回归:空错误体不带摘录后缀', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 500 })))
+    await expect(askNoul(connection, 's', [{ id: 'q', instructions: 'i' }]))
+      .rejects.toThrow(`jev: HTTP 500 from ${connection.endpoint}`)
   })
 })
 

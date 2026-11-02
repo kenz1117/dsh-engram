@@ -330,6 +330,7 @@ export const zh = {
   'tool.reflectDone': '信念巩固完成：取材池 {pool} 条，新证据 {candidates} 条、待复核信念 {staleReviewed} 条；新建 {formed}，细化 {refined}，维持 {confirmed}，否定 {refuted}，跳过 {skipped}。',
   'tool.reflectNote': '信念是叠加在原始记忆之上的抽象层（证据 id 与证据数已留存，原始记忆未归档）。',
   'tool.reflectConsumed': '同时消费了 {count} 条会话结束时登记的待巩固任务。',
+  'tool.reflectDropped': '另有 {count} 条候选因输出预算/解析失败被丢弃（未被巩固，可重跑补做）。',
 
   // ---- Схема и результат engram_examine / engram_neighbors ----
   'tool.examineDescription': '渐进式披露：按 id 批量拉取记忆完整铭牌（content + 房间 + 状态 + 边关系）。仅在已通过 engram_search/timeline/neighbors 拿到候选 id 后调用，避免一次性吞全文。建议 ≤16 个 id，超出会按入参顺序保留前 N 条。',
@@ -715,6 +716,7 @@ export const en = {
   'tool.reflectDone': 'Belief consolidation complete: a pool of {pool} memories, {candidates} new evidence items, {staleReviewed} beliefs to re-check; {formed} formed, {refined} refined, {confirmed} confirmed, {refuted} refuted, {skipped} skipped.',
   'tool.reflectNote': 'Beliefs are an abstraction layer stacked on top of the raw memories (evidence ids and counts are kept; the raw memories are not archived).',
   'tool.reflectConsumed': 'Also consumed {count} consolidation tasks registered at session end.',
+  'tool.reflectDropped': 'Additionally, {count} candidates were dropped (output budget/parse failure; not consolidated, rerun to pick up).',
 
   // ---- engram_examine / engram_neighbors schema and result ----
   'tool.examineDescription': 'Progressive disclosure: fetch the complete nameplates of memories by id in a batch (content + room + status + edges). Call it only after you already have candidate ids from engram_search/timeline/neighbors, so you do not swallow full texts at once. At most 16 ids are advised; extras keep the first N in the order given.',

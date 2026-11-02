@@ -185,4 +185,51 @@ describe('reflectObservations', () => {
     // still 后信念回到 active。
     expect((await store.listObservations({ status: 'active', limit: 10 }))).toHaveLength(1)
   })
+
+  it('#45 回归:候选超过分片大小时多次调用,全部巩固,无丢弃', async () => {
+    // 15 条 active 记忆超过 REFLECT_CHUNK=10：应按分片拆成 10+5 两次调用。
+    const ids: string[] = []
+    for (let index = 0; index < 15; index += 1) {
+      const record = await store.write({
+        scope: 'user', kind: 'fact', content: `候选记忆 ${index}：各自独立的原始事实内容`, importance: 0.5 + index * 0.01,
+      })
+      ids.push(String(record.id))
+    }
+    // call stub：从 userText 提取本片出现的全部候选 id，逐 id 回一个 form 动作。
+    const call = vi.fn(async (params: { userText: string }) => {
+      const sliceIds = [...params.userText.matchAll(/\[([0-9a-f-]{36})\]/g)].map(match => match[1]!)
+      return JSON.stringify(sliceIds.map(id => ({ action: 'form', belief: `信念 ${id}`, sourceIds: [id] })))
+    })
+    const outcome = await reflectObservations({
+      store, embedder: undefined, scope: 'user', call, logRequest: () => undefined, route: ROUTE, signal: SIGNAL,
+    })
+    expect(outcome.formed).toBe(15)
+    expect(outcome.dropped).toBe(0)
+    // 15 条候选 / 每片 10 → 两次调用（10 + 5）。
+    expect(call).toHaveBeenCalledTimes(2)
+    // 全部原始记忆都被某条信念引用为证据（各片上下文只喂本片 id，动作也只引用本片 id）。
+    const beliefs = await store.listObservations({ status: 'active', limit: 20 })
+    expect(beliefs).toHaveLength(15)
+    const evidenced = new Set(beliefs.flatMap(observation => observation.sourceIds.map(String)))
+    expect([...evidenced].sort()).toEqual([...ids].sort())
+  })
+
+  it('#45 回归:单片超输出预算对半递归,两半独立巩固', async () => {
+    // 4 条候选走单个分片：stub 对 ≥2 条的调用抛 max-tokens，逼出对半递归到单片。
+    for (let index = 0; index < 4; index += 1) {
+      await store.write({ scope: 'user', kind: 'fact', content: `超预算候选 ${index}：独立内容`, importance: 0.6 })
+    }
+    const call = vi.fn(async (params: { userText: string }) => {
+      const sliceIds = [...params.userText.matchAll(/\[([0-9a-f-]{36})\]/g)].map(match => match[1]!)
+      if (sliceIds.length >= 2) throw Object.assign(new Error('limit'), { code: 'LLM_MAX_TOKENS' })
+      return JSON.stringify(sliceIds.map(id => ({ action: 'form', belief: `信念 ${id}`, sourceIds: [id] })))
+    })
+    const outcome = await reflectObservations({
+      store, embedder: undefined, scope: 'user', call, logRequest: () => undefined, route: ROUTE, signal: SIGNAL,
+    })
+    expect(outcome.formed).toBe(4)
+    expect(outcome.dropped).toBe(0)
+    // 4 → 2+2 → 1+1+1+1：至少 4 次调用证明对半递归真正切到了单片。
+    expect(call.mock.calls.length).toBeGreaterThanOrEqual(4)
+  })
 })

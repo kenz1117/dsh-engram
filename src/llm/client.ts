@@ -77,6 +77,14 @@ function finishError(finish: FinishReason): Error | undefined {
 }
 
 /**
+ * 判别 max-tokens 终止错误（finishError 打上 LLM_MAX_TOKENS code）。摄取分片重试与
+ * 信念巩固分片重试共用（#42 附带 / #45）。
+ */
+export function isMaxTokensError(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === 'LLM_MAX_TOKENS'
+}
+
+/**
  * 一次辅助 LLM 调用：流式收集文本输出。
  * @param ctx - 提供 llm 服务的上下文。
  * @param params.route - 模型路由（来自日志解析或显式配置）。

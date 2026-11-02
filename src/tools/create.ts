@@ -1809,6 +1809,8 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         message('tool.reflectNote'),
       ]
       if (consumed > 0) lines.push(message('tool.reflectConsumed', { count: consumed }))
+      // #45 失败可见性：丢弃发生在片级，工具体里明说（旧实现整批静默清零）。
+      if (outcome.dropped > 0) lines.push(message('tool.reflectDropped', { count: outcome.dropped }))
       return { text: lines.join('\n') }
     },
   })

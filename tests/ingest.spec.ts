@@ -371,6 +371,52 @@ describe('ingestPreviousTurn', () => {
     expect(outcome.skipped).toBeNull()
     expect(await store.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-ingest-1', 1))).toBe(true)
   })
+
+  it('#42 回归:单段文本超预算按换行边界对半切（优先离中点最近的换行）', async () => {
+    const logged: IngestRequestEventData[] = []
+    // 三行单段文本（282 字符）：中点在 141，第 1 行末换行在 200（距 59）、第 2 行末换行在
+    // 241（距 100）——切口必取更近的 200，两半正好是完整的第 1 行 / 第 2-3 行。
+    const lineA = 'a'.repeat(200)
+    const lineB = 'b'.repeat(40)
+    const lineC = 'c'.repeat(40)
+    const single = `${lineA}\n${lineB}\n${lineC}`
+    let calls = 0
+    const outcome = await ingestPreviousTurn(baseDeps({
+      events: [
+        turnStart(1),
+        userMsg(single, 3),
+        toolCall('c1', 'fs_read', 4),
+        toolResult('c1', 5),
+        toolCall('c2', 'web_search', 6),
+        toolResult('c2', 7),
+        assistantMsg('助手的完整回答', 8),
+        routeHeader(9),
+        turnStart(2),
+        userMsg('现在的问题', 200),
+      ],
+      call: async (params) => {
+        calls += 1
+        if (calls === 1) {
+          const error = new Error('max-tokens') as Error & { code?: string }
+          error.code = 'LLM_MAX_TOKENS'
+          throw error
+        }
+        // 首半恰好是完整的第 1 行；次半是第 2-3 行（切在换行处，行内容不断字）。
+        return params.userText.includes(JSON.stringify([lineA]))
+          ? JSON.stringify([{ content: '第一行候选', kind: 'fact', importance: 0.7 }])
+          : JSON.stringify([{ content: '后两行候选', kind: 'fact', importance: 0.7 }])
+      },
+      logRequest: data => { logged.push(data) },
+    }))
+    expect(outcome.written).toBe(2)
+    expect(outcome.skipped).toBeNull()
+    expect(await store.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-ingest-1', 1))).toBe(true)
+    // 全文 1 次 + 两半各 1 次 = 3 次调用。
+    expect(calls).toBe(3)
+    // 两半边界即换行处：首半恰为第 1 行原文，次半恰为第 2-3 行原文（含中间换行）。
+    expect(logged[1]!.userText).toContain(JSON.stringify([lineA]))
+    expect(logged[2]!.userText).toContain(JSON.stringify([`${lineB}\n${lineC}`]))
+  })
 })
 
 describe('摄取节流', () => {
