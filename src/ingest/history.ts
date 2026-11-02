@@ -153,9 +153,13 @@ export interface HistoryBackfillDeps {
 /** 参与处理的会话（含按 cwd 解析出的写入路由）。 */
 interface CandidateSession {
   readonly header: HistorySessionHeader
-  readonly events: readonly SessionEventLike[]
   /** 规则内允许处理的轮次号（升序，已按单会话上限取最近若干轮）。 */
   readonly turns: readonly number[]
+  /**
+   * 转写延迟加载（#44）：估算只需轮次号，执行只需当前会话的转写——都不该为「全部
+   * 候选会话的完整转写」付内存。此闭包在执行到该会话时再读一次；估算路径从不调用。
+   */
+  readonly loadEvents: () => Promise<readonly SessionEventLike[] | undefined>
   /** 目标分库打开器（无 cwd → user 库；有 cwd → 该项目库）。 */
   readonly openStore: () => Promise<EngramStore>
   /** 写入路由：默认作用域 + 逐条采纳模型 scope + 按作用域解析分库。 */
@@ -251,7 +255,10 @@ async function selectSessions(deps: HistoryBackfillDeps, rules: ResolvedHistoryR
     if (rules.days > 0 && header.createdAt < now - rules.days * DAY_MS) { skipped.tooOld += 1; continue }
     kept.push(header)
   }
-  // 读取日志 + 计算轮次（有限并发，避免一次性读爆 IO）。
+  // 读取日志 + 统计轮次（有限并发，避免一次性读爆 IO）。转写只用于数轮次，统计完即弃
+  // （#44：估算若全程持有全部转写，内存随候选会话数约 5.5MB/会话线性增长，桌面宿主
+  // 4GB V8 堆顶直接 SIGABRT；现在估算峰值 O(并发) 而非 O(会话数)）。执行路径在处理到
+  // 该会话时再读一次。
   const loaded: (CandidateSession | undefined)[] = []
   for (let i = 0; i < kept.length; i += ESTIMATE_CONCURRENCY) {
     const batch = kept.slice(i, i + ESTIMATE_CONCURRENCY)
@@ -265,13 +272,19 @@ async function selectSessions(deps: HistoryBackfillDeps, rules: ResolvedHistoryR
       const cwd = header.cwd
       if (cwd === undefined || cwd === '') {
         // 无 cwd：无法归属项目宫殿，只能进私人宫殿，故关掉逐条 scope 判定。
-        return { header, events, turns, openStore: deps.openUserStore, routing: { writeScope: 'user', perCandidateScope: false } }
+        return {
+          header,
+          turns,
+          loadEvents: () => loadSession(source, header.id),
+          openStore: deps.openUserStore,
+          routing: { writeScope: 'user', perCandidateScope: false },
+        }
       }
       const projectCwd = cwd
       return {
         header,
-        events,
         turns,
+        loadEvents: () => loadSession(source, header.id),
         openStore: () => deps.resolveStore(projectCwd),
         // 有 cwd：默认项目宫殿，模型判为跨项目通用（个人偏好等）的条目落私人宫殿。
         routing: ingestWriteRouting(projectCwd, deps.resolveStore, deps.openUserStore),
@@ -397,11 +410,22 @@ export async function runHistoryBackfill(
   onProgress({ ...progress })
   for (const candidate of candidates) {
     if (signal.aborted) break
+    // 转写延迟加载（#44）：处理到该会话时再读，峰值 O(1) 转写在内存。选中后文件被删
+    // 或损坏：跳过该会话继续（转写都拿不到，谈不上逐轮处理）。
+    const events = await candidate.loadEvents()
+    if (events === undefined) {
+      progress.turnsSkipped += candidate.turns.length
+      progress.skipReasons['session-unreadable'] = (progress.skipReasons['session-unreadable'] ?? 0) + candidate.turns.length
+      progress.turnsDone += candidate.turns.length
+      progress.sessionsDone += 1
+      onProgress({ ...progress, currentSession: candidate.header.id })
+      continue
+    }
     for (const turn of candidate.turns) {
       if (signal.aborted) break
       try {
         const outcome = await ingestPreviousTurn({
-          events: candidate.events,
+          events,
           sessionId: candidate.header.id,
           turn,
           slice: turn,
@@ -436,7 +460,7 @@ export async function runHistoryBackfill(
     }
     // 会话收尾：生成一句话摘要（增强信息，失败静默），供情景时间线组头展示。
     await ensureSessionSummary({
-      events: candidate.events,
+      events,
       sessionId: candidate.header.id,
       openStore: () => candidate.openStore(),
       call: deps.call,

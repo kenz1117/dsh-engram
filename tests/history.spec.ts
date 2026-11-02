@@ -361,6 +361,33 @@ describe('runHistoryBackfill', () => {
     expect(result.memoriesWritten).toBe(1)
   })
 
+  it('#44 转写延迟加载：执行期读取失败（选中后被删/损坏）跳过该会话继续', async () => {
+    // 选择期（数轮次）读成功，执行期（懒读转写）失败——文件在两阶段之间被删/损坏。
+    const loadCount = new Map<string, number>()
+    const source: HistoryLogSource = {
+      list: async () => [
+        { id: 'a', createdAt: NOW, cwd: '/repo/a' },
+        { id: 'b', createdAt: NOW - 1000, cwd: '/repo/a' },
+      ],
+      load: async (id) => {
+        const n = (loadCount.get(id) ?? 0) + 1
+        loadCount.set(id, n)
+        if (id === 'b' && n >= 2) throw new Error('deleted mid-run')
+        return { events: [...turnEvents(1), ...turnEvents(2)] }
+      },
+    }
+    const calls = { count: 0 }
+    const deps = { ...makeDeps(source, calls), now: () => NOW }
+    const result = await runHistoryBackfill(deps, DEFAULTS, {}, () => undefined, new AbortController().signal)
+    // a 正常处理（2 轮 × 1 写）；b 执行期读取失败 → 2 轮计入 session-unreadable 跳过。
+    expect(result.memoriesWritten).toBe(2)
+    expect(result.turnsSkipped).toBe(2)
+    expect(result.skipReasons['session-unreadable']).toBe(2)
+    expect(result.turnsDone).toBe(4)
+    // LLM 调用只在会话 a：2 次提炼 + 1 次会话收尾摘要；b 转写都读不到，零调用。
+    expect(calls.count).toBe(3)
+  })
+
   it('低活动轮次被节流跳过（不调 LLM）', async () => {
     // 短用户输入 + 无助手消息 → 活动评分 0，低于阈值。
     const source: HistoryLogSource = {
