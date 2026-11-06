@@ -93,7 +93,6 @@ export const en: Record<EngramKey, string> = {
   relSupersedes: 'Supersedes',
   relContradicts: 'Contradicts',
   relRelated: 'Adjacent',
-  tabToday: 'Today',
   tabLog: 'Log',
   roomsTitle: 'Room directory',
   roomsHint: 'A new room opens once 9 slots fill',

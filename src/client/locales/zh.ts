@@ -93,7 +93,6 @@ export const zh: Record<EngramKey, string> = {
   relSupersedes: '替代',
   relContradicts: '互斥',
   relRelated: '相邻',
-  tabToday: '今日',
   tabLog: '日志',
   roomsTitle: '房间目录',
   roomsHint: '每间满 9 个桩位后开新间',

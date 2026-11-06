@@ -242,7 +242,9 @@ select.input { padding-right: 28px; appearance: none; }
 .segScope { padding: 3px; border-radius: 10px; }
 
 /* ---------- 页面头部（v0.8+ 新增：大标题 + 副标题 + actions；之前只有 tab 一行,缺少页面身份感） ---------- */
-.pageHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); padding: var(--space-1) 0 var(--space-4); margin-bottom: var(--space-2); border-bottom: 1px solid var(--dsw-alias-border-soft); }
+/* 页眉在 0.13 里是工作面的标题块：上方是标题与副标题，下方是二级导航页签。
+   分隔线交给页签那一行（.contextNav 的 border-bottom），两道横线并排只会更吵。 */
+.pageHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); padding: var(--space-1) 0 var(--space-3); margin: 0; border-bottom: 0; }
 .pageHeaderMain { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .pageTitle { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; color: var(--dsw-alias-label-primary); line-height: 1.25; }
 .pageSubtitle { margin: 0; font-size: var(--fs-ctrl); color: var(--dsw-alias-label-tertiary); line-height: 1.5; }

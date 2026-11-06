@@ -90,7 +90,6 @@ export type EngramKey =
   | 'saveWithHint'
   | 'detailSource'
   | 'detailOperations'
-  | 'tabToday'
   | 'tabLog'
   | 'roomsTitle'
   | 'roomsHint'

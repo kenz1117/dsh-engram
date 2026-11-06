@@ -95,7 +95,6 @@ export const ru: Record<EngramKey, string> = {
   relSupersedes: 'Заменяет',
   relContradicts: 'Противоречит',
   relRelated: 'Смежное',
-  tabToday: 'Сегодня',
   tabLog: 'Журнал',
   roomsTitle: 'Каталог комнат',
   roomsHint: 'Новая комната открывается, когда заполняются 9 мест',
