@@ -4,11 +4,26 @@
  */
 
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
 import { isLanguageCode, resolveLanguage, type EngramLanguage, type LanguageSetting } from './i18n/language.ts'
 import { legacyJevFields, noteLegacyJevFields } from './jev/stale.ts'
+
+/**
+ * 宿主数据根目录：`$DSH_HOME`，缺省 `~/.dsh`。
+ *
+ * 契约抄自宿主的 `@deepseek-ai/dsh-home-paths`（resolveDshHome）：显式值 > `$DSH_HOME`
+ * > `~/.dsh`；空白或只有空格的 `$DSH_HOME` 视同未设置（否则 home 会被解析成当前目录）。
+ * 插件不直接依赖那个包——它是可选 peer，缺了不能让插件起不来；语义保持一致即可。
+ * @param env - 环境变量映射（默认 `process.env`）。
+ * @returns 绝对路径形式的数据根目录。
+ */
+export function resolveDshHome(env: NodeJS.ProcessEnv = process.env): string {
+  const fromEnv = env.DSH_HOME
+  const home = fromEnv !== undefined && fromEnv.trim() !== '' ? fromEnv : join(homedir(), '.dsh')
+  return resolve(home)
+}
 
 /** 旧库迁移策略：默认自动迁移，可选择保留待人工确认。 */
 export type LegacyMigrationPolicy = 'eager' | 'conservative'
@@ -216,6 +231,12 @@ export interface ResolvedEmbedderConfig {
 /** 解析后的完整配置（显式默认值集中在此一步，实现不再 `?? 默认`）。 */
 export interface ResolvedEngramConfig {
   readonly dbDir: string
+  /** 宿主数据根目录（`$DSH_HOME`，缺省 `~/.dsh`）——面板据此判断数据目录是否在 home 之下。 */
+  readonly dshHome: string
+  /** 数据目录是否由配置显式指定（显式值优先于任何默认与收编）。 */
+  readonly dbDirExplicit: boolean
+  /** 旧默认目录（`~/.dsh/engram`）：DSH_HOME 迁移后，这里可能还留着上一份库。 */
+  readonly legacyDbDir: string
   readonly legacyMigration: LegacyMigrationPolicy
   readonly injectProfile: boolean
   readonly profileTopN: number
@@ -519,9 +540,17 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
       }
     }
   }
-  const dbDir = config.dbDir ?? join(homedir(), '.dsh', 'engram')
+  // 数据目录跟着宿主的数据根走：`$DSH_HOME` 是宿主的单一事实源（见 @deepseek-ai/dsh-home-paths
+  // 的 resolveDshHome：显式值 > `$DSH_HOME` > `~/.dsh`）。此前这里写死 `~/.dsh/engram`，
+  // 迁移 home 的机器会把库留在旧盘上，且完全静默（#51）。
+  const dshHome = resolveDshHome()
+  const legacyDbDir = join(homedir(), '.dsh', 'engram')
+  const dbDir = config.dbDir ?? join(dshHome, 'engram')
   return {
     dbDir,
+    dshHome,
+    dbDirExplicit: config.dbDir !== undefined,
+    legacyDbDir,
     legacyMigration: config.legacyMigration ?? 'eager',
     injectProfile: config.injectProfile ?? true,
     profileTopN: config.profileTopN ?? 8,

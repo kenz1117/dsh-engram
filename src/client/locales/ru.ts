@@ -512,6 +512,8 @@ export const ru: Record<EngramKey, string> = {
   systemJobEmpty: 'Очередь пуста: ни ждущих, ни упавших заданий.',
   systemStorageTotal: 'Всего',
   systemStorageScope: 'База',
+  systemStorageHome: 'Дом Harness',
+  systemStorageOutsideHome: 'Каталог данных лежит вне дома Harness: база памяти остаётся на месте и не переедёт вместе с домом.',
   systemStorageActive: 'Активные',
   systemStorageArchived: 'В архиве',
   systemStorageForgotten: 'Забытые',

@@ -8,7 +8,7 @@
 
 import { existsSync, statSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { isAbsolute, join, relative } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -555,6 +555,19 @@ class UnknownProjectError extends Error {
 }
 
 /** 管理面板的路由依赖。 */
+/**
+ * 路径是否位于某个根之下（用于「数据目录在不在 home 之下」这类判断）。
+ * @param child - 待判断的路径。
+ * @param root - 根目录。
+ * @returns true 表示 child 位于 root 之内（含 root 自身）。
+ */
+function isInside(child: string, root: string): boolean {
+  const from = resolve(root)
+  const to = resolve(child)
+  if (to === from) return true
+  return to.startsWith(from.endsWith(sep) ? from : `${from}${sep}`)
+}
+
 export interface RouteDeps {
   readonly openStore: (scope: EngramScope) => Promise<EngramStore>
   /**
@@ -578,6 +591,8 @@ export interface RouteDeps {
   readonly mirrorDir: string
   /** 备份目录（与 dbDir 同源），用于打包 .db 成 tar.gz。 */
   readonly dbDir: string
+  /** 宿主数据根目录（`$DSH_HOME`）：面板据此说清数据目录在不在 home 之下（#51）。 */
+  readonly dshHome: string
   /** 当前插件版本，写进备份 _meta.json 供恢复端校验。 */
   readonly pluginVersion: string
   /** 房间名的显示语言（服务器侧渲染的文本用它取词，如镜像 _index.md）。 */
@@ -1133,6 +1148,10 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const allTrue = (key: string): boolean => parts.length > 0 && parts.every(part => part[key] === true)
             json(res, 200, {
               dir: deps.dbDir,
+              // 数据目录是否落在宿主数据根之下：不在的话要说出来——人以为数据跟着
+              // home 走，其实躺在别的盘上（#51）。
+              home: deps.dshHome,
+              outsideHome: !isInside(deps.dbDir, deps.dshHome),
               keepOps: LOG_KEEP_OPS,
               parts,
               totals: {

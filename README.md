@@ -203,11 +203,13 @@ DeepSeek Harness 跨会话长期记忆插件 —— 把记忆宫殿的**信息�
 
 可选配置（cordis.yml）：
 
+> **数据目录跟宿主数据根走**：不写 `dbDir` 时，插件用宿主的数据根 `$DSH_HOME`（缺省 `~/.dsh`）下的 `engram/`——和会话、配置、其它插件的数据放在同一个根里。把 `DSH_HOME` 搬到别的盘，记忆库也跟着搬。若旧目录 `~/.dsh/engram` 里还留着库，插件启动时先把它收编过来（同盘直接改名、跨盘复制后校验再删旧），并把结果写进启动日志；显式写了 `dbDir` 的人不受影响，那一行说了算。面板「系统 · 存储」会同时报出数据目录与宿主数据根，库不在 home 之下时会明确提示。
+
 ```yaml
 - id: dsh-engram
   name: '@kenz1117/dsh-engram'
   config:
-    dbDir: '~/.dsh/engram'          # 分库与模型缓存根目录
+    dbDir: '~/.dsh/engram'          # 分库与模型缓存根目录；不写则默认 $DSH_HOME/engram
     injectProfile: true             # 会话开始注入用户画像摘要
     profileTopN: 8                  # 注入条数上限（1-64）
     injectTokenBudget: 1024         # 注入 token 预算（128-8192，中文按 1.5 token/字、其余按 4 字符/token 估算，装不下的条目降级为索引行）
