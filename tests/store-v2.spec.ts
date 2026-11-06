@@ -107,11 +107,16 @@ describe('EngramStore v2 additions', () => {
     expect(asMemoryId(data.edges[0]!.from)).toBe(a.id)
   })
 
-  it('search 命中提升 confidence', async () => {
-    const record = await store.write({ scope: 'user', kind: 'fact', content: '置信度提升条目', confidence: 0.5 })
+  it('search 命中不改 confidence/accessCount（检索曝光不再冒充反馈——0.12.0）', async () => {
+    const record = await store.write({ scope: 'user', kind: 'fact', content: '置信度不变条目', confidence: 0.5 })
     await store.search({ text: '置信度', scopes: ['user'] }, undefined)
-    const bumped = await store.get(record.id)
-    expect(bumped?.confidence).toBeCloseTo(0.55, 5)
+    await store.search({ text: '置信度', scopes: ['user'] }, undefined)
+    const untouched = await store.get(record.id)
+    expect(untouched?.confidence).toBeCloseTo(0.5, 5)
+    expect(untouched?.accessCount).toBe(0)
+    // reinforce 仍是独立有效的真实反馈通道（与曝光分开）。
+    const reinforced = await store.reinforce(record.id, '{"similarity":0.95}')
+    expect(reinforced?.confidence).toBeCloseTo(0.55, 5)
   })
 })
 
@@ -281,12 +286,13 @@ describe('EngramStore 宫殿与复习调度（schema v6）', () => {
     expect((await migrated.get(asMemoryId('legacy-1')))?.slot).toEqual({ room: 'fact', index: 2 })
     await migrated.close()
     const check = new DatabaseSync(path)
-    expect((check.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value).toBe('13')
+    expect((check.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value).toBe('15')
     const indexes = (check.prepare('PRAGMA index_list(nodes)').all() as unknown as { name: string }[]).map(row => row.name)
     expect(indexes).toContain('nodes_slot')
     expect(indexes).toContain('nodes_review_due')
     expect(indexes).toContain('nodes_kind_created')
     expect(indexes).toContain('nodes_session_created')
+    expect(indexes).toContain('nodes_memory_created')
     check.close()
   })
 
@@ -306,6 +312,6 @@ describe('EngramStore 宫殿与复习调度（schema v6）', () => {
     const check = new DatabaseSync(path)
     const version = (check.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value
     check.close()
-    expect(version).toBe('13')
+    expect(version).toBe('15')
   })
 })

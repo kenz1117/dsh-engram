@@ -65,6 +65,7 @@ export const zh = {
   'misc.jevProviderUnresolved': 'Jev：没有提供商——面板、插件设置和会话路由都没有指定',
   'misc.jevModelNotPicked': 'Jev：提供商「{provider}」的 DSH 设置里没有 JEV 模型，请手动指定模型',
   'misc.jevEndpointMustBeHttp': 'invalid: jev.endpoint 必须是 http(s) URL',
+  'misc.jevEndpointOriginMismatch': 'Jev：endpoint 必须与提供商「{provider}」的 baseURL 同源；拒绝把宿主凭据发往其他服务',
   'misc.jevModelMustNotBeEmpty': 'invalid: jev.model 不能为空',
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒',
   // tools/create.ts — инструкция по языку (В.08)
@@ -128,6 +129,7 @@ export const en = {
   'misc.jevProviderUnresolved': 'Jev: no provider — neither the panel, nor the plugin settings, nor the session route names one',
   'misc.jevModelNotPicked': 'Jev: provider "{provider}" has no JEV model in its DSH settings; name the model explicitly',
   'misc.jevEndpointMustBeHttp': 'invalid: jev.endpoint must be an http(s) URL',
+  'misc.jevEndpointOriginMismatch': 'Jev: endpoint must share the origin of provider "{provider}" baseURL; refusing to send host credentials to another service',
   'misc.jevModelMustNotBeEmpty': 'invalid: jev.model must not be empty',
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs must be an integer number of milliseconds between 1000 and 60000',
   // i18n/dictionary-file.ts

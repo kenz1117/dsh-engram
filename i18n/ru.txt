@@ -46,6 +46,7 @@ embedding vector contains a non-finite component (NaN/∞); the write is refused
 [dsh-engram] Automatic ingest of this turn failed (skipped, conversation unaffected):	[dsh-engram] Автоматическое извлечение этого хода не удалось (пропущено, диалог не затронут):
 [dsh-engram] History backfill failed:	[dsh-engram] Заполнение истории не удалось:
 [dsh-engram] Session-end finalisation threw (conversation unaffected):	[dsh-engram] Ошибка завершающей обработки при закрытии сессии (диалог не затронут):
+[dsh-engram] Could not persist the injection snapshot (conversation unaffected):	[dsh-engram] Не удалось сохранить снимок внедрения (диалог не затронут):
 [dsh-engram] Belief consolidation at session end threw ({scope}, conversation unaffected):	[dsh-engram] Ошибка закрепления убеждений при закрытии сессии ({scope}, диалог не затронут):
 [dsh-engram] Startup decay scheduling failed (skipped):	[dsh-engram] Не удалось запустить затухание при старте (пропущено):
 [dsh-engram] Periodic decay scheduling failed (skipped):	[dsh-engram] Периодическое затухание не удалось (пропущено):
@@ -518,5 +519,6 @@ Jev: provider "{provider}" has no key (credential "{ref}" is empty)	Jev: у пр
 Jev: no provider — neither the panel, nor the plugin settings, nor the session route names one	Jev: провайдер не назван — ни панель, ни настройки плагина, ни маршрут сессии его не указывают
 Jev: provider "{provider}" has no JEV model in its DSH settings; name the model explicitly	Jev: у провайдера «{provider}» нет JEV-модели в настройках DSH; назовите модель явно
 invalid: jev.endpoint must be an http(s) URL	некорректно: jev.endpoint должен быть http(s)-адресом
+Jev: endpoint must share the origin of provider "{provider}" baseURL; refusing to send host credentials to another service	Jev: endpoint должен иметь тот же origin, что и baseURL провайдера «{provider}»; отправка учётных данных хоста другому сервису запрещена
 [dsh-engram] Belief consolidation dropped {count} candidates (output budget/parse failure; not consolidated, will be picked up next consolidation)	[dsh-engram] Закрепление убеждений отбросило {count} кандидатов (бюджет вывода/сбой разбора; не закреплены, доберут при следующем закреплении)
 Additionally, {count} candidates were dropped (output budget/parse failure; not consolidated, rerun to pick up).	Кроме того, {count} кандидатов было отброшено (бюджет вывода/сбой разбора; не закреплены — перезапустите, чтобы добрать).

@@ -3,6 +3,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // 词典/插值行为与请求出口都不经组件渲染即可验证。
 import { api, setProjectHealHandler, setActiveProjectSelector } from '../src/client/rpc.ts'
 import { makeT, ruPluralForm } from '../src/client/translate.ts'
+import { en, ru, zh } from '../src/client/locales/index.ts'
+
+const REPLAY_KEYS = [
+  'tabReplay', 'pageHeaderReplaySubtitle', 'replayFilterLabel', 'replayFilterPlaceholder', 'replayCount',
+  'replayEmpty', 'replayFailed', 'replayOpen', 'replayClose', 'replayPacketTitle', 'replayMetaTitle',
+  'replayExactNote', 'replaySession', 'replayHash', 'replayMemories', 'replayCurated', 'replayCompactions', 'replaySize',
+] as const
+
+const GOVERNANCE_KEYS = [
+  'benchInspect', 'governanceTitle', 'governanceHint', 'governanceCount', 'governanceEmpty', 'governanceFailed',
+  'governanceDismiss', 'governanceForget', 'governanceActionFailed', 'governanceStableId',
+] as const
+
+describe('context replay locale parity', () => {
+  it('回放工作面的 18 个文案键在 zh/en/ru 三语齐备', () => {
+    for (const key of REPLAY_KEYS) {
+      expect(zh[key], `zh:${key}`).toBeTruthy()
+      expect(en[key], `en:${key}`).toBeTruthy()
+      expect(ru[key], `ru:${key}`).toBeTruthy()
+    }
+  })
+
+  it('治理工作面的 10 个文案键在 zh/en/ru 三语齐备', () => {
+    for (const key of GOVERNANCE_KEYS) {
+      expect(zh[key], `zh:${key}`).toBeTruthy()
+      expect(en[key], `en:${key}`).toBeTruthy()
+      expect(ru[key], `ru:${key}`).toBeTruthy()
+    }
+  })
+})
 
 describe('ruPluralForm（俄语复数三段式选择）', () => {
   it('1 / 21 / 101 → one；2-4 / 22-24 → few；其余 → many', () => {

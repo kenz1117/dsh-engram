@@ -62,6 +62,7 @@ const parseRecord = (raw: unknown, index: number): MemoryRecord | string => {
   }
   return {
     id: asMemoryId(id),
+    memoryId: asMemoryId(isStr(raw.memoryId) && raw.memoryId !== '' ? raw.memoryId : id),
     scope: raw.scope,
     kind: raw.kind,
     content,
@@ -219,6 +220,7 @@ export function parseMarkdownExport(raw: string, scope: EngramScope): { data: Ex
     if (!Number.isFinite(importance)) continue
     records.push({
       id: asMemoryId(id),
+      memoryId: asMemoryId(id),
       scope,
       kind,
       content,

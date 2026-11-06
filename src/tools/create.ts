@@ -9,6 +9,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { join } from 'node:path'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { updateMemory } from '../application/memory-commands.ts'
 import { distillMemories } from '../flywheel/distill.ts'
 import { reflectObservations } from '../consolidation/reflect.ts'
 import { writeMirror } from '../mirror/markdown.ts'
@@ -690,8 +691,8 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const limit = parseCountParam(input.limit ?? undefined, 'engram_search', 'limit', 8, 1, 50)
       const asOfMs = parseTimeParam(typeof input.asOf === 'string' ? input.asOf : undefined, 'engram_search', 'asOf')
       // 多查询改写：辅助 LLM 可用时生成 ≤3 个互补查询分别检索后 RRF 融合；
-      // 失败/不可用降级原查询单查。多查询会对同一 id 重复命中强化（accessCount、
-      // confidence 增长更快），语义上确为多次命中，属已知代价。
+      // 失败/不可用降级原查询单查。多查询各自记录 search-exposure 审计，
+      // 但曝光不再改变 accessCount/confidence；有效反馈只走 reportOutcome/reinforce。
       const rewrite = await rewriteQueries(deps, exec, input.query)
       const retrievals = await Promise.all(rewrite.queries.map(async (queryText) => {
         const vector = await queryVectorOf(deps, queryText)
@@ -1162,24 +1163,17 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     },
     async execute(args) {
       const input = args as { id: string; content: string; scope?: unknown; kind?: EngramKind; placard?: unknown }
-      // 入库前协议剥离 + 密钥脱敏，与 engram_save 同一防线。
-      const content = redactSecrets(sanitizeProtocolText(input.content))
-      if (content.trim() === '') throw new Error(message('tool.updateContentEmptyAfterSanitize'))
       const scope = scopeOf(input.scope, 'project')
       const store = await deps.openStore(scope)
-      const old = await store.get(input.id as never)
-      if (old === undefined) throw new Error(message('tool.updateNotFound', { id: input.id, scope }))
-      const embedder = await deps.embedder
-      const embeddings = embedder === undefined ? undefined : await embedder.embed([content.trim()])
       const imagery = placardOf(input.placard)
-      const record = await store.update({
+      const record = await updateMemory({ store, embedder: deps.embedder }, {
         id: input.id as never,
         scope,
-        kind: input.kind ?? old.kind,
-        content,
-        ...(embeddings === undefined ? {} : { embedding: embeddings[0] }),
+        content: input.content,
+        ...(input.kind === undefined ? {} : { kind: input.kind }),
         ...(imagery === undefined ? {} : { imagery }),
       })
+      if (record === undefined) throw new Error(message('tool.updateNotFound', { id: input.id, scope }))
       return { id: record.id, superseded: input.id }
     },
   })

@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "schemaVersion": 13,
+  "schemaVersion": 15,
   "tables": {
     "nodes": {
       "role": "user",
@@ -12,6 +12,7 @@
       },
       "fields": {
         "id": "TEXT",
+        "memory_id": "TEXT",
         "scope": "TEXT",
         "kind": "TEXT",
         "content": "TEXT",
@@ -56,6 +57,9 @@
         "updated_at": "INTEGER",
         "last_validated_at": "INTEGER"
       }
+    },
+    "injection_snapshots": {
+      "role": "service"
     },
     "nodes_fts": {
       "role": "service"

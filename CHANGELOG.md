@@ -8,6 +8,34 @@
 
 > **v0.x 阶段的版本约定**：`0.MINOR.PATCH` 里的 `MINOR` 是**功能批次**而不是稳定性刻度——0.7.x 整批是「记忆宫殿信息架构」，0.8.x 整批是「面板重构」，0.9.x 整批是「稳定性与可审计」，0.10.x 整批是「多语言与数据驱动」。同一批次内的 `PATCH` 位通常是修复与加固。
 
+## [0.12.0] - 2026-11-06
+
+### Added
+
+- **0.12.0 工程契约**：新增 `docs/engram-0.12.0.md`，冻结稳定身份/修订、统一写边界、曝光与有效反馈分离、session 隔离、持久作业、v13 数据迁移与回退、真实观测和分阶段验收口径。
+- **稳定逻辑身份（schema v15）**：`MemoryRecord` 新增 `memoryId`；存量库 v14→v15 自动补齐 `memory_id=id`，更新继承稳定身份，`nodes.id` 保留为 revision id。新增 `getMemory(memoryId)` 解析当前修订，`updateMemory` 可按 revision id 或稳定身份定位；修订链按 `memory_id` 聚合，任一 revision 可看完整历史。归因与注入快照使用稳定身份，导出/导入保留 `memoryId`。同一稳定身份至多一个 active：restore 旧 revision 会先归档其余 active 兄弟并重建 supersedes 方向。升版快照改用 `VACUUM INTO` 生成一致性文件，不再直接拷贝可能缺 WAL 尾巴的主文件。
+- **v13 全保真迁移演练**：新增真实 v13 形态 SQLite fixture（无 `memory_id`、无 `injection_snapshots`），覆盖全部业务域与状态键；验证升级后行数、稳定身份、修订链、FTS、时间线、画像版本、事实链、信念证据和 v14 快照写入，并演练 `.pre-migration` 原库回退。
+- **本地评测基线**：新增 `src/evaluation/recall.ts` 与确定性 DSH 工作流 fixture，覆盖 Recall@k / Hit@k / MRR、知识更新返回当前修订、episode 时间线过滤与时间顺序、无关查询拒答和稳定身份 provenance；注入回放校验 API packet 与实际 packet 逐字一致。v15 关键词降级基线已记录在 `docs/evaluation-baseline-v15.md`。
+- **Injection Snapshot（schema v14）**：新增 `injection_snapshots`，持久化实际交给宿主的最终注入包、SHA-256、入选记忆 ID、curated 标记、compaction 计数与时间；`GET /api/engram/injections` 只返回 head，`GET /api/engram/injection` 按 id 返回完整正文，为后续召回台和逐字回放提供事实源。
+- **上下文回放工作面**：面板新增「上下文回放」页，按 scope 与 sessionId 过滤注入历史；列表只取 head（时间、session、包大小、短哈希、入选数、压缩数），详情按 id 按需读取完整最终包、完整 SHA-256 与稳定记忆 ID。UI 不重建相似文本，直接展示 `packet` 事实源；zh/en/ru 文案齐备。
+- **召回台 provenance 与矛盾治理**：召回测试台命中行新增稳定身份、revision ID 和“查看铭牌”入口。新增治理队列 `GET/POST /api/engram/governance` 与 store 层 `listContradictions/resolveContradiction`：只列双侧 active 的 contradicts 边，支持「改判为相关」（保留两条并写 governance 审计）与「闭馆指定侧」（软删并触发证据死亡传播）。走廊页新增治理卡片，处置前完整展示两条记忆与稳定 ID；zh/en/ru 齐备。
+- **Durable Jobs**：新增独立 `jobs.db` 与租约式作业队列（幂等入队、attempts、runAfter、checkpoint、dead-letter、过期租约恢复）。`reflect: 'auto'` 从 fire-and-forget 改为持久入队和串行 worker：120 秒执行预算、180 秒租约，启动时自动接管上一进程遗留/过期 running 作业，卸载时取消在途执行并保留可恢复状态；`suggest` 行为不变。作业 ID 带 dispose 事件水位，恢复会话的新内容不会因旧 done/dead 占用 ID 而丢失；损坏队首隔离为 dead；done/dead 与 injection snapshots 均按 366 天保留窗口清理。
+
+### Changed
+
+- **统一记忆更新命令**：工具 `engram_update` 与面板 `POST /update` 共用 application command，集中执行协议剥离、密钥脱敏、kind/importance 合并和重嵌。`UpdateInput.embedding` 新增 `null` 语义：内容变化但 embedder 不可用时作废旧向量，不再让旧正文语义继续命中。
+- **检索曝光与有效反馈分离**：`search()` 不再修改 `confidence`、`accessCount` 或 `lastAccessedAt`，多查询不再形成自我强化环。每次检索只写一行 `search-exposure` 审计（去重命中 ID、scope、limit、degraded 与不可逆查询摘要）；`reportOutcome` / `reinforce` 继续作为独立真实反馈通道。
+- **注入状态按 session 隔离**：画像去重、compaction 计数、证据提醒和会话路由不再共享进程级单槽；会话销毁时清理对应状态，历史任务仅保留独立的最近路由视图。
+
+### Fixed
+
+- `injectProfile: false` 在自动摄取开启时不再意外注入画像；画像与摄取均关闭时，证据提醒仍可独立注册。选择理由和复习到期提示现在进入实际注入包，不再只参与 hash。
+- 末轮摄取的空答案、不可解析输出和全候选异常失败统一落 pending；恢复后写 done，重复执行保持幂等。低活动、无内容等确定性跳过不误入重试队列。
+
+### Security
+
+- Jev endpoint override 仅允许与 provider 已配置 `baseURL` 同源的 http(s) 地址；跨 origin 明确拒绝，不再把宿主 Bearer 凭据发往面板调用方指定的任意服务。同源自定义路径保持可用，userinfo、异协议与异端口均在拒绝范围内。
+
 ## [0.11.6] - 2026-11-06
 
 ### Added
@@ -400,7 +428,8 @@
 
 - 首个可用版本：`engram_*` 工具集、插件入口、画像注入、SQLite + FTS5 + 关系边 + op log 的本地存储。
 
-[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.11.6...HEAD
+[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/kenz1117/dsh-engram/compare/v0.11.6...v0.12.0
 [0.11.6]: https://github.com/kenz1117/dsh-engram/compare/v0.11.5...v0.11.6
 [0.11.5]: https://github.com/kenz1117/dsh-engram/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/kenz1117/dsh-engram/compare/v0.11.3...v0.11.4

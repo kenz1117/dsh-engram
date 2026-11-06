@@ -6,8 +6,8 @@
  * @module @kenz1117/dsh-engram/store/sqlite
  */
 
-import { randomUUID } from 'node:crypto'
-import { copyFile, mkdir } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, rm } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { EngramError, EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asEntityId, asFactId, asMemoryId, asObservationId, normalizeEntityName } from '../types.ts'
 import { assignSlot } from '../palace/slots.ts'
@@ -21,6 +21,7 @@ import type {
   EntityListResult, EntityMention, EntityRecord, ExportData, FactListFilter, FactListResult,
   FactRecord, FactWriteInput, ForgettingTombstone, ForgottenAuditRow, ImageryLabel,
   ImportEntryClass, ImportOptions, ImportPreview, ImportResult,
+  InjectionSnapshot, InjectionSnapshotFilter, InjectionSnapshotHead, InjectionSnapshotInput,
   ListFilter, ListResult, MemoryEdge, MemoryId, MemoryOutcome,
   MemoryRecord, ObservationId, ObservationListFilter, ObservationRecord, ObservationWriteInput,
   ProfileBlock, ProfileBlockVersion, ReviewGrade, ReviewView, SearchHit, SearchResult, Slot, StoreStats,
@@ -31,7 +32,7 @@ import type { EngramStore, RoomState, VectorTarget } from './interface.ts'
 
 /** 当前 schema 版本；结构性变更必须 +1。可空列与伴随表走增量迁移（见 openEngramStore 的迁移段）。
  *  v12→v13 是纯数据迁移（历史房名归一化），但同样借版本号作为「只跑一次」的开关。 */
-const SCHEMA_VERSION = 13
+const SCHEMA_VERSION = 15
 /** 增量迁移表：key 为起始版本，value 为升到下一版本的 SQL（可多语句）。
  *  v2 → v3：nodes 补可空列 outcome（使用效果回报）。
  *  v3 → v4：新增 nodes_revisions 修订表（update 归档旧条目时的内容快照）。
@@ -59,7 +60,10 @@ const SCHEMA_VERSION = 13
  *  v12 → v13：历史房名归一化——0.8.12 及更早把**显示名**写进 slot_room（「事实厅」），
  *   语言中立 id 启用后同一逻辑房会裂成两间（容量 9 变 18、tour_routes 按 room 断开）。
  *   升级时一次性改写为 id，含扩建房（「事实厅-2」→「fact-2」）；已经是 id 的库零行改动，
- *   SQL 自身幂等。手动脚本 scripts/migrate-room-ids.mjs 保留为兜底。 */
+ *   SQL 自身幂等。手动脚本 scripts/migrate-room-ids.mjs 保留为兜底。
+ *  v13 → v14：injection_snapshots 持久化实际注入的最终包；列表只取 head，正文按 id 读取。
+ *  v14 → v15：稳定逻辑身份 memory_id——nodes.id 保留为 revision id；存量行 memory_id=id，
+ *   update 继承旧 memory_id，修订表补 memory_id 使同一逻辑身份的完整修订链可查。 */
 const MIGRATIONS: Readonly<Record<string, string>> = {
   '2': 'ALTER TABLE nodes ADD COLUMN outcome TEXT',
   '3': `CREATE TABLE IF NOT EXISTS nodes_revisions (
@@ -113,6 +117,18 @@ const MIGRATIONS: Readonly<Record<string, string>> = {
     UPDATE nodes SET slot_room = replace(slot_room, '决策堂', 'decision') WHERE slot_room LIKE '决策堂%';
     UPDATE nodes SET slot_room = replace(slot_room, '往事廊', 'episode') WHERE slot_room LIKE '往事廊%';
     UPDATE nodes SET slot_room = replace(slot_room, '技法坊', 'skill') WHERE slot_room LIKE '技法坊%';`,
+  '14': `ALTER TABLE nodes ADD COLUMN memory_id TEXT;
+    UPDATE nodes SET memory_id = id WHERE memory_id IS NULL;
+    ALTER TABLE nodes_revisions ADD COLUMN memory_id TEXT;
+    UPDATE nodes_revisions SET memory_id = (
+      SELECT nodes.memory_id FROM nodes WHERE nodes.id = nodes_revisions.node_id
+    ) WHERE memory_id IS NULL;
+    CREATE INDEX IF NOT EXISTS nodes_memory_created ON nodes (memory_id, created_at);`,
+  '13': `CREATE TABLE IF NOT EXISTS injection_snapshots (
+    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, packet_hash TEXT NOT NULL,
+    packet TEXT NOT NULL, memory_ids_json TEXT NOT NULL, has_curated INTEGER NOT NULL,
+    compaction_count INTEGER NOT NULL, created_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS injection_session_created ON injection_snapshots (session_id, created_at);`,
 }
 /** RRF 融合常数：score = Σ 1/(K + rank)。 */
 const RRF_K = 60
@@ -124,7 +140,7 @@ const CONTRADICTION_COSINE = 0.88
 const RANK_POOL = 64
 /** 一跳扩展引入的邻居上限。 */
 const EXPANSION_LIMIT = 32
-/** 命中强化：每次检索命中的置信度增量。 */
+/** 置信度增量：真实反馈专用——效果回报 success 与写入期 MERGE 并入强化（检索曝光不算反馈）。 */
 const CONFIDENCE_BUMP = 0.05
 /** 效果回报降权：failure 回报的置信度扣减（success 复用 CONFIDENCE_BUMP）。 */
 const OUTCOME_PENALTY = 0.1
@@ -134,6 +150,7 @@ const REVIEW_LOG_LIMIT = 20
 /** 节点表的行结构（snake_case 对应列名）。 */
 interface NodeRow {
   id: string
+  memory_id: string | null
   scope: string
   kind: string
   content: string
@@ -156,6 +173,41 @@ interface NodeRow {
   ease_factor: number | null
   interval_days: number | null
   review_reps: number | null
+}
+
+interface InjectionSnapshotRow {
+  id: string
+  session_id: string
+  packet_hash: string
+  memory_ids_json: string
+  has_curated: number
+  compaction_count: number
+  packet_bytes: number
+  created_at: number
+}
+
+interface InjectionSnapshotDetailRow extends InjectionSnapshotRow {
+  packet: string
+}
+
+function rowToInjectionHead(row: InjectionSnapshotRow): InjectionSnapshotHead {
+  let memoryIds: readonly MemoryId[] = []
+  try {
+    const parsed = JSON.parse(row.memory_ids_json) as unknown
+    if (Array.isArray(parsed)) memoryIds = parsed.filter((id): id is string => typeof id === 'string').map(asMemoryId)
+  } catch {
+    // 损坏的辅助索引不阻断详情读取；packet 本身仍是事实源。
+  }
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    packetHash: row.packet_hash,
+    memoryIds,
+    hasCurated: row.has_curated === 1,
+    compactionCount: row.compaction_count,
+    packetBytes: row.packet_bytes,
+    createdAt: row.created_at,
+  }
 }
 
 /** 把意象铭牌序列化为 JSON（缺省序列化为 null，落库）。 */
@@ -190,6 +242,7 @@ function rowToRecord(row: NodeRow): MemoryRecord {
   const hasReviewState = row.next_review_at !== null || row.ease_factor !== null || row.interval_days !== null
   return {
     id: asMemoryId(row.id),
+    memoryId: asMemoryId(row.memory_id ?? row.id),
     scope: row.scope as EngramScope,
     kind: row.kind as MemoryRecord['kind'],
     content: row.content,
@@ -436,7 +489,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     db.exec(`
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS nodes (
-      id TEXT PRIMARY KEY, scope TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL,
+      id TEXT PRIMARY KEY, memory_id TEXT, scope TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL,
       importance REAL NOT NULL, confidence REAL NOT NULL, status TEXT NOT NULL,
       created_at INTEGER NOT NULL, last_accessed_at INTEGER NOT NULL, access_count INTEGER NOT NULL,
       source_session_id TEXT, source_round INTEGER, source_seq INTEGER, embedding BLOB, outcome TEXT,
@@ -451,7 +504,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, op TEXT NOT NULL,
       target_id TEXT NOT NULL, detail TEXT);
     CREATE TABLE IF NOT EXISTS nodes_revisions (
-      node_id TEXT NOT NULL, content TEXT NOT NULL, kind TEXT NOT NULL,
+      node_id TEXT NOT NULL, memory_id TEXT, content TEXT NOT NULL, kind TEXT NOT NULL,
       importance REAL NOT NULL, superseded_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS tour_routes (
       position INTEGER PRIMARY KEY, node_id TEXT NOT NULL);
@@ -478,6 +531,10 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       id TEXT PRIMARY KEY, scope TEXT NOT NULL, belief TEXT NOT NULL, status TEXT NOT NULL,
       sources_json TEXT NOT NULL, proof_count INTEGER NOT NULL, embedding BLOB,
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_validated_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS injection_snapshots (
+      id TEXT PRIMARY KEY, session_id TEXT NOT NULL, packet_hash TEXT NOT NULL,
+      packet TEXT NOT NULL, memory_ids_json TEXT NOT NULL, has_curated INTEGER NOT NULL,
+      compaction_count INTEGER NOT NULL, created_at INTEGER NOT NULL);
     CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(node_id UNINDEXED, content, tokenize='unicode61');
     CREATE INDEX IF NOT EXISTS nodes_scope_status ON nodes (scope, status);
     CREATE INDEX IF NOT EXISTS nodes_kind_created ON nodes (kind, created_at);
@@ -486,13 +543,15 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     CREATE INDEX IF NOT EXISTS node_entities_entity ON node_entities (entity_id);
     CREATE INDEX IF NOT EXISTS facts_entity ON facts (entity_id);
     CREATE INDEX IF NOT EXISTS observations_status ON observations (status, proof_count, updated_at);
+    CREATE INDEX IF NOT EXISTS injection_session_created ON injection_snapshots (session_id, created_at);
   `)
     // v6 索引不在此处建：旧库此刻还没有 slot_room / next_review_at 列（迁移在后面才跑），
     // 对已存在的表建这两个索引会抛 no such column。新建库走下方补建，旧库由 MIGRATIONS['5'] 建。
     const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string } | undefined
     if (versionRow === undefined) {
       db.exec(`CREATE INDEX IF NOT EXISTS nodes_slot ON nodes (slot_room, slot_index);
-        CREATE INDEX IF NOT EXISTS nodes_review_due ON nodes (next_review_at);`)
+        CREATE INDEX IF NOT EXISTS nodes_review_due ON nodes (next_review_at);
+        CREATE INDEX IF NOT EXISTS nodes_memory_created ON nodes (memory_id, created_at);`)
       db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(String(SCHEMA_VERSION))
     } else {
       // 顺序增量迁移：按 MIGRATIONS 逐版升到当前版本（保数据）；更高版本或断链（缺迁移）拒绝加载。
@@ -501,10 +560,13 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         throw new EngramError('SCHEMA_INCOMPATIBLE', message('store.schemaVersionTooNew', { found: versionRow.value, supported: SCHEMA_VERSION, path }))
       }
       if (version < SCHEMA_VERSION) {
-        // 审计 F17：升版前做一次文件级快照（迁移有 bug 时可整文件回退）。
+        // 审计 F17：升版前做一致性快照（VACUUM INTO 会带上 WAL 内容，避免 copyFile 只拷主文件）。
         // 尽力而为：失败只警告不阻断升级；固定名字覆盖上次快照，避免无限累积（审计 F23）。
+        const snapshotPath = `${path}.pre-migration`
         try {
-          await copyFile(path, `${path}.pre-migration`)
+          await rm(snapshotPath, { force: true })
+          const quoted = snapshotPath.replaceAll("'", "''")
+          db.exec(`VACUUM INTO '${quoted}'`)
         } catch (error) {
           console.warn(message('store.preMigrationSnapshotFailed', { path, msg: error instanceof Error ? error.message : String(error) }))
         }
@@ -582,18 +644,26 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   }
 
   const sqlGet = db.prepare('SELECT * FROM nodes WHERE id = ?')
+  const sqlGetMemory = db.prepare(`SELECT * FROM nodes WHERE memory_id = ?
+    ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, created_at DESC, id DESC LIMIT 1`)
   const sqlInsert = db.prepare(`INSERT INTO nodes
-    (id, scope, kind, content, importance, confidence, status, created_at, last_accessed_at, access_count,
+    (id, memory_id, scope, kind, content, importance, confidence, status, created_at, last_accessed_at, access_count,
      source_session_id, source_round, source_seq, embedding, imagery_json,
      slot_room, slot_index, imagery_score, next_review_at, ease_factor, interval_days)
-    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
   const sqlFtsInsert = db.prepare('INSERT INTO nodes_fts (node_id, content) VALUES (?, ?)')
   const sqlSetStatus = db.prepare('UPDATE nodes SET status = ?, last_accessed_at = ? WHERE id = ?')
+  // 稳定身份不变量：同一 memory_id 至多一个 active。restore 回滚旧 revision 时，
+  // 其余 active 兄弟先归档，并建立 restore → sibling 的 supersedes 边表达新方向。
+  const sqlActiveMemorySiblings = db.prepare(`SELECT id FROM nodes
+    WHERE memory_id = ? AND id != ? AND status = 'active'`)
   const sqlSetOutcome = db.prepare(`UPDATE nodes
     SET outcome = ?,
         confidence = CASE WHEN ? = 'success' THEN min(1.0, confidence + ${CONFIDENCE_BUMP}) ELSE max(0.0, confidence - ${OUTCOME_PENALTY}) END
     WHERE id = ?`)
-  const sqlTouch = db.prepare(`UPDATE nodes SET access_count = access_count + 1, last_accessed_at = ?,
+  // 真实反馈强化（write-merge 专用）：复述并入与检索曝光无关——检索命中自 0.12.0 起
+  // 不再 touch 记忆（读取保持读取），这是唯一会由「内容被判复述」触发的 confidence/计数增量。
+  const sqlReinforce = db.prepare(`UPDATE nodes SET access_count = access_count + 1, last_accessed_at = ?,
     confidence = MIN(1, confidence + ${CONFIDENCE_BUMP}) WHERE id = ?`)
   const sqlLog = db.prepare('INSERT INTO op_log (at, op, target_id, detail) VALUES (?, ?, ?, ?)')
   const sqlHasAudit = db.prepare('SELECT 1 AS x FROM op_log WHERE op = ? AND detail = ? LIMIT 1')
@@ -620,13 +690,24 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   // 遥测聚合走 GROUP BY：不把十万行明细拖进 JS 再扔掉（审计 N1——node:sqlite 同步
   // 驱动，物化即阻塞整个 DSH 进程）。两个语句都吃 op_log_at 索引的范围扫描。
   const sqlCountOps = db.prepare('SELECT op, COUNT(*) AS n FROM op_log WHERE at >= ? GROUP BY op')
-  const sqlRevisionInsert = db.prepare('INSERT INTO nodes_revisions (node_id, content, kind, importance, superseded_at) VALUES (?, ?, ?, ?, ?)')
-  const sqlRevisionsById = db.prepare('SELECT content, kind, importance, superseded_at FROM nodes_revisions WHERE node_id = ? ORDER BY superseded_at DESC')
+  const sqlRevisionInsert = db.prepare('INSERT INTO nodes_revisions (node_id, memory_id, content, kind, importance, superseded_at) VALUES (?, ?, ?, ?, ?, ?)')
+  const sqlRevisionsById = db.prepare('SELECT content, kind, importance, superseded_at FROM nodes_revisions WHERE memory_id = ? ORDER BY superseded_at DESC, rowid DESC')
   const sqlTopActive = db.prepare("SELECT * FROM nodes WHERE scope = ? AND status = 'active' ORDER BY importance DESC, confidence DESC LIMIT ?")
   const sqlEdgeUpsert = db.prepare('INSERT OR IGNORE INTO edges (from_id, to_id, type, created_at) VALUES (?, ?, ?, ?)')
   const sqlNeighbors = db.prepare(`SELECT * FROM edges WHERE from_id IN (SELECT value FROM json_each(?))
     AND type IN ('supports','refines','related') LIMIT ?`)
   const sqlEdgesTouching = db.prepare('SELECT from_id, to_id, type FROM edges WHERE from_id = ? OR to_id = ?')
+  const sqlContradictions = db.prepare(`SELECT e.from_id, e.to_id, e.created_at
+    FROM edges e
+    JOIN nodes first ON first.id = e.from_id AND first.status = 'active'
+    JOIN nodes second ON second.id = e.to_id AND second.status = 'active'
+    WHERE e.type = 'contradicts'
+    ORDER BY e.created_at DESC LIMIT ?`)
+  const sqlContradictionPair = db.prepare(`SELECT from_id, to_id, created_at FROM edges
+    WHERE type = 'contradicts'
+      AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))
+    LIMIT 1`)
+  const sqlEdgeDelete = db.prepare('DELETE FROM edges WHERE from_id = ? AND to_id = ? AND type = ?')
   const sqlCountBy = db.prepare('SELECT status, COUNT(*) AS n FROM nodes GROUP BY status')
   const sqlCountKind = db.prepare('SELECT kind, COUNT(*) AS n FROM nodes GROUP BY kind')
   const sqlCountEdges = db.prepare('SELECT COUNT(*) AS n FROM edges')
@@ -637,10 +718,10 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   // 导入路径：全字段插入（不经 write 的写入期自动化——导入条目保留导出侧的桩位/复习调度/时间戳），
   // 内容全等查重（nodes 无内容哈希列，个人库量级逐条 LIMIT 1 查询够用），实体别名并集回写。
   const sqlImportInsert = db.prepare(`INSERT INTO nodes
-    (id, scope, kind, content, importance, confidence, status, created_at, last_accessed_at, access_count,
+    (id, memory_id, scope, kind, content, importance, confidence, status, created_at, last_accessed_at, access_count,
      source_session_id, source_round, source_seq, embedding, outcome, imagery_json,
      slot_room, slot_index, imagery_score, next_review_at, ease_factor, interval_days, review_reps)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
   const sqlImportContentMatch = db.prepare('SELECT id FROM nodes WHERE content = ? LIMIT 1')
   const sqlImportAttachEmbedding = db.prepare('UPDATE nodes SET embedding = ? WHERE id = ?')
   // Пересчёт векторов (перевод базы, ремонт): таблица и поле приходят из объявления
@@ -709,6 +790,16 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     ON CONFLICT (session_id) DO UPDATE SET summary = excluded.summary, updated_at = excluded.updated_at`)
   const sqlSessionSummaryGet = db.prepare('SELECT session_id, summary FROM session_summaries WHERE session_id = ?')
   const sqlSessionSummaryMany = db.prepare('SELECT session_id, summary FROM session_summaries WHERE session_id IN (SELECT value FROM json_each(?))')
+  const sqlInjectionInsert = db.prepare(`INSERT INTO injection_snapshots
+    (id, session_id, packet_hash, packet, memory_ids_json, has_curated, compaction_count, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+  const sqlInjectionHead = `SELECT id, session_id, packet_hash, memory_ids_json, has_curated,
+    compaction_count, LENGTH(CAST(packet AS BLOB)) AS packet_bytes, created_at FROM injection_snapshots`
+  const sqlInjectionList = db.prepare(`${sqlInjectionHead} ORDER BY created_at DESC, id DESC LIMIT ?`)
+  const sqlInjectionListSession = db.prepare(`${sqlInjectionHead} WHERE session_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`)
+  const sqlInjectionGet = db.prepare(`SELECT id, session_id, packet_hash, packet, memory_ids_json, has_curated,
+    compaction_count, LENGTH(CAST(packet AS BLOB)) AS packet_bytes, created_at FROM injection_snapshots WHERE id = ?`)
+  const sqlInjectionPrune = db.prepare('DELETE FROM injection_snapshots WHERE created_at < ?')
   const sqlEntityAll = db.prepare('SELECT * FROM entities')
   const sqlEntityGet = db.prepare('SELECT * FROM entities WHERE id = ?')
   const sqlEntityInsert = db.prepare('INSERT INTO entities (id, name, kind, aliases_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
@@ -949,7 +1040,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     const safeImportance = clampUnit(importance, 0.5)
     const safeConfidence = clampUnit(confidence, 0.5)
     sqlInsert.run(
-      id, input.scope, input.kind, content, safeImportance, safeConfidence, at, at,
+      id, input.memoryId ?? id, input.scope, input.kind, content, safeImportance, safeConfidence, at, at,
       sourceSessionId, input.sourceRound ?? null, input.sourceSeq ?? null, stored,
       imageryToJson(imagery),
       input.slot?.room ?? null, input.slot?.index ?? null, input.imageryScore ?? null,
@@ -1065,6 +1156,12 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
 
     async get(id: MemoryId) {
       const row = getRow(id)
+      return row === undefined ? undefined : rowToRecord(row)
+    },
+
+    /** 稳定逻辑身份 → 当前修订（active 优先，其次最新版）。 */
+    async getMemory(id: MemoryId) {
+      const row = sqlGetMemory.get(id) as unknown as NodeRow | undefined
       return row === undefined ? undefined : rowToRecord(row)
     },
 
@@ -1189,7 +1286,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         }
       }
 
-      // 排序截断 + 命中强化（accessCount、confidence）。
+      // 排序截断。0.12.0 起命中不再强化（旧实现在这里 accessCount+1 / confidence+0.05 /
+      // 刷新 last_accessed_at——曝光冒充反馈的自我强化环已拆除）：读取保持读取，
+      // 曝光只落一条 search-exposure 审计行（见下）。
       const finalRows = [...scores.entries()].sort((a, b) => b[1].score - a[1].score).slice(0, limit)
       const hits: SearchHit[] = []
       for (const [id, info] of finalRows) {
@@ -1213,8 +1312,18 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
             ? {}
             : { entities: entityRows.map(r => ({ id: asEntityId(r.id), name: r.name })) }),
         })
-        sqlTouch.run(Date.now(), id)
       }
+      // 曝光审计：一次 search 一行（多查询是调用方的多次 search，各自成行——但都不再产生
+      // 置信度副作用）。scores 以 id 为键，命中天然去重。detail 只含去重后的命中 id（排名序）
+      // 与检索元数据；query 原文与命中正文都不落日志——前者只留 SHA-256 前 12 位摘要，
+      // 足以在审计里关联「同一查询重复执行」，又不复制可读内容进 op_log。
+      sqlLog.run(Date.now(), 'search-exposure', 'AUX', JSON.stringify({
+        ids: hits.map(hit => String(hit.record.id)),
+        scopes: query.scopes,
+        limit,
+        degraded,
+        q: createHash('sha256').update(query.text).digest('hex').slice(0, 12),
+      }))
       return { hits, degraded }
     },
 
@@ -1313,6 +1422,42 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       return row?.summary
     },
 
+    async recordInjection(input: InjectionSnapshotInput): Promise<InjectionSnapshot> {
+      const id = randomUUID()
+      const at = Date.now()
+      sqlInjectionInsert.run(
+        id,
+        input.sessionId,
+        input.packetHash,
+        input.packet,
+        JSON.stringify(input.memoryIds),
+        input.hasCurated ? 1 : 0,
+        input.compactionCount,
+        at,
+      )
+      const row = sqlInjectionGet.get(id) as unknown as InjectionSnapshotDetailRow
+      return { ...rowToInjectionHead(row), packet: row.packet }
+    },
+
+    async listInjections(filter: InjectionSnapshotFilter): Promise<readonly InjectionSnapshotHead[]> {
+      const limit = Math.max(1, Math.min(200, Math.floor(filter.limit ?? 50)))
+      const rows = filter.sessionId === undefined
+        ? sqlInjectionList.all(limit)
+        : sqlInjectionListSession.all(filter.sessionId, limit)
+      return (rows as unknown as InjectionSnapshotRow[]).map(rowToInjectionHead)
+    },
+
+    async getInjection(id: string): Promise<InjectionSnapshot | undefined> {
+      const row = sqlInjectionGet.get(id) as unknown as InjectionSnapshotDetailRow | undefined
+      return row === undefined ? undefined : { ...rowToInjectionHead(row), packet: row.packet }
+    },
+
+    async pruneInjections(olderThanMs: number): Promise<number> {
+      // 与 pruneOps 同口径：olderThanMs 是绝对时间戳，衰减班车传入 pruneBefore。
+      const result = sqlInjectionPrune.run(olderThanMs)
+      return Number(result.changes)
+    },
+
     async update(input: UpdateInput) {
       const old = getRow(input.id)
       if (old === undefined) throw new EngramError('NOT_FOUND', message('store.entryNotFound', { id: input.id }))
@@ -1321,15 +1466,15 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       const id = asMemoryId(randomUUID())
       const at = Date.now()
       withTransaction(() => {
-        // 修订历史先行：归档旧条目前快照其内容（内容不变性审计，schema v4）。
-        sqlRevisionInsert.run(input.id, old.content, old.kind, old.importance, at)
+        // 修订历史按稳定身份聚合：v15 起同一条逻辑记忆的完整链可查，不再只看相邻 revision。
+        sqlRevisionInsert.run(input.id, old.memory_id, old.content, old.kind, old.importance, at)
         sqlSetStatus.run('archived', at, input.id)
         sqlLog.run(at, 'superseded', input.id, JSON.stringify({ supersededBy: id }))
-        // 归档传播：证据死亡的信念扣源/降级（#48）。
+        // 归档传播：证据死亡的信念 sources_json 反查扣源（#48）。
         detachArchivedEvidence([input.id])
-        // 新条目是新物品：重新排桩/评分/排期（宫殿里修正一件物品 = 在新桩位放新版）。
+        // 新 revision 继承稳定逻辑身份；宫殿仍为新版重新排桩/评分/排期。
         const imagery = input.imagery ?? jsonToImagery(old.imagery_json)
-        const updateInput: WriteInput = { scope: input.scope, kind: input.kind, content }
+        const updateInput: WriteInput = { scope: input.scope, kind: input.kind, content, memoryId: asMemoryId(old.memory_id ?? input.id) }
         const automationFields = applyWriteAutomation(updateInput, id, at, imagery)
         insertRecord(
           id,
@@ -1339,7 +1484,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
           old.confidence,
           at,
           old.source_session_id,
-          input.embedding ?? old.embedding,
+          input.embedding === undefined ? old.embedding : input.embedding,
           imagery,
           'update',
         )
@@ -1553,8 +1698,17 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     async restore(id: MemoryId) {
       const row = getRow(id)
       if (row === undefined) throw new EngramError('NOT_FOUND', message('store.entryNotFound', { id }))
-      sqlSetStatus.run('active', Date.now(), id)
-      sqlLog.run(Date.now(), 'restore', id, null)
+      const at = Date.now()
+      withTransaction(() => {
+        const memoryId = row.memory_id ?? row.id
+        const siblings = sqlActiveMemorySiblings.all(memoryId, id) as unknown as { id: string }[]
+        for (const sibling of siblings) {
+          sqlSetStatus.run('archived', at, asMemoryId(sibling.id))
+          sqlEdgeUpsert.run(id, sibling.id, 'supersedes', at)
+        }
+        sqlSetStatus.run('active', at, id)
+        sqlLog.run(at, 'restore', id, JSON.stringify({ archivedRevisions: siblings.map(s => s.id) }))
+      })
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
     },
 
@@ -1589,7 +1743,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       const row = getRow(id)
       if (row === undefined) return undefined
       const operations = sqlOpLogById.all(id, REVIEW_LOG_LIMIT) as unknown as { at: number; op: string; target_id: string; detail: string | null }[]
-      const revisions = sqlRevisionsById.all(id) as unknown as { content: string; kind: string; importance: number; superseded_at: number }[]
+      const revisions = sqlRevisionsById.all(row.memory_id ?? row.id) as unknown as { content: string; kind: string; importance: number; superseded_at: number }[]
       return {
         record: rowToRecord(row),
         ...edgeGroups(id),
@@ -1720,7 +1874,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
           const r = c.record
           const review = r.review
           sqlImportInsert.run(
-            r.id, r.scope, r.kind, c.content, clampUnit(r.importance, 0.5), clampUnit(r.confidence, 0.5), r.status,
+            r.id, r.memoryId ?? r.id, r.scope, r.kind, c.content, clampUnit(r.importance, 0.5), clampUnit(r.confidence, 0.5), r.status,
             r.createdAt, r.lastAccessedAt, r.accessCount,
             r.sourceSessionId ?? null, r.sourceRound ?? null, r.sourceSeq ?? null,
             null, r.outcome ?? null, imageryToJson(r.imagery),
@@ -1850,6 +2004,55 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         .map(row => rowToRecord(row))
     },
 
+    async listContradictions(limit: number) {
+      const boundedLimit = Math.max(1, Math.min(200, Math.floor(limit)))
+      const rows = sqlContradictions.all(boundedLimit) as unknown as { from_id: string; to_id: string; created_at: number }[]
+      const result: { first: MemoryRecord; second: MemoryRecord; createdAt: number }[] = []
+      for (const row of rows) {
+        const first = getRow(row.from_id)
+        const second = getRow(row.to_id)
+        if (first === undefined || second === undefined) continue
+        result.push({ first: rowToRecord(first), second: rowToRecord(second), createdAt: row.created_at })
+      }
+      return result
+    },
+
+    async resolveContradiction(input: {
+      firstId: MemoryId
+      secondId: MemoryId
+      action: 'dismiss' | 'forget-loser'
+      loserId?: MemoryId
+    }) {
+      const forward = sqlContradictionPair.get(input.firstId, input.secondId, input.secondId, input.firstId) as unknown as
+        | { from_id: string; to_id: string; created_at: number }
+        | undefined
+      if (forward === undefined) throw new EngramError('NOT_FOUND', message('store.entryNotFound', { id: input.firstId }))
+      const at = Date.now()
+      if (input.action === 'dismiss') {
+        withTransaction(() => {
+          // 改判保留方向语义（from 是当初的“新声明”），只替换边类型，不凭空造第三条记忆。
+          sqlEdgeDelete.run(forward.from_id, forward.to_id, 'contradicts')
+          sqlEdgeUpsert.run(forward.from_id, forward.to_id, 'related', at)
+          sqlLog.run(at, 'governance', 'AUX', JSON.stringify({
+            action: 'dismiss',
+            from: forward.from_id,
+            to: forward.to_id,
+          }))
+        })
+        return { dismissed: true }
+      }
+      const loser = input.loserId === undefined ? undefined : getRow(input.loserId)
+      if (loser === undefined
+        || (loser.id !== forward.from_id && loser.id !== forward.to_id)) {
+        throw new EngramError('NOT_FOUND', message('store.entryNotFound', { id: input.loserId ?? input.firstId }))
+      }
+      // 不走 this.forget：对象字面量自引用在接口推断下不稳定；直接复用同一软删/证据死亡语义。
+      sqlSetStatus.run('forgotten', at, loser.id)
+      sqlLog.run(at, 'forget', loser.id, null)
+      detachArchivedEvidence([loser.id])
+      return { dismissed: false, forgotten: rowToRecord(sqlGet.get(loser.id) as unknown as NodeRow) }
+    },
+
     async linkEdge(from: MemoryId, to: MemoryId, type: EngramEdgeType) {
       sqlEdgeUpsert.run(from, to, type, Date.now())
     },
@@ -1883,7 +2086,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
 
     async reinforce(id: MemoryId, note: string) {
       if (sqlGet.get(id) === undefined) return undefined
-      sqlTouch.run(Date.now(), id)
+      // 真实反馈路径：复述并入才强化（accessCount+1 / confidence+0.05 / 刷新最近访问）。
+      // 与 search 的曝光行互不相干——曝光永不调用本语句。
+      sqlReinforce.run(Date.now(), id)
       sqlLog.run(Date.now(), 'write-merge', id, note)
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
     },

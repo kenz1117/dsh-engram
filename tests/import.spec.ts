@@ -38,6 +38,7 @@ function recordOf(overrides: { id: string; content: string } & Omit<Partial<Memo
     sourceSeq: null,
     ...rest,
     id: asMemoryId(id),
+    memoryId: rest.memoryId ?? asMemoryId(id),
   }
 }
 
