@@ -12,9 +12,6 @@ import { createPortal } from 'react-dom'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
 import { KIND_KEY, type NS, en, ru, zh, type EngramKey } from './locales/index.ts'
-import { CorridorMap, EDGE_STYLE, FloorplanMap, KIND_PALETTE } from './CorridorMap.tsx'
-import { SpiralMap, type SpiralRecord } from './SpiralMap.tsx'
-import spiralStyles from './spiral.module.css'
 import { useToast, type ToastController } from './Toast.tsx'
 import { ContextNav } from './shell/ContextNav.tsx'
 import { StatusStrip } from './shell/StatusStrip.tsx'
@@ -22,7 +19,31 @@ import { WorkfaceRail, type Workface } from './shell/WorkfaceRail.tsx'
 import shellStyles from './shell/shell.module.css'
 import { GovernanceView } from './views/GovernanceView.tsx'
 import { RecallView } from './views/RecallView.tsx'
-import { EmptyState, kindLabel, KINDS, roomClass, roomPillClass, SelectField, type T } from './ui/panel-kit.tsx'
+import { RecordsPanel, type RecordsRequest } from './views/memory/RecordsPanel.tsx'
+import { CorridorPanel, SpiralPanel } from './views/memory/AtlasPanel.tsx'
+import { EntityView } from './views/memory/EntitiesPanel.tsx'
+import { EpisodeTimelineView } from './views/memory/TimelinePanel.tsx'
+import { EmptyState, kindLabel, KINDS, PageHeader, roomClass, roomPillClass, SelectField, type T } from './ui/panel-kit.tsx'
+import {
+  activityDetail,
+  type ActivityRow,
+  fmtTime,
+  formatBytes,
+  formatOpDetail,
+  type LogFilter,
+  LOG_FILTER_KEY,
+  LOG_GROUPS,
+  type LogStorageInfo,
+  logDotClass,
+  type MemoryRow,
+  opLabel,
+  relTime,
+  REL_KEY,
+  type ReviewView,
+  SCOPE_KEY,
+  sourceLabel,
+  STATUS_KEY,
+} from './ui/model.ts'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
 import { IMPORT_BODY_LIMIT_BYTES } from '../body-limits.ts'
 // Пределы — общие с сервером (src/i18n/dictionary-limits.ts): модуль без зависимостей,
@@ -30,12 +51,6 @@ import { IMPORT_BODY_LIMIT_BYTES } from '../body-limits.ts'
 import { needsTranslation, splitDictionaryPatch, splitFillBatch } from '../i18n/dictionary-limits.ts'
 import { windowLeft } from '../registry/palace-change.ts'
 import pluginPackageJson from '../../package.json' with { type: 'json' }
-import type {
-  EpisodeTimelineAround,
-  EpisodeTimelineAroundResponse,
-  EpisodeTimelineGroupsResponse,
-  EpisodeTimelineRow,
-} from '../types.ts'
 
 /** 客户端 bundle 版本：单一来源 = package.json（构建时内联）。版本握手横幅用（审计 F8）。 */
 const CLIENT_VERSION: string = pluginPackageJson.version
@@ -82,30 +97,6 @@ function Icon({ name, className }: { readonly name: IconName; readonly className
   )
 }
 
-/** 列表/详情用的记忆视图（宿主 /api/engram/list 的行结构）。 */
-interface MemoryRow {
-  readonly id: string
-  readonly scope: 'user' | 'project' | 'shared'
-  readonly kind: string
-  readonly content: string
-  readonly importance: number
-  readonly confidence: number
-  readonly status: 'active' | 'archived' | 'forgotten'
-  /** 最近一次使用效果回报（engram_report 写入；未回报过缺省）。 */
-  readonly outcome?: 'success' | 'failure'
-  readonly createdAt: number
-  readonly accessCount: number
-  readonly sourceSessionId: string | null
-  readonly sourceRound: number | null
-  /** 桩位（v0.7.2 起；未排桩时缺省）。 */
-  readonly slot?: { readonly room: string; readonly index: number }
-}
-
-interface ListResult {
-  readonly records: MemoryRow[]
-  readonly total: number
-}
-
 interface StatsPart {
   readonly scope: 'user' | 'project' | 'shared'
   readonly stats: {
@@ -120,156 +111,11 @@ interface StatsPart {
   }
 }
 
-/** review API 的返回结构（详情行内展开区的数据源）。 */
-interface ReviewView {
-  readonly record: MemoryRow
-  readonly supersededBy?: readonly string[]
-  readonly supersedes?: readonly string[]
-  readonly contradicts?: readonly string[]
-  readonly related?: readonly string[]
-  /** 修订历史（旧内容快照，按被取代时间倒序）。 */
-  readonly revisions?: readonly { content: string; kind: string; importance: number; supersededAt: number }[]
-  readonly operations?: readonly { at: number; op: string; detail: string | null }[]
-}
-
 /** 面板内部传递的翻译函数（渲染器按注册的 locale 声明合成的 t 的窄化签名）。 */
 // 面板级词典合成与俄语复数抽到 translate.ts（审计批次 3）：纯函数零 react 依赖，
 // client 测试直接可测。此处 re-export 维持既有引用面。
 export { makeT, ruPluralForm } from './translate.ts'
 import { makeT, type PanelLang } from './translate.ts'
-
-
-const PAGE_SIZE = 20
-
-/** 数据层枚举 → 词典键映射（显示层本地化，存储值不变）。 */
-const STATUS_KEY: Record<MemoryRow['status'], EngramKey> = {
-  active: 'statusActive',
-  archived: 'statusArchived',
-  forgotten: 'statusForgotten',
-}
-const SCOPE_KEY: Record<MemoryRow['scope'], EngramKey> = {
-  user: 'scopeUser',
-  project: 'scopeProject',
-  shared: 'scopeShared',
-}
-const OP_KEY: Record<string, EngramKey> = {
-  write: 'opWrite',
-  'write-merge': 'opWriteMerge',
-  update: 'opUpdate',
-  forget: 'opForget',
-  restore: 'opRestore',
-  decay: 'opDecay',
-  superseded: 'opSuperseded',
-  'ingest-request': 'opIngestRequest',
-  'ingest-done': 'opIngestDone',
-  'outcome-report': 'opOutcomeReport',
-  assess: 'opAssess',
-  consolidation: 'opConsolidation',
-  'review-answer': 'opReviewAnswer',
-  'slot-assign': 'opSlotAssign',
-  'slot-backfill': 'opSlotBackfill',
-  'room-open': 'opRoomOpen',
-  'search-rewrite-request': 'opSearchRewrite',
-  'compress-request': 'opCompressRequest',
-  'distill-request': 'opDistillRequest',
-  'profile-edit': 'opProfileEdit',
-  // Находки обслуживания тоже попадают в общий журнал: без метки человек читал бы
-  // служебные имена (`jev-fallback`, `vectors-missing`) в русском списке как есть.
-  'jev-fallback': 'opJevFallback',
-  'vectors-missing': 'opVectorsMissing',
-}
-const REL_KEY: Record<string, EngramKey> = {
-  supersededBy: 'relSupersededBy',
-  supersedes: 'relSupersedes',
-  contradicts: 'relContradicts',
-  related: 'relRelated',
-}
-/** 操作日志 detail JSON 的已知键 → 词典键（write/update/superseded 的小对象）。 */
-const DETAIL_KEY: Record<string, EngramKey> = {
-  kind: 'labelKind',
-  scope: 'labelScope',
-  status: 'labelStatus',
-}
-
-
-/** op 数据值 → 本地化标签（未知值回退原文）。 */
-function opLabel(t: T, op: string): string {
-  const key = OP_KEY[op]
-  return key === undefined ? op : t(key)
-}
-
-/** 操作日志 detail 的本地化：write/update/superseded 的小对象转中文键值；摄取/蒸馏请求的完整 JSON 保持原样（审计诚实性优先）。 */
-function formatOpDetail(t: T, op: string, detail: string | null): string {
-  if (detail === null) return ''
-  // 画像修订的小对象转成语义句（创建/编辑/回滚三式，与工具的 audit detail 键对齐）。
-  if (op === 'profile-edit') {
-    try {
-      const parsed = JSON.parse(detail) as { action?: unknown; fromVersion?: unknown; toVersion?: unknown; restoredFrom?: unknown; chars?: unknown }
-      const to = Number(parsed.toVersion)
-      const chars = Number(parsed.chars)
-      if (parsed.action === 'edit' && parsed.fromVersion === null) {
-        return ` ${t('profileOpCreate', { to, chars })}`
-      }
-      const from = Number(parsed.fromVersion)
-      if (parsed.action === 'edit') return ` ${t('profileOpEdit', { from, to, chars })}`
-      const restored = Number(parsed.restoredFrom)
-      if (parsed.action === 'rollback' && Number.isInteger(from) && Number.isInteger(to) && Number.isInteger(restored)) {
-        return ` ${t('profileOpRollback', { from, to, restored, chars })}`
-      }
-    } catch {
-      // detail 不是预期的 JSON：落到底部原样展示。
-    }
-    return ` ${detail}`
-  }
-  if (op === 'jev-fallback') {
-    // Одна строка на срыв: где спрашивали, что сорвалось и сколько ждали. Полный JSON
-    // здесь читать нечего — он и писался так, чтобы человеку хватило одной строки.
-    try {
-      const parsed = JSON.parse(detail) as { site?: unknown, question?: unknown, reason?: unknown, elapsedMs?: unknown }
-      return ` ${t('opJevFallbackDetail', {
-        site: String(parsed.site ?? '—'),
-        question: String(parsed.question ?? '—'),
-        reason: String(parsed.reason ?? '—'),
-        ms: Number(parsed.elapsedMs ?? 0),
-      })}`
-    } catch {
-      return ` ${detail}`
-    }
-  }
-  if (op === 'vectors-missing') {
-    try {
-      const parsed = JSON.parse(detail) as { count?: unknown, scope?: unknown }
-      return ` ${t('opVectorsMissingDetail', { count: Number(parsed.count ?? 0), scope: String(parsed.scope ?? '—') })}`
-    } catch {
-      return ` ${detail}`
-    }
-  }
-  if (op !== 'write' && op !== 'update' && op !== 'superseded') return ` ${detail}`
-  try {
-    const parsed = JSON.parse(detail) as Record<string, unknown>
-    const entries = Object.entries(parsed)
-    if (entries.length === 0) return ` ${detail}`
-    return ` ${entries.map(([key, value]) => {
-      const label = DETAIL_KEY[key]
-      if (label === undefined) return `${key}=${String(value)}`
-      if (key === 'kind' && typeof value === 'string') return `${t(label)}=${kindLabel(t, value)}`
-      if (key === 'scope' && (value === 'user' || value === 'project')) return `${t(label)}=${t(SCOPE_KEY[value])}`
-      return `${t(label)}=${String(value)}`
-    }).join(' · ')}`
-  } catch {
-    return ` ${detail}`
-  }
-}
-
-/** 来源会话展示片段：截短的会话 id + 可选轮次。 */
-function sourceLabel(t: T, record: Pick<MemoryRow, 'sourceSessionId' | 'sourceRound'>): string {
-  if (record.sourceSessionId === null) return t('sourceExplicit')
-  const id = `${record.sourceSessionId.slice(0, 16)}…`
-  const withRound = record.sourceRound === null
-    ? id
-    : `${id} ${t('round', { n: record.sourceRound })}`
-  return t('sourceSession', { id: withRound })
-}
 
 import { api, setActiveProjectSelector, setProjectHealHandler } from './rpc.ts'
 import { useApi } from './useApi.ts'
@@ -277,46 +123,6 @@ import { useApi } from './useApi.ts'
 // api / setActiveProjectSelector / setProjectHealHandler 在此 re-export，组件内的既有
 // 调用点与测试都不必改 import 来源。
 export { api, setActiveProjectSelector, setProjectHealHandler } from './rpc.ts'
-
-/** Размер в человеческом виде: журнал показывает «сколько занимает на диске». */
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${String(Math.max(0, Math.round(bytes)))} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
-}
-
-/** Одна база дворца в отчёте о журнале (GET/POST /api/engram/log-info|log-clear). */
-interface LogStoragePart {
-  readonly scope: string
-  /** Абсолютный путь файла базы. */
-  readonly path: string
-  /** Размер файла вместе с WAL/SHM. */
-  readonly fileBytes: number
-  /** Строк в op_log. */
-  readonly rows: number
-  /** Байт текста записей журнала. */
-  readonly bytes: number
-  /** Только в ответе на очистку: сколько строк удалено. */
-  readonly deleted?: number
-  /** Сжался ли файл после очистки (VACUUM). */
-  readonly vacuumed?: boolean
-  /** Освободились ли страницы в главный файл (TRUNCATE-checkpoint: WAL обнулён). */
-  readonly checkpointed?: boolean
-}
-
-/** Отчёт о журнале: где лежит, сколько занимает, сколько в нём строк. */
-interface LogStorageInfo {
-  readonly dir: string
-  readonly parts: readonly LogStoragePart[]
-  readonly totals: {
-    readonly fileBytes: number
-    readonly rows: number
-    readonly bytes: number
-    readonly deleted?: number
-    readonly vacuumed?: boolean
-    readonly checkpointed?: boolean
-  }
-}
 
 /** host 项目宫殿清单的行（GET /api/engram/workspaces）。 */
 interface EngramProjectItem {
@@ -466,23 +272,6 @@ function matchFollowTarget(list: EngramWorkspacesView | null, workspace: HostWor
   return list.items.find(item => typeof item.path === 'string' && pathKey(item.path) === key)
 }
 
-/** 绝对时间（审计时间线等需要精确时刻的位置）。 */
-function fmtTime(ms: number): string {
-  // 时间格式跟随浏览器环境语言（宿主界面语言通常与浏览器一致）。
-  return new Date(ms).toLocaleString(navigator.language || 'zh-CN', { hour12: false })
-}
-
-/** 列表用的相对时间：1 分钟内「刚刚」，其后按分钟/小时/天取整。 */
-function relTime(t: T, ms: number): string {
-  const diff = Math.max(0, Date.now() - ms)
-  const minutes = Math.floor(diff / 60_000)
-  if (minutes < 1) return t('timeJustNow')
-  if (minutes < 60) return t('timeMinutesAgo', { n: minutes })
-  const hours = Math.floor(minutes / 60)
-  if (hours < 48) return t('timeHoursAgo', { n: hours })
-  return t('timeDaysAgo', { n: Math.floor(hours / 24) })
-}
-
 /** 速览指标：大数 + 小标签 + sparkline + delta 行（v0.8.8 对齐设计稿 #sparkline）。 */
 function Metric({ label, value, tail, spark, color, delta, deltaTone, tone }: {
   label: string
@@ -556,23 +345,6 @@ function HealthRing({ score, label }: { score: number; label: string }): React.R
       </div>
       <span className={styles.ringLabel}>{label}</span>
     </div>
-  )
-}
-
-/** 页面头部：标题 + 副标题 + actions。v0.8+ 满宽主列需要页面身份感(之前只有 tab 一行)。 */
-function PageHeader({ title, subtitle, actions }: {
-  title: string
-  subtitle?: string | undefined
-  actions?: React.ReactNode | undefined
-}): React.ReactElement {
-  return (
-    <header className={styles.pageHeader}>
-      <div className={styles.pageHeaderMain}>
-        <h2 className={styles.pageTitle}>{title}</h2>
-        {subtitle !== undefined && <p className={styles.pageSubtitle}>{subtitle}</p>}
-      </div>
-      {actions !== undefined && <div className={styles.pageHeaderActions}>{actions}</div>}
-    </header>
   )
 }
 
@@ -676,10 +448,15 @@ function ReviewBody({ t, recordId, scope, project }: {
     .map(key => ({ key, label: REL_KEY[key], ids: view[key] ?? [] }))
     .filter(entry => entry.ids.length > 0)
   const operations = view.operations ?? []
+  const stableId = record.memoryId ?? record.id
   return (
     <div className={styles.reviewGrid}>
       <div>
         <dl className={styles.attrGrid}>
+          <dt>{t('identityStable')}</dt>
+          <dd><code className={styles.identityCode} title={stableId}>{stableId}</code></dd>
+          <dt>{t('identityRevision')}</dt>
+          <dd><code className={styles.identityCode} title={record.id}>{record.id}</code></dd>
           <dt>{t('labelContent')}</dt>
           <dd>{record.content}</dd>
           <dt>{t('labelKind')}</dt>
@@ -706,6 +483,7 @@ function ReviewBody({ t, recordId, scope, project }: {
         {(view.revisions ?? []).length > 0 && (
           <div className={styles.relBlock}>
             <h5>{t('detailRevisions')}</h5>
+            <p className={styles.sectionHint}>{t('identityRevisionNote')}</p>
             <ul className={styles.timeline}>
               {view.revisions!.map((rev, index) => (
                 <li key={index}>
@@ -782,92 +560,6 @@ function EditForm({ t, record, onClose, onSaved, toast }: {
       </div>
     </div>
   )
-}
-
-/** activity API 的行结构（两库 op_log 合并）。 */
-interface ActivityRow {
-  readonly at: number
-  readonly op: string
-  readonly targetId: string
-  readonly detail: string | null
-  readonly scope: 'user' | 'project'
-}
-
-/** 活动日志 detail 的摘要：摄取/改写/压缩请求解析 JSON 字段，其余原样截断。
-   窄侧栏下文本应尽量短，长详情交给 title 悬浮展示。 */
-function activityDetail(t: T, detail: string | null): string {
-  if (detail === null) return ''
-  try {
-    const parsed = JSON.parse(detail) as Record<string, unknown>
-    if (typeof parsed.round === 'number' && typeof parsed.userText === 'string') {
-      const mode = typeof parsed.mode === 'string' ? ` · ${parsed.mode}` : ''
-      return `${t('round', { n: parsed.round })}${mode} · ${parsed.userText.slice(0, 48)}`
-    }
-    if (typeof parsed.query === 'string' && Array.isArray(parsed.queries)) {
-      return `${t('benchRewrite', { n: parsed.queries.length })} · ${parsed.query.slice(0, 36)}`
-    }
-    if (typeof parsed.count === 'number' && Object.keys(parsed).length === 1) {
-      return t('benchCompress', { n: parsed.count })
-    }
-    if (typeof parsed.batchId === 'string' && typeof parsed.sufficient === 'boolean') {
-      const refs = Array.isArray(parsed.refs) ? parsed.refs.length : 0
-      return `${parsed.batchId} · ${t(parsed.sufficient ? 'assessAdequate' : 'assessInadequate')} · ${t('assessRefs', { n: refs })}`
-    }
-    // 闭馆整理汇总：scope + 归档 / 合并 / 跳过三项计数。
-    if (typeof parsed.archived === 'number' && typeof parsed.merged === 'number' && typeof parsed.skipped === 'number') {
-      const scope = parsed.scope === 'project' ? t('scopeProject') : t('scopeUser')
-      return `${scope} · ${t('consolidateArchived', { n: parsed.archived })} · ${t('consolidateMerged', { n: parsed.merged })} · ${t('consolidateSkipped', { n: parsed.skipped })}`
-    }
-    // 衰减归档：只有 archived 计数。
-    if (typeof parsed.archived === 'number' && parsed.merged === undefined) {
-      return t('decayArchived', { n: parsed.archived })
-    }
-    if (typeof parsed.assigned === 'number') return t('slotBackfilled', { n: parsed.assigned })
-    if (typeof parsed.room === 'string') return t('roomOpened', { room: parsed.room })
-    if (typeof parsed.grade === 'number' && typeof parsed.nextIntervalDays === 'number') {
-      return t('reviewAnswered', { grade: parsed.grade, days: parsed.nextIntervalDays })
-    }
-  } catch {
-    // 非 JSON（outcome 值等）：走末尾原样截断。
-  }
-  return detail.length > 56 ? `${detail.slice(0, 56)}…` : detail
-}
-
-/** 日志筛选分组：op 枚举 → 分组（数据层英文枚举只在显示层映射）。 */
-type LogFilter = 'all' | 'write' | 'ingest' | 'retrieve' | 'organize'
-const LOG_GROUPS: Readonly<Record<LogFilter, readonly string[] | null>> = {
-  all: null,
-  write: ['write', 'update', 'forget', 'restore', 'decay', 'superseded', 'outcome-report'],
-  ingest: ['ingest-request', 'ingest-done'],
-  retrieve: ['search-rewrite-request', 'compress-request', 'assess'],
-  organize: ['distill-request', 'consolidation', 'slot-assign', 'slot-backfill', 'room-open', 'review-answer', 'profile-edit'],
-}
-const LOG_FILTER_KEY: Readonly<Record<LogFilter, EngramKey>> = {
-  all: 'logFilterAll',
-  write: 'logFilterWrite',
-  ingest: 'logFilterIngest',
-  retrieve: 'logFilterRetrieve',
-  organize: 'logFilterOrganize',
-}
-/** 分组 → 行首色点类（与工具条计数、筛选分组同色）。 */
-const LOG_DOT: Readonly<Record<'write' | 'ingest' | 'retrieve' | 'organize', string>> = {
-  write: 'logDotWrite',
-  ingest: 'logDotIngest',
-  retrieve: 'logDotRetrieve',
-  organize: 'logDotOrganize',
-}
-/** op 枚举 → 所属筛选分组（未归类返回 all）。 */
-function logGroupOf(op: string): LogFilter {
-  for (const group of ['write', 'ingest', 'retrieve', 'organize'] as const) {
-    if (LOG_GROUPS[group]?.includes(op) === true) return group
-  }
-  return 'all'
-}
-/** 行首色点类名：未归类的 op 用中性灰点，避免出现无颜色的空列。 */
-function logDotClass(op: string): string {
-  const group = logGroupOf(op)
-  const base = styles.logDot ?? ''
-  return group === 'all' ? base : `${base} ${styles[LOG_DOT[group]] ?? ''}`
 }
 
 /** 行级 LCS 对齐：把两段文本按行 diff，输出 same/add/del 序列（行数少，O(n·m) DP 足够）。 */
@@ -1525,569 +1217,6 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast, lang }:
           </ul>
         )}
     </div>
-  )
-}
-
-/** 走廊鸟瞰数据拉取与节点/边状态（命中 active + archived，forgotten 默认隐藏）。 */
-interface CorridorGraph {
-  readonly nodes: ReadonlyArray<{
-    readonly id: string
-    readonly scope: string
-    readonly kind: string
-    readonly status: string
-    readonly importance: number
-    readonly confidence: number
-    readonly title: string
-    readonly content?: string
-  }>
-  readonly edges: ReadonlyArray<{ readonly id: string; readonly from: string; readonly to: string; readonly type: string }>
-}
-
-function CorridorPanel({ t, scope, project, onSelect, onOpenRoom }: {
-  t: T
-  scope: 'user' | 'project' | 'shared'
-  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
-  project: string | null
-  onSelect: (id: string) => void
-  /** 平面图模式点房间 → 宿主接「陈展」按房筛选。 */
-  onOpenRoom: (kind: string) => void
-}): React.ReactElement {
-  const [graph, setGraph] = useState<CorridorGraph | null>(null)
-  const [failed, setFailed] = useState<string | null>(null)
-  // v0.8.4 走廊双模式：平面图（建筑平面,默认,设计稿 #floorplan）/ 关系图（力导向,保留边价值）
-  const [mode, setMode] = usePersistedState<'floorplan' | 'graph'>('corridor.mode', 'floorplan', ['floorplan', 'graph'])
-  // v0.8.7 右侧房间索引条：按驻留数降序（与平面图排房一致）
-  const roomCounts = useMemo(() => {
-    if (graph === null) return []
-    const counts = new Map<string, number>()
-    for (const n of graph.nodes) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1)
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([kind, count]) => ({ kind, count }))
-  }, [graph])
-  // 自环边（from === to）不是「两条记忆之间的关系」，画不出线也进不了图例：
-  // 存量库里存在这类历史脏行（早期写入路径未挡自己），这里直接剔除，
-  // 让关系图与图例说的是实话（没有真关系就显示「还没有关系边」）。
-  const edges = useMemo(() => (graph === null ? [] : graph.edges.filter(e => e.from !== e.to)), [graph])
-  useEffect(() => {
-    let cancelled = false
-    api<CorridorGraph>(`corridor?status=active,archived&scope=${scope}`)
-      .then(data => { if (!cancelled) setGraph(data); setFailed(null) })
-      .catch((err: Error) => { if (!cancelled) setFailed(err.message) })
-    return () => { cancelled = true }
-  }, [scope, project])
-  if (failed !== null) return <div className={styles.expandLoading}>{t('corridorFailed')}：{failed}</div>
-  if (graph === null) return <div className={styles.expandLoading}>{t('corridorLoad')}</div>
-  if (graph.nodes.length === 0) return <EmptyState title={t('corridorEmpty')} hint={t('emptyHint')} />
-  return (
-    <div>
-      <div className={styles.toolbarCard}>
-        <div className={styles.segGroup}>
-          <button type="button" role="tab" aria-selected={mode === 'floorplan'}
-            className={mode === 'floorplan' ? `${styles.segItem} ${styles.on}` : styles.segItem}
-            onClick={() => { setMode('floorplan') }}>
-            {t('corridorModeFloor')}
-          </button>
-          <button type="button" role="tab" aria-selected={mode === 'graph'}
-            className={mode === 'graph' ? `${styles.segItem} ${styles.on}` : styles.segItem}
-            onClick={() => { setMode('graph') }}>
-            {t('corridorModeGraph')}
-          </button>
-        </div>
-      </div>
-      {mode === 'floorplan'
-        ? (
-          <div className={styles.floorplanGrid}>
-            <FloorplanMap nodes={graph.nodes} onOpenRoom={onOpenRoom} t={t} />
-            <RoomIndexAside
-              t={t}
-              nodes={graph.nodes}
-              rooms={roomCounts}
-              onOpenRoom={onOpenRoom}
-              edges={null} />
-          </div>
-        )
-        : (
-          <div className={styles.floorplanGrid}>
-            <CorridorMap scope={scope} nodes={graph.nodes} edges={edges} onSelect={onSelect}
-              onOpenRoom={onOpenRoom} t={t} />
-            <RoomIndexAside
-              t={t}
-              nodes={graph.nodes}
-              rooms={roomCounts}
-              onOpenRoom={onOpenRoom}
-              edges={edges} />
-          </div>
-        )}
-    </div>
-  )
-}
-
-/** 右侧房间索引条：房间驻留条（两模式共用）+ 关系图模式追加边类型图例。 */
-function RoomIndexAside({ t, nodes, rooms, onOpenRoom, edges }: {
-  t: T
-  nodes: ReadonlyArray<{ readonly kind: string }>
-  rooms: ReadonlyArray<{ readonly kind: string; readonly count: number }>
-  onOpenRoom: (kind: string) => void
-  /** 非 null = 关系图模式，追加边类型图例。 */
-  edges: ReadonlyArray<{ readonly type: string }> | null
-}): React.ReactElement {
-  return (
-    <aside className={styles.roomIndex}>
-      <div className={styles.roomIndexStat}>
-        <b>{nodes.length}</b> {t('corridorIndexStaying')} · {t('corridorIndexRooms', { n: rooms.length })}
-      </div>
-      {rooms.map(room => (
-        <button key={room.kind} type="button" className={styles.roomIndexRow}
-          onClick={() => onOpenRoom(room.kind)}>
-          <span className={styles.roomSwatch} style={{ background: KIND_PALETTE[room.kind] ?? '#7d8590' }} aria-hidden="true" />
-          <span className={styles.roomIndexName}>{kindLabel(t, room.kind)}</span>
-          <span className={styles.roomIndexMeta}>
-            <span className={styles.roomBar} aria-hidden="true">
-              <span className={styles.roomBarFill}
-                style={{ width: `${String(Math.min(100, Math.round((room.count / 9) * 100)))}%`, background: KIND_PALETTE[room.kind] ?? '#7d8590' }} />
-            </span>
-            <span className={styles.roomIndexCount}>{String(room.count)} / 9</span>
-          </span>
-        </button>
-      ))}
-      {edges !== null && edges.length > 0 && (
-        <div className={styles.edgeLegend}>
-          {([
-            ['other', t('edgeOther'), EDGE_STYLE.related!],
-            ['supersedes', t('edgeSupersedes'), EDGE_STYLE.supersedes!],
-            ['contradicts', t('edgeContradicts'), EDGE_STYLE.contradicts!],
-          ] as const).map(([type, label, style]) => {
-            const present = type === 'other'
-              ? edges.some(e => e.type !== 'supersedes' && e.type !== 'contradicts')
-              : edges.some(e => e.type === type)
-            if (!present) return null
-            return (
-              <span key={type} className={styles.edgeLegendItem}>
-                <svg width={20} height={6} aria-hidden="true">
-                  <line x1={0} y1={3} x2={20} y2={3} stroke={style.color} strokeWidth={style.width} strokeDasharray={style.dash} />
-                </svg>
-                <span>{label}</span>
-              </span>
-            )
-          })}
-        </div>
-      )}
-      <span className={styles.sectionHint}>
-        {edges === null ? t('corridorFloorHint', { nodes: nodes.length }) : t('corridorGraphHint', { nodes: nodes.length })}
-      </span>
-    </aside>
-  )
-}
-
-/* 情景时间线的载荷形状与服务器共用（src/types.ts）：形状对不上是编译错误，
-   不会再变成「点「邻近」时视图崩掉」。 */
-type EpisodeRowView = EpisodeTimelineRow
-type EpisodeGroupsView = EpisodeTimelineGroupsResponse
-
-/** Memory Spiral 端点返回形状（与 routes.ts 的 GET /api/engram/timeline 对齐）。 */
-interface SpiralTimelineView {
-  readonly scope: 'user' | 'project' | 'shared'
-  readonly total: number
-  readonly records: readonly SpiralRecord[]
-}
-
-/** 回忆螺旋视图包装：拉数据 + 工具条（时间窗 segmented）+ 把 records 喂给 SpiralMap 渲染。
- *  复用段控 .segGroup + .segItem 视觉语言，跟其他 tab 的过滤选择保持一致。 */
-function SpiralPanel({ t, scope, project, reloadTick }: {
-  t: T
-  scope: 'user' | 'project' | 'shared'
-  project: string | null
-  reloadTick: number
-}): React.ReactElement {
-  const [records, setRecords] = useState<readonly SpiralRecord[] | null>(null)
-  const [failed, setFailed] = useState<string | null>(null)
-  /** 时间窗：30 天 / 半年 / 全部（持久化——其他 segmented 控件也都持久化）。 */
-  const [windowKey, setWindowKey] = usePersistedState<'30d' | '180d' | 'all'>('spiral.window', 'all', ['30d', '180d', 'all'])
-
-  useEffect(() => {
-    let cancelled = false
-    setRecords(null)
-    setFailed(null)
-    api<SpiralTimelineView>(`timeline?scope=${scope}&limit=500`)
-      .then(data => { if (!cancelled) setRecords(data.records) })
-      .catch(err => { if (!cancelled) setFailed(err instanceof Error ? err.message : String(err)) })
-    return () => { cancelled = true }
-  }, [scope, project, reloadTick])
-
-  const windowMs = windowKey === '30d' ? 30 * 86_400_000 : windowKey === '180d' ? 180 * 86_400_000 : null
-  const filteredCount = records === null ? null : records.filter(rec => windowMs === null || (Date.now() - rec.createdAt) <= windowMs).length
-
-  return (
-    <div className={styles.tabPanel}>
-      <PageHeader title={t('tabSpiral')} subtitle={t('pageHeaderCorridorSubtitle')} />
-      <div className={spiralStyles.toolbar}>
-        <div className={styles.segGroup}>
-          <button type="button" role="tab" aria-selected={windowKey === '30d'}
-            className={windowKey === '30d' ? `${styles.segItem} ${styles.on}` : styles.segItem}
-            onClick={() => { setWindowKey('30d') }}>
-            {t('spiralRange30d')}
-          </button>
-          <button type="button" role="tab" aria-selected={windowKey === '180d'}
-            className={windowKey === '180d' ? `${styles.segItem} ${styles.on}` : styles.segItem}
-            onClick={() => { setWindowKey('180d') }}>
-            {t('spiralRange180d')}
-          </button>
-          <button type="button" role="tab" aria-selected={windowKey === 'all'}
-            className={windowKey === 'all' ? `${styles.segItem} ${styles.on}` : styles.segItem}
-            onClick={() => { setWindowKey('all') }}>
-            {t('spiralRangeAll')}
-          </button>
-        </div>
-        <span className={spiralStyles.meta}>
-          {filteredCount === null ? t('spiralLoading') : `${t('spiralStatCount')} · ${String(filteredCount)}`}
-        </span>
-      </div>
-      {failed !== null && (
-        <div className={styles.panelCard}><EmptyState title={t('spiralFailed')} hint={failed} /></div>
-      )}
-      {failed === null && records === null && (
-        <div className={styles.panelCard}><EmptyState title={t('spiralLoading')} /></div>
-      )}
-      {failed === null && records !== null && records.length === 0 && (
-        <div className={styles.panelCard}><EmptyState title={t('spiralEmpty')} hint={t('emptyHint')} /></div>
-      )}
-      {failed === null && records !== null && records.length > 0 && (
-        <SpiralMap t={t} records={records} windowMs={windowMs} />
-      )}
-    </div>
-  )
-}
-
-/** 邻近扩展（around 模式）返回：锚点条目 + 窗口内的情景邻居。 */
-type EpisodeAroundView = EpisodeTimelineAround
-
-/**
- * 情景时间线视图：按会话分组浏览 episode 往事，组头展示摄取期生成的一句话摘要；
- * 条目点「邻近」展开该时刻 ± 窗口的时间邻近扩展卡（回答「当时前后还发生了什么」）。
- */
-function EpisodeTimelineView({ t, scope, project, reloadTick }: {
-  t: T
-  scope: 'user' | 'project' | 'shared'
-  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
-  project: string | null
-  reloadTick: number
-}): React.ReactElement {
-  const [sinceDate, setSinceDate] = useState('')
-  const [untilDate, setUntilDate] = useState('')
-  const [sessionIdInput, setSessionIdInput] = useState('')
-  /** 已应用的过滤条件：date/文本输入不即时触发请求，点「应用」才生效。 */
-  const [applied, setApplied] = useState<{ readonly since: string; readonly until: string; readonly sessionId: string }>({ since: '', until: '', sessionId: '' })
-  const [data, setData] = useState<EpisodeGroupsView | null>(null)
-  const [failed, setFailed] = useState<string | null>(null)
-  /** 邻近扩展卡（null = 未展开）；busy 防重复点击。 */
-  const [around, setAround] = useState<EpisodeAroundView | null>(null)
-  const [aroundBusy, setAroundBusy] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    const params = new URLSearchParams({ scope })
-    // date input 值按本地时区折算成当天首尾毫秒（T00:00:00 / T23:59:59.999）。
-    if (applied.since !== '') params.set('since', String(new Date(`${applied.since}T00:00:00`).getTime()))
-    if (applied.until !== '') params.set('until', String(new Date(`${applied.until}T23:59:59.999`).getTime()))
-    if (applied.sessionId !== '') params.set('sessionId', applied.sessionId)
-    api<EpisodeGroupsView>(`episode-timeline?${params.toString()}`)
-      .then(d => { if (!cancelled) { setData(d); setFailed(null) } })
-      .catch((err: Error) => { if (!cancelled) setFailed(err.message) })
-    return () => { cancelled = true }
-  }, [scope, project, applied, reloadTick])
-
-  /** 展开邻近扩展：以该条目为锚点查同库 ±60 分钟窗口内的情景（窗口由 host 缺省）。 */
-  const openAround = (id: string): void => {
-    setAroundBusy(true)
-    // 服务器的形状是 `{ around: { anchor, neighbors } }`（同一条路由在分组模式下回
-    // `{ groups }`），这里必须取出内层：直接当 `EpisodeAroundView` 用会得到
-    // `anchor === undefined`，渲染锚点行时读 `.id` 就把整个视图带崩了。
-    api<EpisodeTimelineAroundResponse>(`episode-timeline?scope=${scope}&around=${encodeURIComponent(id)}`)
-      .then(d => {
-        const view = d.around
-        if (view === undefined) {
-          setFailed(t('episodeAroundMissing'))
-          setAround(null)
-        } else {
-          setAround(view)
-          setFailed(null)
-        }
-        setAroundBusy(false)
-      })
-      .catch((err: Error) => { setFailed(err.message); setAroundBusy(false) })
-  }
-
-  /** 条目行：时刻 + 房间 + 内容 + 邻近按钮；id 放 title 便于复制。 */
-  const renderRow = (row: EpisodeRowView): React.ReactElement => (
-    <div key={row.id} className={styles.episodeRow} title={row.id}>
-      <time className={styles.episodeRowTime}>{fmtTime(row.createdAt)}</time>
-      <span className={styles.episodeRowKind}>{kindLabel(t, row.kind)}</span>
-      <span className={styles.episodeRowText}>{row.content}</span>
-      <button type="button" className={styles.button} disabled={aroundBusy}
-        onClick={() => { openAround(row.id) }}>
-        {t('episodeNearby')}
-      </button>
-    </div>
-  )
-
-  return (
-    <>
-      {/* v0.8.9 过滤行收进工具条卡。 */}
-      <div className={styles.toolbarCard}>
-        <input type="date" className={styles.input} value={sinceDate} aria-label={t('episodeSince')}
-          onChange={event => { setSinceDate(event.target.value) }} />
-        <span className={styles.episodeRangeSep} aria-hidden="true">–</span>
-        <input type="date" className={styles.input} value={untilDate} aria-label={t('episodeUntil')}
-          onChange={event => { setUntilDate(event.target.value) }} />
-        <input className={`${styles.input} ${styles.search}`} placeholder={t('episodeSessionId')} value={sessionIdInput}
-          onChange={event => { setSessionIdInput(event.target.value) }} />
-        <button type="button" className={`${styles.button} ${styles.primary}`}
-          onClick={() => { setApplied({ since: sinceDate, until: untilDate, sessionId: sessionIdInput.trim() }); setAround(null) }}>
-          {t('episodeApply')}
-        </button>
-        <button type="button" className={styles.button}
-          onClick={() => {
-            setSinceDate(''); setUntilDate(''); setSessionIdInput('')
-            setApplied({ since: '', until: '', sessionId: '' }); setAround(null)
-          }}>
-          {t('episodeReset')}
-        </button>
-      </div>
-      {failed !== null && <div className={styles.expandLoading}>{t('loadFailed', { msg: failed })}</div>}
-      {around !== null && (
-        <section className={`${styles.panelCard} ${styles.episodeAround}`}>
-          <header className={styles.episodeAroundHead}>
-            <b>{t('episodeAroundTitle')}</b>
-            <button type="button" className={styles.button} onClick={() => { setAround(null) }}>
-              {t('episodeClose')}
-            </button>
-          </header>
-          {around.anchor !== undefined && renderRow(around.anchor)}
-          {(around.neighbors ?? []).length === 0
-            ? <p className={styles.sectionHint}>{t('episodeAroundEmpty')}</p>
-            : (around.neighbors ?? []).map(renderRow)}
-        </section>
-      )}
-      {data === null && failed === null && <div className={styles.expandLoading}>{t('loading')}</div>}
-      {data !== null && data.groups.length === 0 && <EmptyState title={t('episodeNoGroups')} hint={t('emptyHint')} />}
-      {data?.groups.map(group => (
-        <section key={group.sessionId ?? 'none'} className={styles.panelCard}>
-          <header className={styles.episodeHead}>
-            {group.summary === undefined
-              ? <p className={`${styles.episodeSummary} ${styles.episodeSummaryMissing}`}>{t('episodeSummaryMissing')}</p>
-              : <p className={styles.episodeSummary}>{group.summary}</p>}
-            <span className={styles.episodeHeadMeta}>
-              {group.sessionId === null ? t('episodeNoSession') : `#${group.sessionId}`}
-              {' · '}
-              {new Date(group.startedAt).toLocaleDateString()} ~ {new Date(group.endedAt).toLocaleDateString()}
-              {' · '}
-              {t('episodeEntries', { n: group.episodes.length })}
-            </span>
-          </header>
-          <div>{group.episodes.map(renderRow)}</div>
-        </section>
-      ))}
-    </>
-  )
-}
-
-/** GET /api/engram/entities 的行（host 返回 { entity, memoryCount }，entity 为实体记录的显示字段）。 */
-interface EntityListItemView {
-  readonly entity: {
-    readonly id: string
-    readonly name: string
-    readonly kind: string
-    readonly aliases: readonly string[]
-  }
-  readonly memoryCount: number
-}
-
-/** GET /api/engram/entities 返回（updated_at 倒序，附总数）。 */
-interface EntityListView {
-  readonly items: readonly EntityListItemView[]
-  readonly total: number
-}
-
-/** GET /api/engram/entity 返回：实体 + 关联 active 记忆（创建时间倒序）。 */
-interface EntityDetailView {
-  readonly entity: EntityListItemView['entity']
-  readonly memories: readonly MemoryRow[]
-}
-
-/** GET /api/engram/facts 返回的单条事实（面板只读显示所需字段）。 */
-interface FactView {
-  readonly id: string
-  readonly content: string
-  readonly validAt: number
-  readonly invalidAt: number | null
-  readonly replacedBy: string | null
-}
-
-/** GET /api/engram/facts 返回（valid_at 倒序，附总数）。 */
-interface EntityFactsView {
-  readonly items: readonly FactView[]
-  readonly total: number
-}
-
-/** 实体类别数据值 → 词典键（筛选 chips、列表行与详情卡共用一份映射）。 */
-const ENTITY_KIND_KEY: Record<string, EngramKey> = {
-  person: 'entityKindPerson',
-  project: 'entityKindProject',
-  tool: 'entityKindTool',
-  concept: 'entityKindConcept',
-  other: 'entityKindOther',
-}
-/** 实体类别 → 色点（人物蓝/项目橙/工具青/概念紫/其他灰）。 */
-const ENTITY_DOT: Readonly<Record<string, string>> = {
-  person: '#5b8def',
-  project: '#e08a2e',
-  tool: '#3cb489',
-  concept: '#9b6bd9',
-  other: '#7d8590',
-}
-
-const ENTITY_KINDS = ['person', 'project', 'tool', 'concept', 'other'] as const
-
-/** 实体行的类别标签（未知 kind 回退「其他」）。 */
-function entityKindLabel(t: T, kind: string): string {
-  return t(ENTITY_KIND_KEY[kind] ?? 'entityKindOther')
-}
-
-/**
- * 实体词典视图：浏览摄取期从记忆中抽取的实体（人物/项目/工具/概念），
- * 类别 chips + 名称/别名子串过滤；点「查看」展开该实体牵出的关联记忆卡。
- */
-function EntityView({ t, scope, project, reloadTick }: {
-  t: T
-  scope: 'user' | 'project' | 'shared'
-  /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
-  project: string | null
-  reloadTick: number
-}): React.ReactElement {
-  const [kind, setKind] = useState<'all' | (typeof ENTITY_KINDS)[number]>('all')
-  const [q, setQ] = useState('')
-  const [data, setData] = useState<EntityListView | null>(null)
-  const [failed, setFailed] = useState<string | null>(null)
-  /** 展开的实体详情卡（null = 未展开）；busy 防重复点击。 */
-  const [detail, setDetail] = useState<EntityDetailView | null>(null)
-  const [facts, setFacts] = useState<EntityFactsView | null>(null)
-  const [detailBusy, setDetailBusy] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    const query = q.trim()
-    const params = new URLSearchParams({ scope })
-    if (kind !== 'all') params.set('kind', kind)
-    if (query !== '') params.set('q', query)
-    api<EntityListView>(`entities?${params.toString()}`)
-      .then(d => { if (!cancelled) { setData(d); setFailed(null) } })
-      .catch((err: Error) => { if (!cancelled) setFailed(err.message) })
-    return () => { cancelled = true }
-  }, [scope, project, kind, q, reloadTick])
-
-  /** 展开实体详情：实体记录 + 关联记忆 + 事实链全貌（含已失效，看事实如何演变）。 */
-  const openDetail = (id: string): void => {
-    setDetailBusy(true)
-    Promise.all([
-      api<EntityDetailView>(`entity?scope=${scope}&id=${encodeURIComponent(id)}`),
-      api<EntityFactsView>(`facts?scope=${scope}&entityId=${encodeURIComponent(id)}&includeInvalid=1`),
-    ])
-      .then(([d, f]) => { setDetail(d); setFacts(f); setDetailBusy(false); setFailed(null) })
-      .catch((err: Error) => { setFailed(err.message); setDetailBusy(false) })
-  }
-
-  /** 详情卡里的关联记忆行：时刻 + 房间 + 内容（只读观测，不提供编辑入口）。 */
-  const renderMemory = (row: MemoryRow): React.ReactElement => (
-    <div key={row.id} className={styles.episodeRow} title={row.id}>
-      <time className={styles.episodeRowTime}>{fmtTime(row.createdAt)}</time>
-      <span className={styles.episodeRowKind}>{kindLabel(t, row.kind)}</span>
-      <span className={styles.episodeRowText}>{row.content}</span>
-    </div>
-  )
-
-  /** 详情卡里的事实行：生效日期 + 状态标签 + 陈述；失效行标「已失效」。 */
-  const renderFact = (fact: FactView): React.ReactElement => (
-    <div key={fact.id} className={styles.episodeRow} title={fact.id}>
-      <time className={styles.episodeRowTime}>{new Date(fact.validAt).toLocaleDateString()}</time>
-      <span className={styles.episodeRowKind}>{fact.invalidAt === null ? t('factValid') : t('factInvalid')}</span>
-      <span className={styles.episodeRowText}>{fact.content}</span>
-    </div>
-  )
-
-  return (
-    <>
-      {/* 工具条：类别 chips（带色点，色码自解释）+ 搜索 + 计数，一个容器。 */}
-      <div className={styles.toolbarCard}>
-        {([
-          ['all', t('entityKindAll')],
-          ...ENTITY_KINDS.map(option => [option, t(ENTITY_KIND_KEY[option] ?? 'entityKindOther')] as const),
-        ] as const).map(([value, label]) => (
-          <button key={value} type="button" aria-pressed={kind === value}
-            className={kind === value ? `${styles.chip} ${styles.chipOn}` : styles.chip}
-            onClick={() => { setKind(value); setDetail(null); setFacts(null) }}>
-            {value !== 'all' && (
-              <span className={styles.chipDot} style={{ background: ENTITY_DOT[value] ?? '#7d8590' }} aria-hidden="true" />
-            )}
-            {label}
-          </button>
-        ))}
-        <span className={styles.searchBox}>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M16.5 16.5 L21 21" /></svg>
-          <input className={`${styles.input} ${styles.search}`} placeholder={t('entitySearchPlaceholder')} value={q}
-            onChange={event => { setQ(event.target.value); setDetail(null); setFacts(null) }} />
-        </span>
-        {data !== null && <span className={styles.toolbarCount}>{t('entityCount', { n: data.total })}</span>}
-      </div>
-      {failed !== null && <div className={styles.expandLoading}>{t('loadFailed', { msg: failed })}</div>}
-      {detail !== null && (
-        <section className={`${styles.panelCard} ${styles.episodeAround}`}>
-          <header className={styles.episodeAroundHead}>
-            <b>{detail.entity.name}</b>
-            <span className={styles.episodeRowKind}>{entityKindLabel(t, detail.entity.kind)}</span>
-            <button type="button" className={styles.button} onClick={() => { setDetail(null); setFacts(null) }}>
-              {t('episodeClose')}
-            </button>
-          </header>
-          {detail.entity.aliases.length > 0 && (
-            <p className={styles.sectionHint}>{`${t('entityAliases')}：${detail.entity.aliases.join('、')}`}</p>
-          )}
-          {detail.memories.length === 0
-            ? <p className={styles.sectionHint}>{t('entityNoMemories')}</p>
-            : <div>{detail.memories.map(renderMemory)}</div>}
-          {facts !== null && (
-            <>
-              <p className={styles.sectionHint}>{t('factSection', { n: facts.total })}</p>
-              {facts.items.length === 0
-                ? <p className={styles.sectionHint}>{t('factEmpty')}</p>
-                : <div>{facts.items.map(renderFact)}</div>}
-            </>
-          )}
-        </section>
-      )}
-      {data === null && failed === null && <div className={styles.expandLoading}>{t('loading')}</div>}
-      {data !== null && data.items.length === 0 && <EmptyState title={t('entityEmpty')} hint={t('emptyHint')} />}
-      {data !== null && data.items.length > 0 && (
-        <div className={styles.entityList}>
-          {data.items.map((item, index) => (
-            <button key={item.entity?.id ?? `entity-${String(index)}`} type="button" className={styles.entityRow}
-              title={item.entity?.id} disabled={detailBusy}
-              onClick={() => { if (item.entity !== undefined) openDetail(item.entity.id) }}>
-              <span className={styles.entityDot} style={{ background: ENTITY_DOT[item.entity?.kind ?? ''] ?? '#7d8590' }} aria-hidden="true" />
-              <span className={styles.entityMain}>
-                <span className={styles.entityName}>{item.entity?.name ?? '—'}</span>
-                {(item.entity?.aliases.length ?? 0) > 0 && (
-                  <span className={styles.entityAliases}>{item.entity?.aliases.join('、')}</span>
-                )}
-              </span>
-              <span className={styles.entityTag}>{entityKindLabel(t, item.entity?.kind ?? 'other')}</span>
-              <span className={styles.entityCount}>{t('entityMemories', { n: item.memoryCount })}</span>
-              <svg className={styles.entityChevron} viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-          ))}
-        </div>
-      )}
-    </>
   )
 }
 
@@ -5750,29 +4879,14 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   const t = useMemo<T>(() => makeT(lang), [lang])
   /** 全局 scope（持久化）：Header 三宫格是唯一切换器，驱动今日速览、各视图卡片、陈展列表与导出。 */
   const [scope, setScope] = usePersistedState<'user' | 'project' | 'shared'>('library.scope', 'user', ['user', 'project', 'shared'])
-  /** 库顶 status / kind / q 过滤器（持久化）。 */
-  const [status, setStatus] = usePersistedState<string>('library.status', 'all', ['all', 'active', 'archived', 'forgotten'])
-  const [kind, setKind] = usePersistedState<string>('library.kind', 'all', ['all', 'fact', 'preference', 'decision', 'episode', 'skill'])
-  const [q, setQ] = usePersistedString('library.q', '')
-  /** 陈展列表排序（持久化）：time = 开馆时间倒序；tour = 固定巡游路线桩位顺序。 */
-  const [sort, setSort] = usePersistedState<'time' | 'tour'>('library.sort', 'time', ['time', 'tour'])
+  /** 0.13：Records 面板的一次性过滤请求（角标「今日到期」/Atlas 房间跳转）。 */
+  const [recordsRequest, setRecordsRequest] = useState<RecordsRequest>(null)
   /** 今日到期条数与 id 集合（Header 角标 + 陈展「今日到期」筛选共用同一次拉取）。 */
   const [dueCount, setDueCount] = useState(0)
   const [dueIds, setDueIds] = useState<ReadonlySet<string>>(new Set())
-  /** 陈展「今日到期」筛选：只显示复习调度今天到期的条目。 */
-  const [dueOnly, setDueOnly] = useState(false)
-  /** 脱敏筛选已合并到顶部 KPI 与 tag 视觉，不再作为过滤器。 */
-  const [redacted] = useState('all')
-  const [offset, setOffset] = useState(0)
-  const [list, setList] = useState<ListResult | null>(null)
-  const [error, setError] = useState<string | null>(null)
   /** 行内展开态：互斥的唯一展开条目（review 或 edit）。浮层由 .drawerLayer sticky 钉在滚动区可见顶部，无需滚动定位。 */
   const [expanded, setExpanded] = useState<{ kind: 'review' | 'edit'; record: MemoryRow } | null>(null)
   const [reloadTick, setReloadTick] = useState(0)
-  /** 批量选择：条目 id 集合（scope/过滤/翻页/搜索变更时清空）。 */
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
-  /** 批量遗忘的两段式确认。 */
-  const [confirmForget, setConfirmForget] = useState(false)
   /** 0.13 工作面：today 总览 / recall 召回 / memory 记忆 / governance 治理 / replay 回放 / system 系统。 */
   const [activeWorkface, setActiveWorkface] = useState<Workface>('today')
   /** 工作面内的二级视图：每个工作面有自己的二级导航，不把所有能力抬到一级。 */
@@ -5821,9 +4935,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
       if (healingRef.current || projectMode === 'follow') return
       healingRef.current = true
       setProjectMode('follow')
-      setOffset(0)
       setExpanded(null)
-      setSelected(new Set())
       reload()
     })
     return () => { setProjectHealHandler(null) }
@@ -5847,111 +4959,38 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   const goToDue = (): void => {
     setActiveWorkface('memory')
     setMemoryTab('records')
-    setDueOnly(true)
+    setRecordsRequest({ kind: 'due' })
   }
 
-  /** 打开详情抽屉：陈展列表已有该行时复用真实行，只有 id 的列表用最小占位行（抽屉自行拉 review）。 */
+  /** 打开详情抽屉：只有 id 时用最小占位行（抽屉自行拉 review 补齐正文与关系）。 */
   const openReview = useCallback((id: string): void => {
-    const record = list?.records.find(row => row.id === id)
     setExpanded({
       kind: 'review',
-      record: record ?? ({
+      record: {
         id: id as never, scope, kind: 'fact', content: '', importance: 0.5, confidence: 0.5,
         status: 'active', createdAt: Date.now(), accessCount: 0, sourceSessionId: null, sourceRound: null,
-      } as MemoryRow),
+      } as MemoryRow,
     })
-  }, [list, scope])
+  }, [scope])
 
-  useEffect(() => {
-    let cancelled = false
-    // q 保留原文（输入法/词组中间空格），只在请求边界 trim——trim 过早会让含空格查询永远打不出来。
-    const query = q.trim()
-    const qs = new URLSearchParams({
-      scope, status, kind, redacted, limit: String(PAGE_SIZE), offset: String(offset),
-    })
-    if (query !== '') qs.set('q', query)
-    if (sort === 'tour') qs.set('sort', 'tour')
-    api<ListResult>(`list?${qs.toString()}`)
-      .then((data) => { if (!cancelled) { setList(data); setError(null) } })
-      .catch((loadError: Error) => { if (!cancelled) setError(loadError.message) })
-    return () => { cancelled = true }
-  }, [scope, status, kind, redacted, q, sort, offset, reloadTick, projectSelector])
+  /** 行内展开（review / edit）：抽屉层留在面板根部，行内点击只切内容。 */
+  const toggleRecord = useCallback((record: MemoryRow, kind: 'review' | 'edit'): void => {
+    setExpanded(current => (current !== null && current.kind === kind && current.record.id === record.id)
+      ? null
+      : { kind, record })
+  }, [])
+
+  /** Records 面板已消费请求（清空宿主侧的一次性请求，避免重复应用）。 */
+  const clearRecordsRequest = useCallback((): void => { setRecordsRequest(null) }, [])
 
   /** 项目宫殿切换（工作区切换 / 手动固定）：回到第 1 页并清掉跨库无意义的展开与选择态。 */
   const lastProject = useRef(projectSelector)
   useEffect(() => {
     if (lastProject.current === projectSelector) return
     lastProject.current = projectSelector
-    setOffset(0)
     setExpanded(null)
-    setSelected(new Set())
   }, [projectSelector])
 
-  const act = (route: string, record: MemoryRow): void => {
-    api(route, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: record.id, scope: record.scope }),
-    })
-      .then(reload)
-      .catch((actError: Error) => { toast.push('error', actError.message) })
-  }
-
-  const toggle = (expandKind: 'review' | 'edit', record: MemoryRow): void => {
-    setExpanded(current => (current !== null && current.kind === expandKind && current.record.id === record.id)
-      ? null
-      : { kind: expandKind, record })
-  }
-
-  const allRecords = list?.records ?? []
-  // 「今日到期」筛选是页内视图过滤（复习调度今天到期的 id 白名单）；分页仍按库内全量计算。
-  const pageRecords = dueOnly ? allRecords.filter(record => dueIds.has(record.id)) : allRecords
-  const selectedRecords = pageRecords.filter(record => selected.has(record.id))
-  const forgetable = selectedRecords.filter(record => record.status === 'active').length
-  const restorable = selectedRecords.length - forgetable
-  const allSelected = pageRecords.length > 0 && pageRecords.every(record => selected.has(record.id))
-
-  const toggleSelect = (id: string): void => {
-    setSelected(current => {
-      const next = new Set(current)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  const clearSelection = (): void => { setSelected(new Set()); setConfirmForget(false) }
-
-  const toggleAllPage = (): void => {
-    setSelected(current => {
-      const next = new Set(current)
-      if (allSelected) for (const record of pageRecords) next.delete(record.id)
-      else for (const record of pageRecords) next.add(record.id)
-      return next
-    })
-  }
-
-  /** 批量执行：逐条调单条 API（回环毫秒级），单条失败不阻塞其余；完成即刷新并清空选择。 */
-  const runBatch = (mode: 'forget' | 'restore'): void => {
-    const targets = mode === 'forget'
-      ? selectedRecords.filter(record => record.status === 'active')
-      : selectedRecords.filter(record => record.status !== 'active')
-    if (targets.length === 0) return
-    void Promise.allSettled(targets.map(target => api(mode, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: target.id, scope: target.scope }),
-    }))).then(() => { clearSelection(); reload() })
-  }
-
-  const armBatchForget = (): void => {
-    // 确认态保持到用户点击确认执行或清空选择，不做自动复位（3 秒窗口曾导致执行落空）。
-    if (confirmForget) { runBatch('forget'); return }
-    setConfirmForget(true)
-  }
-
-  const page = Math.floor(offset / PAGE_SIZE) + 1
-  const pages = list === null ? 1 : Math.max(1, Math.ceil(list.total / PAGE_SIZE))
   /** Segmented Control 玻璃指示器位置：根据选中按钮 DOM 测量。 */
   const segRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map())
   const [segIndicator, setSegIndicator] = useState<{ left: number; width: number; opacity: number }>({ left: 0, width: 0, opacity: 0 })
@@ -5991,7 +5030,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   const changeWorkface = (workface: Workface): void => {
     setActiveWorkface(workface)
     setExpanded(null)
-    clearSelection()
   }
   /** 二级导航：只有多视图的工作面才有；其余工作面自带标题与工具条。 */
   const memoryContextItems = [
@@ -6088,7 +5126,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
             {(['user', 'shared', 'project'] as const).map(option => (
               <button key={option} type="button" ref={node => { segRefs.current.set(option, node) }}
                 className={scope === option ? `${styles.segItem} ${styles.on}` : styles.segItem}
-                onClick={() => { setScope(option); setOffset(0); setExpanded(null); clearSelection() }}>
+                onClick={() => { setScope(option); setExpanded(null) }}>
                 <Icon name={option === 'user' ? 'user' : option === 'project' ? 'project' : 'shared'} className={styles.scopeIcon} />
                 {t(SCOPE_KEY[option])}
               </button>
@@ -6098,7 +5136,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           {scope === 'project' && (
             <SelectField selectClassName={`${styles.input} ${styles.wsSelect}`} value={projectMode}
               ariaLabel={t('projectSwitch')} title={t('projectSwitch')}
-              onChange={event => { setProjectMode(event.target.value); setOffset(0); setExpanded(null); clearSelection() }}>
+              onChange={event => { setProjectMode(event.target.value); setExpanded(null) }}>
               <option value="follow">{t('projectFollow')}</option>
               {(workspaceList?.items ?? []).map(item => (
                 <option key={item.dbName} value={item.dbName}>{projectOptionLabel(t, item)}</option>
@@ -6166,149 +5204,9 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
       {activeWorkface === 'memory' && memoryTab === 'records' && (
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabLibrary')} subtitle={t('pageHeaderLibrarySubtitle')} />
-          {/* v0.8.9 工具行收进工具条卡;房间 chips 仍单独一行。 */}
-          <div className={styles.toolbarCard}>
-            <span className={styles.searchBox}>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M16.5 16.5 L21 21" /></svg>
-              <input className={`${styles.input} ${styles.search}`} placeholder={t('searchPlaceholder')} value={q}
-                onChange={event => { setQ(event.target.value); setOffset(0); setExpanded(null); clearSelection() }} />
-            </span>
-            <div className={styles.segGroup}>
-              {([
-                ['all', t('allStatuses')],
-                ['active', t('statusActive')],
-                ['archived', t('statusArchived')],
-                ['forgotten', t('statusForgotten')],
-              ] as const).map(([value, label]) => (
-                <button key={value} type="button"
-                  className={status === value ? `${styles.segItem} ${styles.on}` : styles.segItem}
-                  onClick={() => { setStatus(value); setOffset(0); setExpanded(null); clearSelection() }}>
-                  {label}
-                </button>
-              ))}
-            </div>
-            {/* 今日到期：复习调度今天到期的条目（消费者是 agent，这里只做观测筛选）。
-                单独一个按钮不嵌 .segGroup（没有玻璃指示器可滑动）；用 .chip/.chipOn 的视觉语言
-                让激活态有清晰品牌色提示，跟其他激活态一致。 */}
-            <button type="button" aria-pressed={dueOnly}
-              className={dueOnly ? `${styles.chip} ${styles.chipOn}` : styles.chip}
-              onClick={() => { setDueOnly(!dueOnly); setOffset(0); setExpanded(null); clearSelection() }}>
-              {t('filterDueToday')}
-            </button>
-            <div className={styles.segGroup}>
-              {([['time', t('sortTime')], ['tour', t('sortTour')]] as const).map(([value, label]) => (
-                <button key={value} type="button"
-                  className={sort === value ? `${styles.segItem} ${styles.on}` : styles.segItem}
-                  onClick={() => { setSort(value); setOffset(0); setExpanded(null); clearSelection() }}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className={styles.chipRow}>
-            {([
-              ['all', t('allKinds')],
-              ...KINDS.map(option => [option, kindLabel(t, option)] as const),
-            ] as const).map(([value, label]) => (
-              <button key={value} type="button" aria-pressed={kind === value}
-                className={kind === value ? `${styles.chip} ${styles.chipOn}` : styles.chip}
-                onClick={() => { setKind(value); setOffset(0); setExpanded(null); clearSelection() }}>
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {selected.size > 0 && (
-            <div className={styles.batchBar}>
-              <span>{t('selectedCount', { n: selected.size })}</span>
-              <button type="button" className={styles.button} onClick={toggleAllPage}>
-                {allSelected ? t('deselectAll') : t('selectAll')}
-              </button>
-              <button type="button" className={styles.button} disabled={restorable === 0}
-                onClick={() => runBatch('restore')}>{t('batchRestore', { n: restorable })}</button>
-              <button type="button"
-                className={confirmForget ? `${styles.button} ${styles.danger}` : styles.button}
-                disabled={forgetable === 0}
-                onClick={armBatchForget}>
-                {confirmForget ? t('batchForgetConfirm', { n: forgetable }) : t('batchForget', { n: forgetable })}
-              </button>
-              <button type="button" className={styles.button} onClick={clearSelection}>{t('clearSelection')}</button>
-            </div>
-          )}
-
-          {error !== null && (
-            <EmptyState title={t('loadFailed', { msg: error })} hint={t('emptyHint')} />
-          )}
-          {error === null && list === null && (
-            <div className={styles.skeletonList}>
-              {[0, 1, 2, 3].map(index => (
-                <div key={index} className={styles.skeleton} style={{ animationDelay: `${String(index * 60)}ms` }}><i /><i /><i /></div>
-              ))}
-            </div>
-          )}
-          {error === null && list !== null && pageRecords.length === 0 && (
-            <EmptyState title={t('empty')} hint={t('emptyHint')} />
-          )}
-
-          {pageRecords.length > 0 && (
-            <div className={styles.itemList}>
-              {pageRecords.map((record, index) => (
-                <div key={record.id}
-                  className={selected.has(record.id) ? `${styles.item} ${styles.selected}` : styles.item}
-                  style={{ animationDelay: `${String(Math.min(index, 12) * 36)}ms` }}>
-                  <input type="checkbox" className={styles.itemCheck} checked={selected.has(record.id)}
-                    aria-label={record.content.slice(0, 24)} onChange={() => toggleSelect(record.id)} />
-                  <div className={styles.itemBody}>
-                    <div className={styles.itemTags}>
-                      <span className={`${styles.pill} ${styles[`status${record.status.charAt(0).toUpperCase()}${record.status.slice(1)}`] ?? ''}`}>{t(STATUS_KEY[record.status])}</span>
-                      <span className={roomPillClass(record.kind)}>{kindLabel(t, record.kind)}</span>
-                      {record.slot !== undefined && (
-                        <span className={styles.pill}>{record.slot.room}#{record.slot.index}</span>
-                      )}
-                      {record.content.includes('[REDACTED:') && (
-                        <span className={`${styles.pill} ${styles.redacted}`}>{t('tagRedacted')}</span>
-                      )}
-                      {record.outcome !== undefined && (
-                        <span className={`${styles.pill} ${record.outcome === 'success' ? styles.outcomeSuccess : styles.outcomeFailure}`}>
-                          {record.outcome === 'success' ? t('tagOutcomeSuccess') : t('tagOutcomeFailure')}
-                        </span>
-                      )}
-                      <span className={styles.itemStamp} title={fmtTime(record.createdAt)}>
-                        {t(SCOPE_KEY[record.scope])} · {relTime(t, record.createdAt)}
-                      </span>
-                    </div>
-                    <div className={styles.content}>{record.content}</div>
-                    <div className={styles.itemMeta}>
-                      <span><b>{t('importance')}</b> {record.importance.toFixed(2)}</span>
-                      <span><b>{t('confidence')}</b> {record.confidence.toFixed(2)}</span>
-                      <span>{t('accessCount', { n: record.accessCount })}</span>
-                      <span>{sourceLabel(t, record)}</span>
-                    </div>
-                  </div>
-                  <div className={styles.itemOps}>
-                    <button type="button" className={styles.button}
-                      onClick={() => { toggle('review', record) }}>{t('detail')}</button>
-                    <button type="button" className={styles.button}
-                      onClick={() => { toggle('edit', record) }}>{t('edit')}</button>
-                    {record.status === 'active'
-                      ? <button type="button" className={styles.button}
-                          onClick={() => { act('forget', record) }}>{t('forget')}</button>
-                      : <button type="button" className={styles.button}
-                          onClick={() => { act('restore', record) }}>{t('restore')}</button>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className={styles.pager}>
-            <button type="button" className={styles.button} disabled={offset === 0} aria-label={t('prevPage')}
-              onClick={() => { setOffset(Math.max(0, offset - PAGE_SIZE)); setExpanded(null); clearSelection() }}>‹</button>
-            <span>{t('pagerInfo', { page, pages, total: list?.total ?? 0 })}</span>
-            <button type="button" className={styles.button} disabled={list === null || offset + PAGE_SIZE >= list.total}
-              aria-label={t('nextPage')}
-              onClick={() => { setOffset(offset + PAGE_SIZE); setExpanded(null); clearSelection() }}>›</button>
-          </div>
+          <RecordsPanel t={t} scope={scope} project={projectSelector} reloadTick={reloadTick}
+            dueIds={dueIds} onToggle={toggleRecord} onChanged={reload} toast={toast}
+            request={recordsRequest} onRequestApplied={clearRecordsRequest} />
         </div>
       )}
 
@@ -6392,7 +5290,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
               </div>
               <div className={styles.panelCard}>
                 <CorridorPanel t={t} scope={scope} project={projectSelector} onSelect={openReview}
-                  onOpenRoom={kind => { setKind(kind); setOffset(0); setExpanded(null); clearSelection(); setMemoryTab('records') }} />
+                  onOpenRoom={kind => { setRecordsRequest({ kind: 'room', value: kind }); setMemoryTab('records') }} />
               </div>
             </section>
             <section className={styles.section}>

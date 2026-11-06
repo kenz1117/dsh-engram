@@ -79,3 +79,20 @@ export function EmptyState({ title, hint }: { title: string; hint?: string | und
     </div>
   )
 }
+
+/** 页面头部：标题 + 副标题 + actions。满宽主列需要页面身份感（工作面不再只靠 tab 行认路）。 */
+export function PageHeader({ title, subtitle, actions }: {
+  title: string
+  subtitle?: string | undefined
+  actions?: ReactNode | undefined
+}): ReactElement {
+  return (
+    <header className={styles.pageHeader}>
+      <div className={styles.pageHeaderMain}>
+        <h2 className={styles.pageTitle}>{title}</h2>
+        {subtitle !== undefined && <p className={styles.pageSubtitle}>{subtitle}</p>}
+      </div>
+      {actions !== undefined && <div className={styles.pageHeaderActions}>{actions}</div>}
+    </header>
+  )
+}

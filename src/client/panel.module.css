@@ -382,6 +382,8 @@ select.input { padding-right: 28px; appearance: none; }
 .attrGrid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; font-size: 12px; align-items: center; }
 .attrGrid > dt { color: var(--dsw-alias-label-tertiary); font-size: 11px; margin: 0; }
 .attrGrid > dd { margin: 0; color: var(--dsw-alias-label-primary); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; word-break: break-word; }
+/* 稳定身份 / 修订 id：等宽小字，长 id 换行而不是撑破属性网格轨道。 */
+.identityCode { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2); border-radius: 4px; padding: 1px 5px; max-width: 100%; overflow-wrap: anywhere; word-break: break-all; }
 .relBlock { margin-top: 10px; }
 .relBlock > h5 { margin: 0 0 4px; font-size: 11px; font-weight: 500; color: var(--dsw-alias-label-tertiary); letter-spacing: 0.04em; text-transform: uppercase; }
 .relChips { display: flex; gap: 4px; flex-wrap: wrap; }
