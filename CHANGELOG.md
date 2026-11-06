@@ -14,6 +14,8 @@
 
 - **0.13 控制台 Shell（第一批）**：新增六工作面导航骨架（Today / Recall / Memory / Governance / Replay / System）、现代控制台语义 token、上下文导航与状态条。旧 10 个视图先按工作面安全映射，保证功能不回退；后续切片逐个抽取真实 view。
 - 新增共享 UI primitives：`Segmented`、`ConfirmButton`、`Dialog`、`DataState`、`IdentityBadge`、`WorkfaceRail`。Dialog 提供 Esc、初始 focus、focus return 和 focus trap；确认操作不再依赖各处临时实现。
+- **Today 真实待办面**：移除合成 sparkline；保留真实写入序列，新增 governance pending、dead/queued jobs、jobs unavailable 和 search exposures 展示。Today 现在区分“真实待办事实源”和启发式健康分。
+- **Jobs / identity / exposure 后端补口**：新增 `GET /api/engram/jobs`（available、summary、轻量 items，不暴露 payload）；`GET /api/engram/review?id=` 支持稳定 `memoryId` 解析到当前 revision，真实 revision id 仍精确回看历史；telemetry 新增 `counts.searchExposures`，与改写请求口径分开。
 
 ## [0.12.0] - 2026-11-06
 

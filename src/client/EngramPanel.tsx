@@ -2466,6 +2466,7 @@ interface TelemetrySnapshot {
     readonly consolidations: number
     readonly reviewAnswers: number
     readonly searches?: number
+    readonly searchExposures?: number
   }
   /** v0.8.1+ 每日写入序列（活动热力日历用）。 */
   readonly dailyWrites?: ReadonlyArray<{ readonly dayMs: number; readonly count: number }>
@@ -2510,6 +2511,57 @@ function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string
       .catch((error: Error) => {
         if (!cancelled) setState(current => ({ ...current, failed: error.message }))
       })
+    return () => { cancelled = true }
+  }, [scope, project, reloadTick])
+  return state
+}
+
+/** Durable jobs 的只读投影；payload 不进面板，避免把实现细节/大对象拖进 UI。 */
+interface JobSummaryView {
+  readonly id: string
+  readonly kind: string
+  readonly status: 'queued' | 'running' | 'done' | 'dead'
+  readonly attempts: number
+  readonly maxAttempts: number
+  readonly lastError: string | null
+}
+
+interface JobsView {
+  readonly available: boolean
+  readonly summary: { readonly total: number; readonly queued: number; readonly running: number; readonly done: number; readonly dead: number }
+  readonly items: readonly JobSummaryView[]
+}
+
+/** 治理待办只取计数；完整双侧队列仍在治理工作面展示。 */
+interface GovernanceSummaryView {
+  readonly items: readonly unknown[]
+  readonly total: number
+}
+
+/**
+ * 控制台待办：jobs 是插件级队列；governance 跟随当前 scope。
+ * 分开拉取，任一失败不拖倒另一个事实源。
+ */
+function useConsoleAttention(scope: 'user' | 'project' | 'shared', project: string | null, reloadTick = 0): {
+  jobs: JobsView | null
+  governanceTotal: number | null
+  failed: string | null
+} {
+  const [state, setState] = useState<{ jobs: JobsView | null; governanceTotal: number | null; failed: string | null }>({
+    jobs: null, governanceTotal: null, failed: null,
+  })
+  // biome-ignore lint/correctness/useExhaustiveDependencies: project 只作重载信号——实际选择器由 api() 在渲染期注入，scope=project 命中不同分库时需重新取数
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([
+      api<JobsView>('jobs?limit=20'),
+      api<GovernanceSummaryView>(`governance?scope=${scope}&limit=50`),
+    ])
+      .then(([jobs, governance]) => {
+        if (cancelled) return
+        setState({ jobs, governanceTotal: governance.total, failed: null })
+      })
+      .catch((error: Error) => { if (!cancelled) setState(current => ({ ...current, failed: error.message })) })
     return () => { cancelled = true }
   }, [scope, project, reloadTick])
   return state
@@ -2826,7 +2878,18 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
   return overlayHost.current === null ? screen : createPortal(screen, overlayHost.current)
 }
 
-function TodayHero({ t, overview, dueCount }: { t: T; overview: ReturnType<typeof usePalaceOverview>; dueCount: number }): React.ReactElement {
+const ATTENTION_TONE_CLASS = {
+  neutral: '',
+  warn: 'attention_warn',
+  error: 'attention_error',
+} as const
+
+function TodayHero({ t, overview, dueCount, attention }: {
+  t: T
+  overview: ReturnType<typeof usePalaceOverview>
+  dueCount: number
+  attention: ReturnType<typeof useConsoleAttention>
+}): React.ReactElement {
   const { stats, telemetry, health, failed } = overview
   if (failed !== null) {
     return <section className={styles.panelCard}><div className={styles.expandLoading}>{t('teleFailed')}：{failed}</div></section>
@@ -2835,13 +2898,22 @@ function TodayHero({ t, overview, dueCount }: { t: T; overview: ReturnType<typeo
     return <section className={styles.panelCard}><div className={styles.expandLoading}>{t('teleLoading')}</div></section>
   }
   const counts = telemetry.counts
-  // v0.8.8 设计稿 #sparkline 100%:总记忆 spark 用真实 dailyWrites 近 30 天;
-  // 开放/清晰度暂无日序列,用稳定合成线;今日到期为第 4 个 KPI(红色调)。
+  // 只有真实日序列才画 sparkline；0.13 起不再用合成曲线冒充趋势。
   const sparkWrites = (telemetry.dailyWrites ?? []).slice(-30).map(d => d.count)
-  const sparkActive = Array.from({ length: 30 }, (_, i) => (stats?.active ?? 0) * 0.5 + (29 - i) * 0.12)
-  const sparkSignal = Array.from({ length: 30 }, (_, i) => 0.5 + i / 58)
-  const sparkDue = Array.from({ length: 30 }, (_, i) => (i % 9 === 0 ? 2 : i % 5 === 0 ? 1 : 0))
+  const exposures = counts.searchExposures ?? 0
   const answered = counts.reviewAnswers
+  const jobs = attention.jobs
+  const attentionItems = [
+    ...(attention.governanceTotal !== null && attention.governanceTotal > 0
+      ? [{ id: 'governance', label: t('attentionGovernance', { n: attention.governanceTotal }), tone: 'warn' as const }]
+      : []),
+    ...(jobs !== null && jobs.summary.dead > 0
+      ? [{ id: 'jobs-dead', label: t('attentionJobsDead', { n: jobs.summary.dead }), tone: 'error' as const }]
+      : []),
+    ...(jobs !== null && jobs.summary.queued > 0
+      ? [{ id: 'jobs-queued', label: t('attentionJobsQueued', { n: jobs.summary.queued }), tone: 'neutral' as const }]
+      : []),
+  ]
   return (
     <section className={styles.panelCard}>
       <div className={styles.hero}>
@@ -2850,20 +2922,25 @@ function TodayHero({ t, overview, dueCount }: { t: T; overview: ReturnType<typeo
             spark={sparkWrites} color="var(--room-episode)"
             delta={t('heroDelta7d', { n: counts.writes })} deltaTone={counts.writes > 0 ? 'up' : 'flat'} />
           <Metric label={t('kpiActive')} value={stats?.active ?? 0}
-            spark={sparkActive} color="var(--room-decision)"
             delta={t('heroDeltaForgotten', { n: stats?.forgotten ?? 0 })} deltaTone="flat" />
           <Metric label={t('kpiSignal')} value={`${String(Math.round((stats?.signalRatio ?? 0) * 100))}%`}
-            spark={sparkSignal} color="var(--room-preference)"
             delta={t('heroDeltaRedacted', { n: stats?.redacted ?? 0 })} deltaTone="flat" />
           <Metric label={t('kpiDue')} value={dueCount}
             tone={dueCount > 0 ? 'error' : undefined}
-            spark={sparkDue} color="var(--dsw-alias-state-error-primary)"
             delta={answered > 0 ? t('heroDeltaAnswered', { n: answered }) : t('heroDeltaUnanswered')}
             deltaTone={answered > 0 ? 'up' : 'flat'} />
         </div>
         <div className={styles.ringCard}>
           <HealthRing score={health?.overall ?? 0} label={t('healthLabel')} />
         </div>
+      </div>
+      <div className={styles.attentionStrip} role="status">
+        {attention.failed !== null && <span>{t('attentionFailed')}: {attention.failed}</span>}
+        {attention.failed === null && attentionItems.length === 0 && <span>{t('attentionEmpty')}</span>}
+        {attentionItems.map(item => (
+          <span key={item.id} className={`${styles.attentionItem} ${styles[ATTENTION_TONE_CLASS[item.tone]]}`}>{item.label}</span>
+        ))}
+        {jobs !== null && !jobs.available && <span className={styles.attentionItem}>{t('attentionJobsUnavailable')}</span>}
       </div>
       <div className={styles.heroFoot}>
         {/* 近 7 天四项次级计数（落成/发掘/整理/今日到期）内联下沉到底行，与诊脉时间同行 */}
@@ -2879,6 +2956,10 @@ function TodayHero({ t, overview, dueCount }: { t: T; overview: ReturnType<typeo
           <span className={styles.heroStat}>
             <span className={styles.heroStatLabel}>{t('teleConsolidate')}</span>
             <span className={styles.heroStatValue}>{counts.consolidations}</span>
+          </span>
+          <span className={styles.heroStat}>
+            <span className={styles.heroStatLabel}>{t('kpiExposures')}</span>
+            <span className={styles.heroStatValue}>{exposures}</span>
           </span>
           {/* 今日到期：复习调度的消费者是 agent，这里只给观测计数（角标/陈展筛选可达）；有待忆时数字点亮警示色 */}
           <span className={styles.heroStat}>
@@ -6017,6 +6098,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
   /** 今日速览、健康分构成与房间目录共用一份总览数据（同一路由不重复请求）。 */
   const overview = usePalaceOverview(scope, projectSelector, reloadTick)
+  /** 控制台待办：jobs/governance 独立事实源，Today 与后续治理面共用。 */
+  const attention = useConsoleAttention(scope, projectSelector, reloadTick)
 
   /** 失效选择器的自愈：同一轮只触发一次，回到 follow 后复位（见 api() 的 404 分支）。 */
   const healingRef = useRef(false)
@@ -6517,7 +6600,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabToday')} subtitle={t('pageHeaderTodaySubtitle')} />
           {/* 今日速览：主指标 + 健康环，替代原常驻日报条。 */}
-          <TodayHero t={t} overview={overview} dueCount={dueCount} />
+          <TodayHero t={t} overview={overview} dueCount={dueCount} attention={attention} />
           {/* v0.8.1+ 活动热力日历：90 天写入/摄取/修缮分布，GitHub 风的 7×N 网格 */}
           <div className={styles.layout}>
             {/* v0.8.6 dashboard 结构：左宽列 = 半年热力 + 入殿导航；右窄列 = 房间目录 + 翻新清单 + 画像。

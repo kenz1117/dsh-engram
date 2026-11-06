@@ -12,6 +12,7 @@ import { message } from '../i18n/messages.ts'
 import type { EngramStore } from '../store/interface.ts'
 import type { EngramScope } from '../types.ts'
 import { openJobQueue } from './queue.ts'
+import type { JobListFilter, JobQueueSummary, JobSummary } from './queue.ts'
 import { DurableReflectWorker } from './reflect-worker.ts'
 import type { ReflectJobPayload } from './reflect-worker.ts'
 
@@ -19,6 +20,8 @@ export interface HostedReflectWorker {
   enqueue(payload: ReflectJobPayload): void
   pump(): Promise<void>
   stop(): Promise<void>
+  summary(): JobQueueSummary
+  list(filter?: JobListFilter): readonly JobSummary[]
 }
 
 export interface AutoReflectHostOptions {
@@ -92,5 +95,7 @@ export async function startAutoReflectWorker(options: AutoReflectHostOptions): P
       clearInterval(pruneTimer)
       try { await worker.stop() } finally { queue.close() }
     },
+    summary: () => queue.summary(),
+    list: filter => queue.list(filter),
   }
 }

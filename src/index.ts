@@ -51,6 +51,7 @@ import type {
 } from './ingest/history.ts'
 import { runConsolidation } from './consolidation/run.ts'
 import { startAutoReflectWorker } from './jobs/host-reflect.ts'
+import type { HostedReflectWorker } from './jobs/host-reflect.ts'
 import type { IngestRequestEventData } from './ingest/hook.ts'
 import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
@@ -1010,6 +1011,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   }
 
   let stopReflectJobs: (() => Promise<void>) | undefined
+  let reflectJobs: HostedReflectWorker | undefined
   ctx.effect(() => async () => {
     await stopReflectJobs?.()
     await closeStores()
@@ -1762,6 +1764,10 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
         models: historyApi.models,
         defaults: resolved.historyBackfill,
       },
+      jobs: {
+        summary: () => reflectJobs?.summary() ?? { total: 0, queued: 0, running: 0, done: 0, dead: 0 },
+        list: filter => reflectJobs?.list(filter) ?? [],
+      },
     })
   })
 
@@ -1855,7 +1861,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
 
   if (resolved.reflect === 'auto') {
     // auto 改为持久作业：120s 执行预算 + 180s 租约，启动时接管崩溃/重启留下的作业。
-    const reflectJobs = await startAutoReflectWorker({
+    const jobs = await startAutoReflectWorker({
       dbDir: resolved.dbDir,
       dbNameForCwd,
       openStore,
@@ -1863,7 +1869,8 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       embedder: () => embedderAttempt(),
       call: (sessionId, params) => streamText(ctx, { ...params, sessionId }),
     })
-    stopReflectJobs = reflectJobs.stop
+    reflectJobs = jobs
+    stopReflectJobs = jobs.stop
     ctx.on('session/disposed', (session) => {
       const events = session.snapshotEvents() as unknown as readonly SessionEventLike[]
       const route = resolved.routeOverride ?? routeFromEvents(events)
@@ -1874,17 +1881,17 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       ), 0)
       const sessionId = String(session.id)
       try {
-        reflectJobs.enqueue({ sessionId, scope: 'user', route, eventSeq })
+        jobs.enqueue({ sessionId, scope: 'user', route, eventSeq })
         const cwd = sessionCwd(session)
         if (cwd !== undefined && existsSync(join(resolved.dbDir, dbNameForCwd(cwd)))) {
-          reflectJobs.enqueue({ sessionId, scope: 'project', cwd, route, eventSeq })
+          jobs.enqueue({ sessionId, scope: 'project', cwd, route, eventSeq })
         }
       } catch (error) {
         // disposed 观察器不能让宿主 fail-loud；入队失败留下警告，下一 dispose 补做。
         console.warn(message('core.warnReflectFailed', { scope: 'enqueue' }), error)
         return
       }
-      void reflectJobs.pump().catch((error: unknown) => {
+      void jobs.pump().catch((error: unknown) => {
         console.warn(message('core.warnReflectFailed', { scope: 'scheduler' }), error)
       })
     })

@@ -106,6 +106,35 @@ export interface JobQueueOptions {
   readonly now?: () => number
 }
 
+/** 面板/宿主诊断用的轻量作业投影：不含 payload，损坏 payload 也不会让列表炸掉。 */
+export interface JobSummary {
+  readonly id: string
+  readonly kind: string
+  readonly status: JobStatus
+  readonly attempts: number
+  readonly maxAttempts: number
+  readonly runAfter: number
+  readonly leaseOwner: string | null
+  readonly leaseExpiresAt: number | null
+  readonly checkpoint: string | null
+  readonly lastError: string | null
+  readonly createdAt: number
+  readonly updatedAt: number
+}
+
+export interface JobListFilter {
+  readonly statuses?: readonly JobStatus[]
+  readonly limit?: number
+}
+
+export interface JobQueueSummary {
+  readonly total: number
+  readonly queued: number
+  readonly running: number
+  readonly done: number
+  readonly dead: number
+}
+
 /** 持久作业队列。同一 DB 文件可开多个实例（多 worker 竞争靠事务 + 租约保证）。 */
 export interface JobQueue {
   /** 按 id 幂等入队：同 id 已存在时原样返回旧作业（deduped: true），不复制作业、不覆盖 payload。 */
@@ -127,6 +156,10 @@ export interface JobQueue {
   checkpoint(input: CheckpointInput): JobRecord
   /** 按 id 读取当前记录；不存在返回 undefined。 */
   get(id: string): JobRecord | undefined
+  /** 轻量诊断列表（新到旧）；只读元数据，不反序列化 payload。 */
+  list(filter?: JobListFilter): readonly JobSummary[]
+  /** 按状态聚合的队列摘要；供面板/KPI 使用，不做全文扫描。 */
+  summary(): JobQueueSummary
   /** 历史回收：只删除 updated_at 早于 now - olderThanMs 的终态作业（done/dead）；queued/running 一律不动。返回删除行数。 */
   prune(olderThanMs: number): number
   /** 关闭句柄。close 后可在同路径重新 openJobQueue——全部状态持久。 */
@@ -298,6 +331,8 @@ export async function openJobQueue(path: string, options: JobQueueOptions = {}):
     SET status = 'dead', lease_owner = NULL, lease_expires_at = NULL, last_error = ?, updated_at = ?
     WHERE id = ?`)
   const sqlCheckpoint = db.prepare(`UPDATE ${TABLE} SET checkpoint = ?, updated_at = ? WHERE id = ?`)
+  const sqlList = db.prepare(`SELECT * FROM ${TABLE} ORDER BY updated_at DESC, rowid DESC LIMIT ?`)
+  const sqlSummary = db.prepare(`SELECT status, COUNT(*) AS n FROM ${TABLE} GROUP BY status`)
   // 历史回收只碰终态：status 过滤写死 done/dead，queued/running 无论多旧都不会被删。
   const sqlPrune = db.prepare(`DELETE FROM ${TABLE} WHERE status IN ('done', 'dead') AND updated_at < ?`)
 
@@ -421,6 +456,57 @@ export async function openJobQueue(path: string, options: JobQueueOptions = {}):
     get(id) {
       const row = sqlGet.get(requireText(id, 'id')) as unknown as JobRow | undefined
       return row === undefined ? undefined : toRecord(row)
+    },
+
+    list(filter) {
+      const limit = filter?.limit === undefined ? 100 : requirePositiveInt(filter.limit, 'limit')
+      const statuses = filter?.statuses === undefined ? undefined : filter.statuses.map(status => {
+        if (status !== 'queued' && status !== 'running' && status !== 'done' && status !== 'dead') {
+          throw new EngramError('JOB_INVALID', `jobs: status 必须是 queued/running/done/dead，收到 ${String(status)}`)
+        }
+        return status
+      })
+      const wanted = statuses === undefined ? undefined : new Set(statuses)
+      const rows = sqlList.all(Math.max(1, Math.min(500, limit))) as unknown as JobRow[]
+      const mapped: JobSummary[] = []
+      for (const row of rows) {
+        if (wanted !== undefined && !wanted.has(row.status as JobStatus)) continue
+        mapped.push({
+          id: row.id,
+          kind: row.kind,
+          status: row.status as JobStatus,
+          attempts: row.attempts,
+          maxAttempts: row.max_attempts,
+          runAfter: row.run_after,
+          leaseOwner: row.lease_owner,
+          leaseExpiresAt: row.lease_expires_at,
+          checkpoint: row.checkpoint,
+          lastError: row.last_error,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        })
+      }
+      return mapped
+    },
+
+    summary() {
+      const summary: {
+        total: number
+        queued: number
+        running: number
+        done: number
+        dead: number
+      } = { total: 0, queued: 0, running: 0, done: 0, dead: 0 }
+      for (const row of sqlSummary.all() as unknown as { status: string; n: number }[]) {
+        const count = Number(row.n)
+        if (!Number.isFinite(count)) continue
+        summary.total += count
+        if (row.status === 'queued') summary.queued = count
+        else if (row.status === 'running') summary.running = count
+        else if (row.status === 'done') summary.done = count
+        else if (row.status === 'dead') summary.dead = count
+      }
+      return summary
     },
 
     prune(olderThanMs) {

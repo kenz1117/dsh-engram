@@ -16,6 +16,11 @@ const SHELL_KEYS = [
   'workfaceReplay', 'workfaceSystem',
 ] as const
 
+const ATTENTION_KEYS = [
+  'kpiExposures', 'attentionEmpty', 'attentionFailed', 'attentionGovernance', 'attentionJobsDead',
+  'attentionJobsQueued', 'attentionJobsUnavailable',
+] as const
+
 const GOVERNANCE_KEYS = [
   'benchInspect', 'governanceTitle', 'governanceHint', 'governanceCount', 'governanceEmpty', 'governanceFailed',
   'governanceDismiss', 'governanceForget', 'governanceActionFailed', 'governanceStableId',
@@ -32,6 +37,14 @@ describe('context replay locale parity', () => {
 
   it('0.13 shell 的 7 个文案键在 zh/en/ru 三语齐备', () => {
     for (const key of SHELL_KEYS) {
+      expect(zh[key], `zh:${key}`).toBeTruthy()
+      expect(en[key], `en:${key}`).toBeTruthy()
+      expect(ru[key], `ru:${key}`).toBeTruthy()
+    }
+  })
+
+  it('Today 真实待办与曝光指标的 7 个文案键三语齐备', () => {
+    for (const key of ATTENTION_KEYS) {
       expect(zh[key], `zh:${key}`).toBeTruthy()
       expect(en[key], `en:${key}`).toBeTruthy()
       expect(ru[key], `ru:${key}`).toBeTruthy()
