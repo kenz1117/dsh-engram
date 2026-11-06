@@ -43,6 +43,11 @@ jobs:
         run: node scripts/check-messages.mjs
       - name: language pattern acceptance
         run: node scripts/check-patterns.mjs
+      # CSS Modules не проверяются типами: класс без правила — это «undefined»
+      # в className, а съеденное правило .item роняет вёрстку списка незаметно
+      # для CI. Шаг ловит «разметка берёт класс, которого нет в стилях».
+      - name: css class coverage
+        run: node scripts/check-css-classes.mjs
       # Packaging smoke (audit 2026-10-18 §7): 0.8.0–0.8.14 shipped a tarball a
       # clean profile could not install (peers not optional — PR #23). Two cheap
       # guards that run without the peers:

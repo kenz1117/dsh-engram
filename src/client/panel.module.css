@@ -170,6 +170,7 @@
 .importSummary { margin: 0 0 var(--space-3); font-size: var(--fs-body); color: var(--dsw-alias-label-secondary); line-height: 1.6; overflow-wrap: anywhere; }
 .importRedactedNotice { margin: 0 0 var(--space-3); padding: 6px 10px; border-radius: var(--radius-control); font-size: var(--fs-body); line-height: 1.6; color: var(--dsw-alias-state-warning-primary, #b26a00); background: color-mix(in srgb, var(--dsw-alias-state-warning-primary, #b26a00) 8%, transparent); }
 .importList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.importRow { list-style: none; margin: 0; padding: 0; }
 .importRowMain { display: flex; align-items: flex-start; gap: var(--space-2); padding: 6px 8px; border-radius: var(--radius-control); cursor: pointer; transition: background var(--dur-fast) var(--ease-spring); }
 .importRowMain:hover { background: var(--dsw-alias-fill-tsp-secondary); }
 .importRowMain input[type='checkbox'] { margin-top: 3px; flex-shrink: 0; accent-color: var(--dsw-alias-brand-primary); }
@@ -292,7 +293,21 @@ select.input { padding-right: 28px; appearance: none; }
 /* ---------- 批量操作条（吸底毛玻璃）。v0.9.x 视觉升级：左 border 用品牌渐变（amber→rose）作视觉签名。
    padding-left 留出 2px 让左边渐变条不挤压内容。 ---------- */
 .batchBar { position: sticky; bottom: var(--space-3); z-index: 5; display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; padding: var(--space-2) var(--space-3) var(--space-2) calc(var(--space-3) + 2px); background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 88%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, var(--dsw-alias-border-l2)); border-left: 2px solid var(--brand-grad-line); border-radius: var(--radius-card); box-shadow: 0 8px 24px -12px color-mix(in srgb, var(--dsw-alias-label-primary) 30%, transparent); animation: barUp var(--dur-base) var(--ease-spring) both; }
-/* 危险态：左 border 改为警示色，提示不可逆操作（与 v0.8.x 行为兼容）。 */
+/* 批量条的三件套：计数靠左（margin-right:auto 把按钮推到右边）、按钮压低一档。 */
+@keyframes barUp { from { opacity: 0; transform: translateY(12px) scale(0.98); } to { opacity: 1; transform: none; } }
+.batchBar > span { color: var(--dsw-alias-label-primary); font-size: var(--fs-body); font-variant-numeric: tabular-nums; margin-right: auto; }
+.batchBar .button { height: 26px; padding: 0 var(--space-2); font-size: var(--fs-micro); }
+
+/* ---------- 记忆条目（紧凑行式 List Row；v0.8+ 主列满宽后 padding 抬到 16/14） ----------
+   分隔线取代卡片描边与间距：一屏能读更多条；操作按钮默认隐藏（visibility 而非仅 opacity，
+   避免点到不可见的「封门」），hover / 选中 / 键盘聚焦时显现，触屏常显。 */
+.itemList { display: flex; flex-direction: column; border-top: 1px solid var(--dsw-alias-border-l1); }
+.item { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: var(--space-3); align-items: start; padding: var(--space-4) var(--space-2); border-bottom: 1px solid var(--dsw-alias-border-l1); border-radius: var(--radius-control); transition: background var(--dur-fast) var(--ease-spring); animation: itemIn var(--dur-base) var(--ease-spring) both; }
+.itemList > .item:last-child { border-bottom: 0; }
+@keyframes itemIn {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: none; }
+}
 .item:hover { background: var(--dsw-alias-bg-layer-1); }
 .item.selected { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 6%, var(--dsw-alias-bg-layer-1)); box-shadow: inset 2px 0 0 var(--dsw-alias-brand-primary); }
 .itemCheck { width: 14px; height: 14px; margin-top: 4px; accent-color: var(--dsw-alias-brand-primary); cursor: pointer; transition: transform 80ms var(--ease-spring); }
@@ -493,6 +508,7 @@ select.input { padding-right: 28px; appearance: none; }
 .heatmapCol { display: flex; flex-direction: column; gap: 4px; flex: none; }
 .heatmapCell { display: block; width: 14px; height: 14px; border-radius: 3px; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-layer-1)); transition: transform 80ms var(--ease-spring); }
 .heatmapCell:hover { transform: scale(1.4); outline: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 60%, transparent); outline-offset: 1px; }
+.heatmapL0 { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-layer-1)); }
 .heatmapL1 { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 25%, var(--dsw-alias-bg-layer-1)); }
 .heatmapL2 { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, var(--dsw-alias-bg-layer-1)); }
 .heatmapL3 { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 70%, var(--dsw-alias-bg-layer-1)); }
