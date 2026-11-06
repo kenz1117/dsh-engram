@@ -13,7 +13,8 @@ import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, EpisodeTimelineAroundResponse, EpisodeTimelineGroupsResponse, ExportData, ListFilter, MemoryRecord, ObservationStatus } from './types.ts'
-import { asMemoryId, asObservationId } from './types.ts'
+import { updateMemory } from './application/memory-commands.ts'
+import { asMemoryId, asObservationId, EngramError } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
 import { embedImportedRecords, parseImportData, parseMarkdownExport } from './store/import.ts'
 import { formatBytes } from './body-limits.ts'
@@ -778,6 +779,23 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             json(res, 200, { parts })
             return
           }
+          if (req.method === 'GET' && route === 'injections') {
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const sessionId = url.searchParams.get('sessionId') ?? undefined
+            const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? 50) || 50))
+            const store = await storeFor(scope)
+            json(res, 200, { items: await store.listInjections({ ...(sessionId === undefined ? {} : { sessionId }), limit }) })
+            return
+          }
+          if (req.method === 'GET' && route === 'injection') {
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const id = url.searchParams.get('id')
+            if (id === null || id === '') { json(res, 400, { error: 'id required' }); return }
+            const snapshot = await (await storeFor(scope)).getInjection(id)
+            if (snapshot === undefined) { json(res, 404, { error: 'injection not found' }); return }
+            json(res, 200, snapshot)
+            return
+          }
           if (req.method === 'GET' && route === 'list') {
             const scope = scopeOf(url.searchParams.get('scope'), 'user')
             const status = url.searchParams.get('status')
@@ -801,7 +819,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             return
           }
           if (req.method === 'GET' && route === 'search-test') {
-            // 召回测试台：跑真实检索（含命中强化），供面板核对召回质量与命中原委。
+            // 召回测试台：跑真实检索并记录独立曝光审计，供面板核对召回质量与命中原委。
             const q = url.searchParams.get('q')
             if (q === null || q.trim() === '') { json(res, 400, { error: 'q required' }); return }
             const scopeParam = url.searchParams.get('scope')
@@ -823,6 +841,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               degraded,
               hits: hits.map(hit => ({
                 id: hit.record.id,
+                memoryId: hit.record.memoryId,
+                revisionId: hit.record.id,
                 score: hit.score,
                 via: hit.via,
                 ...(hit.viaEdge === undefined ? {} : { viaEdge: hit.viaEdge }),
@@ -833,6 +853,47 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 createdAt: hit.record.createdAt,
               })),
             })
+            return
+          }
+          if (req.method === 'GET' && route === 'governance') {
+            // 治理队列：只返回双侧 active 的 contradicts 边，避免把已闭馆旧冲突反复推给人。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 50) || 50))
+            const store = await storeFor(scope)
+            const all = await store.listContradictions(200)
+            json(res, 200, {
+              scope,
+              items: all.slice(0, limit),
+              total: all.length,
+            })
+            return
+          }
+          if (req.method === 'POST' && route === 'governance') {
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
+            const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')
+            const action = body.action
+            if (action !== 'dismiss' && action !== 'forget-loser') {
+              json(res, 400, { error: 'action must be dismiss or forget-loser' })
+              return
+            }
+            if (typeof body.firstId !== 'string' || typeof body.secondId !== 'string'
+              || body.firstId === '' || body.secondId === '') {
+              json(res, 400, { error: 'firstId and secondId required' })
+              return
+            }
+            if (action === 'forget-loser' && (typeof body.loserId !== 'string' || body.loserId === '')) {
+              json(res, 400, { error: 'loserId required' })
+              return
+            }
+            const result = await (await storeFor(scope)).resolveContradiction({
+              firstId: body.firstId as never,
+              secondId: body.secondId as never,
+              action,
+              ...(typeof body.loserId === 'string' ? { loserId: body.loserId as never } : {}),
+            })
+            json(res, 200, { ok: true, result })
             return
           }
           if (req.method === 'GET' && route === 'observations') {
@@ -1788,21 +1849,28 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const store = await storeFor(scope)
             if (route === 'update') {
               if (typeof body.content !== 'string' || body.content.trim() === '') { json(res, 400, { error: 'content required' }); return }
-              const old = await store.get(body.id as never)
-              if (old === undefined) { json(res, 404, { error: messageIn(deps.language, 'misc.recordNotFound', { id: body.id }) }); return }
-              const record = await store.update({
-                id: body.id as never,
-                scope,
-                kind: typeof body.kind === 'string' && ['fact', 'preference', 'decision', 'episode', 'skill'].includes(body.kind)
-                  ? body.kind as EngramKind
-                  : old.kind,
-                content: body.content,
-                ...(typeof body.importance === 'number' && Number.isFinite(body.importance)
-                  ? { importance: Math.min(1, Math.max(0, body.importance)) }
-                  : {}),
-              })
-              json(res, 200, { record })
-              return
+              try {
+                const record = await updateMemory({ store, embedder: deps.embedder }, {
+                  id: body.id as never,
+                  scope,
+                  content: body.content,
+                  ...(typeof body.kind === 'string' && ['fact', 'preference', 'decision', 'episode', 'skill'].includes(body.kind)
+                    ? { kind: body.kind as EngramKind }
+                    : {}),
+                  ...(typeof body.importance === 'number' && Number.isFinite(body.importance)
+                    ? { importance: body.importance }
+                    : {}),
+                })
+                if (record === undefined) { json(res, 404, { error: messageIn(deps.language, 'misc.recordNotFound', { id: body.id }) }); return }
+                json(res, 200, { record })
+                return
+              } catch (error) {
+                if (error instanceof EngramError && error.code === 'EMPTY_CONTENT') {
+                  json(res, 400, { error: error.message })
+                  return
+                }
+                throw error
+              }
             }
             const record = route === 'forget'
               ? await store.forget(body.id as never)

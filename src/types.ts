@@ -103,13 +103,16 @@ export interface ReviewSchedule {
 
 /** 一条记忆。来源链：v0.0.1 记 sourceSessionId；v0.2.0 起自动摄取补 sourceRound/sourceSeq。 */
 export interface MemoryRecord {
+  /** 当前 revision id：直接定位这一版内容。 */
   readonly id: MemoryId
+  /** 稳定逻辑身份：修正/更新后保持不变；0.11.x 存量身份在 v15 迁移时等于旧节点 id。 */
+  readonly memoryId: MemoryId
   readonly scope: EngramScope
   readonly kind: EngramKind
   readonly content: string
   /** 0-1：重要性，影响注入排序与衰减调度。 */
   readonly importance: number
-  /** 0-1：置信度，命中强化提升、蒸馏失败回退。 */
+  /** 0-1：置信度，真实反馈（效果回报/复述并入）提升、检索曝光不动、蒸馏失败回退。 */
   readonly confidence: number
   readonly status: EngramStatus
   /** 最近一次使用效果回报（engram_report 写入；未回报过为 undefined）。 */
@@ -130,6 +133,37 @@ export interface MemoryRecord {
   readonly imageryScore?: number
   /** 间隔重复调度（schema v6 起；未进入调度时缺省）。 */
   readonly review?: ReviewSchedule
+}
+
+/** 一次实际画像/记忆注入的轻量索引；完整正文只在 getInjection 按需读取。 */
+export interface InjectionSnapshotHead {
+  readonly id: string
+  readonly sessionId: string
+  readonly packetHash: string
+  readonly memoryIds: readonly MemoryId[]
+  readonly hasCurated: boolean
+  readonly compactionCount: number
+  readonly packetBytes: number
+  readonly createdAt: number
+}
+
+/** 注入快照完整详情：packet 是哈希、审计和模型实际收到的同一最终文本。 */
+export interface InjectionSnapshot extends InjectionSnapshotHead {
+  readonly packet: string
+}
+
+export interface InjectionSnapshotInput {
+  readonly sessionId: string
+  readonly packetHash: string
+  readonly packet: string
+  readonly memoryIds: readonly MemoryId[]
+  readonly hasCurated: boolean
+  readonly compactionCount: number
+}
+
+export interface InjectionSnapshotFilter {
+  readonly sessionId?: string
+  readonly limit?: number
 }
 
 /** 记忆关系边。 */
@@ -251,6 +285,8 @@ export interface WriteInput {
   readonly scope: EngramScope
   readonly kind: EngramKind
   readonly content: string
+  /** 稳定逻辑身份覆盖；缺省 = 新记忆生成新身份（导入旧导出件时可携带原身份）。 */
+  readonly memoryId?: MemoryId
   readonly importance?: number
   readonly confidence?: number
   readonly sourceSessionId?: string | null
@@ -404,8 +440,8 @@ export interface UpdateInput {
   readonly kind: EngramKind
   readonly content: string
   readonly importance?: number
-  /** 新内容向量；缺省时继承旧条目向量。 */
-  readonly embedding?: Float32Array
+  /** 新内容向量；undefined = 非内容更新时继承，null = 内容变化但暂不可嵌入，作废旧向量。 */
+  readonly embedding?: Float32Array | null
   /** 意象铭牌替换；缺省继承旧条目。 */
   readonly imagery?: ImageryLabel
 }

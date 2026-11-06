@@ -3,7 +3,8 @@ import { askNoul, createMemoryJudge, JevCallError, testJevConnection } from '../
 import { clearJevObservations, listJevObservations, recordJevObservation } from '../src/jev/observe.ts'
 import { confirmContradictions, decideWrite } from '../src/write-disposition.ts'
 import type { ResolvedJevConfig } from '../src/config.ts'
-import type { JevConnection } from '../src/jev/host.ts'
+import type { HostContext, JevConnection } from '../src/jev/host.ts'
+import { isTrustedJevEndpoint, resolveJevConnection } from '../src/jev/host.ts'
 import type { EngramStore } from '../src/store/interface.ts'
 import type { JudgeQuestion, MemoryJudge } from '../src/write-disposition.ts'
 import type { MemoryId, MemoryRecord } from '../src/types.ts'
@@ -35,6 +36,7 @@ const jevConfig: ResolvedJevConfig = {
 function makeRecord(content: string, id = 'm-neighbor'): MemoryRecord {
   return {
     id: id as MemoryId,
+    memoryId: id as MemoryId,
     scope: 'user',
     kind: 'fact',
     content,
@@ -173,6 +175,70 @@ describe('askNoul', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 500 })))
     await expect(askNoul(connection, 's', [{ id: 'q', instructions: 'i' }]))
       .rejects.toThrow(`jev: HTTP 500 from ${connection.endpoint}`)
+  })
+})
+
+describe('Jev 凭据 origin 边界', () => {
+  const host: HostContext = {
+    get: (service) => {
+      if (service === 'llm') {
+        return {
+          listConfigurableProviders: () => [{ provider: 'aitunnel', settingsNs: 'test-llm' }],
+        }
+      }
+      if (service === 'settings') {
+        return {
+          describe: async () => [{
+            ns: 'test-llm',
+            value: {
+              providers: {
+                aitunnel: {
+                  baseURL: 'https://api.aitunnel.ru/v1',
+                  apiKeyEnv: 'AITUNNEL_KEY',
+                  models: [{ id: 'jev-1.13' }],
+                },
+              },
+            },
+          }],
+        }
+      }
+      if (service === 'credentials') return { resolve: async () => ({ value: 'host-provider-key' }) }
+      return undefined
+    },
+  }
+
+  it('同源 override 保留合法自定义路径，跨 origin 不返回宿主凭据', async () => {
+    const trusted = await resolveJevConnection(
+      host,
+      'aitunnel',
+      'jev-1.13',
+      3000,
+      'https://api.aitunnel.ru/custom/systemone',
+    )
+    expect(trusted).toEqual({
+      endpoint: 'https://api.aitunnel.ru/custom/systemone',
+      apiKey: 'host-provider-key',
+      model: 'jev-1.13',
+      timeoutMs: 3000,
+    })
+
+    const hostile = await resolveJevConnection(
+      host,
+      'aitunnel',
+      'jev-1.13',
+      3000,
+      'https://attacker.invalid/collect',
+    )
+    expect(typeof hostile).toBe('string')
+    expect(hostile).toContain('同源')
+    expect(hostile).not.toContain('host-provider-key')
+  })
+
+  it('origin 规范化默认端口，拒绝 userinfo、异协议和异端口', () => {
+    expect(isTrustedJevEndpoint('https://api.aitunnel.ru:443/v1', 'https://api.aitunnel.ru/v1/systemone')).toBe(true)
+    expect(isTrustedJevEndpoint('https://api.aitunnel.ru/v1', 'https://user@api.aitunnel.ru/v1/systemone')).toBe(false)
+    expect(isTrustedJevEndpoint('https://api.aitunnel.ru/v1', 'http://api.aitunnel.ru/v1/systemone')).toBe(false)
+    expect(isTrustedJevEndpoint('https://api.aitunnel.ru/v1', 'https://api.aitunnel.ru:444/v1/systemone')).toBe(false)
   })
 })
 

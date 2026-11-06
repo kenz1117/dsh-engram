@@ -2,7 +2,7 @@
 
 ## Supported versions / 支持版本
 
-Only the latest published `0.8.x` receives security fixes. 仅最新已发布的 `0.8.x` 会收到安全修复。
+Only the latest published `0.11.x` receives security fixes. 仅最新已发布的 `0.11.x` 会收到安全修复。
 
 ## Reporting a vulnerability / 报告漏洞
 
@@ -18,7 +18,7 @@ Worth knowing before you report — this plugin:
 - renders that content in the panel (loopback HTTP, see below);
 - optionally calls external LLM endpoints (the judge "Jev", remote embedders) with content you configured it to send.
 
-Secrets are redacted before storage (`src/redact.ts` — PEM/Bearer/`sk-`/`ghp_`/AKIA patterns, locale-specific labelled rules, plus your own deny-list in config). The panel is served on loopback only, behind the host's auth, with write actions further gated by peer/origin/content-type checks.
+Secrets are redacted before storage (`src/security/redact.ts` — PEM/Bearer/`sk-`/`ghp_`/AKIA patterns, locale-specific labelled rules, plus your own deny-list in config). The panel defaults to loopback HTTP with peer/Host checks and write actions further gated by Origin/Content-Type. Optional `panelAccess: 'lan'` deliberately grants read/write access to the trusted private network; it does not provide user authentication and must not be exposed to untrusted networks. Jev endpoint overrides are restricted to the configured provider's origin before host credentials are attached.
 
 ## In scope / 范围
 

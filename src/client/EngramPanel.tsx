@@ -844,6 +844,8 @@ function EditForm({ t, record, onClose, onSaved, toast }: {
 /** search-test API 的命中行。 */
 interface BenchHit {
   readonly id: string
+  readonly memoryId: string
+  readonly revisionId: string
   readonly score: number
   readonly via: 'fts' | 'vec' | 'both'
   readonly viaEdge?: { readonly from: string; readonly type: string }
@@ -871,7 +873,11 @@ interface ActivityRow {
 const VIA_KEY: Record<BenchHit['via'], EngramKey> = { fts: 'viaFts', vec: 'viaVec', both: 'viaBoth' }
 
 /** 召回测试台：输入查询跑真实检索，展示得分、命中原委（关键词/语义/边扩展）与内容。 */
-function RecallBench({ t, scope }: { t: T; scope: 'user' | 'project' | 'shared' }): React.ReactElement {
+function RecallBench({ t, scope, onSelect }: {
+  t: T
+  scope: 'user' | 'project' | 'shared'
+  onSelect?: (id: string) => void
+}): React.ReactElement {
   const [query, setQuery] = useState('')
   /** 默认随观察 scope，但用户可在 select 内手动切换 'all' / 其它；切换观察 scope 时重置。 */
   const [benchScope, setBenchScope] = useState<string>(scope)
@@ -926,7 +932,14 @@ function RecallBench({ t, scope }: { t: T; scope: 'user' | 'project' | 'shared' 
             <span className={styles.benchScore}>{hit.score.toFixed(4)}</span>
           </div>
           <div className={styles.benchContent}>{hit.content}</div>
-          <span className={styles.benchId} title={hit.id}>{hit.id}</span>
+          <div className={styles.benchProvenance}>
+            <span className={styles.benchId} title={hit.memoryId}>{`M ${hit.memoryId}`}</span>
+            <span className={styles.benchId} title={hit.revisionId}>{`R ${hit.revisionId}`}</span>
+          </div>
+          {onSelect !== undefined && (
+            <button type="button" className={styles.button}
+              onClick={() => { onSelect(hit.revisionId) }}>{t('benchInspect')}</button>
+          )}
         </div>
       ))}
       </div>
@@ -5649,6 +5662,264 @@ function ImportButton({ t, scope, toast, onImported }: {
     </div>
   )
 }
+/** 注入回放列表行（host `/injections` 的 head-only 结构）。 */
+interface InjectionSnapshotHeadView {
+  readonly id: string
+  readonly sessionId: string
+  readonly packetHash: string
+  readonly memoryIds: readonly string[]
+  readonly hasCurated: boolean
+  readonly compactionCount: number
+  readonly packetBytes: number
+  readonly createdAt: number
+}
+
+/** 注入回放详情（host `/injection` 按 id 返回完整 packet）。 */
+interface InjectionSnapshotView extends InjectionSnapshotHeadView {
+  readonly packet: string
+}
+
+/** 包大小用人类可读单位；审计字段保持原始字节数，不在此换算后冒充精确值。 */
+function replayBytes(n: number): string {
+  if (n < 1024) return `${String(n)} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MiB`
+}
+
+/** 截短哈希用于列表识别；完整哈希在详情里展示，避免列表行横向溢出。 */
+function replayHashShort(hash: string): string {
+  return hash.length <= 12 ? hash : `${hash.slice(0, 12)}…`
+}
+
+/**
+ * 上下文回放工作面（0.12.0）：列表只取 head，正文按 id 按需读取。
+ * 事实源是 `injection_snapshots.packet`；这里不做“相似重建”，避免回放 UI 与模型所见分叉。
+ */
+function ContextReplayView({ t, scope, reloadTick }: {
+  readonly t: T
+  readonly scope: 'user' | 'project' | 'shared'
+  readonly reloadTick: number
+}): React.ReactElement {
+  const [session, setSession] = useState('')
+  const [selected, setSelected] = useState<string | null>(null)
+  const [detail, setDetail] = useState<InjectionSnapshotView | null>(null)
+  const [detailFailed, setDetailFailed] = useState<string | null>(null)
+  const query = session.trim()
+  const listPath = query === ''
+    ? `injections?scope=${scope}&limit=50&tick=${String(reloadTick)}`
+    : `injections?scope=${scope}&sessionId=${encodeURIComponent(query)}&limit=50&tick=${String(reloadTick)}`
+  const { data, failed } = useApi<{ items: readonly InjectionSnapshotHeadView[] }>(listPath)
+  const items = data?.items ?? []
+
+  useEffect(() => {
+    if (selected === null) {
+      setDetail(null)
+      setDetailFailed(null)
+      return
+    }
+    let cancelled = false
+    api<InjectionSnapshotView>(`injection?scope=${scope}&id=${encodeURIComponent(selected)}`)
+      .then((packetDetail) => { if (!cancelled) { setDetail(packetDetail); setDetailFailed(null) } })
+      .catch((loadError: unknown) => {
+        if (!cancelled) setDetailFailed(loadError instanceof Error ? loadError.message : String(loadError))
+      })
+    return () => { cancelled = true }
+  }, [selected, scope])
+
+  return (
+    <div className={styles.tabPanel}>
+      <PageHeader title={t('tabReplay')} subtitle={t('pageHeaderReplaySubtitle')} />
+      <div className={styles.toolbarCard}>
+        <label className={styles.toolbarRow}>
+          <span className={styles.fieldLabel}>{t('replayFilterLabel')}</span>
+          <input className={`${styles.input} ${styles.search}`} placeholder={t('replayFilterPlaceholder')}
+            value={session} onChange={(event) => { setSession(event.target.value); setSelected(null) }} />
+        </label>
+        <span className={styles.toolbarCount}>{t('replayCount', { n: items.length })}</span>
+      </div>
+
+      {failed !== null && <div className={styles.empty}>{t('replayFailed')}</div>}
+      {failed === null && items.length === 0 && <EmptyState title={t('replayEmpty')} />}
+
+      <div className={styles.replayList}>
+        {items.map(item => {
+          const open = selected === item.id
+          return (
+            <article key={item.id} className={open ? `${styles.replayCard} ${styles.on}` : styles.replayCard}>
+              <header className={styles.replayHead}>
+                <div className={styles.replayTitle}>
+                  <strong>{fmtTime(item.createdAt)}</strong>
+                  <span>{item.sessionId}</span>
+                </div>
+                <div className={styles.replayBadges}>
+                  <span>{replayBytes(item.packetBytes)}</span>
+                  <span>{replayHashShort(item.packetHash)}</span>
+                  {item.hasCurated && <span>{t('replayCurated')}</span>}
+                </div>
+              </header>
+              <div className={styles.replayMeta}>
+                <span>{t('replayMemories')}: {String(item.memoryIds.length)}</span>
+                <span>{t('replayCompactions')}: {String(item.compactionCount)}</span>
+              </div>
+              <button type="button" className={styles.button} aria-expanded={open}
+                onClick={() => { setSelected(current => current === item.id ? null : item.id) }}>
+                {open ? t('replayClose') : t('replayOpen')}
+              </button>
+
+              {open && (
+                <section className={styles.replayDetail} aria-live="polite">
+                  <h4>{t('replayMetaTitle')}</h4>
+                  {detailFailed !== null && <p>{detailFailed}</p>}
+                  {detailFailed === null && detail === null && <p>{t('loading')}</p>}
+                  {detail !== null && (
+                    <>
+                      <dl className={styles.replayMetaGrid}>
+                        <dt>{t('replaySession')}</dt><dd>{detail.sessionId}</dd>
+                        <dt>{t('replayHash')}</dt><dd className={styles.replayHash}>{detail.packetHash}</dd>
+                        <dt>{t('replaySize')}</dt><dd>{replayBytes(detail.packetBytes)}</dd>
+                        <dt>{t('replayMemories')}</dt>
+                        <dd>
+                          {detail.memoryIds.length === 0 ? '—' : detail.memoryIds.map(id => (
+                            <code key={id}>{id}</code>
+                          ))}
+                        </dd>
+                      </dl>
+                      <h4>{t('replayPacketTitle')}</h4>
+                      <pre className={styles.replayPacket}>{detail.packet}</pre>
+                      <p className={styles.replayNote}>{t('replayExactNote')}</p>
+                    </>
+                  )}
+                </section>
+              )}
+            </article>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/** 治理队列的 contradicts 边（host `/governance`）。 */
+interface GovernancePairView {
+  readonly first: {
+    readonly id: string
+    readonly memoryId: string
+    readonly kind: string
+    readonly content: string
+    readonly status: string
+  }
+  readonly second: {
+    readonly id: string
+    readonly memoryId: string
+    readonly kind: string
+    readonly content: string
+    readonly status: string
+  }
+  readonly createdAt: number
+}
+
+interface GovernanceView {
+  readonly items: readonly GovernancePairView[]
+  readonly total: number
+}
+
+/** 请求治理动作的窄负载；scope 由 rpc.ts 的 project 注入机制处理。 */
+interface GovernanceActionBody {
+  readonly action: 'dismiss' | 'forget-loser'
+  readonly firstId: string
+  readonly secondId: string
+  readonly loserId?: string
+}
+
+/**
+ * 矛盾治理面板：处置前完整展示两条记忆和稳定身份。
+ * “改判为相关”只改边类型；“闭馆此条”会归档所选记忆，按钮文案直接写后果。
+ */
+function GovernancePanel({ t, scope, reloadTick, onChanged }: {
+  t: T
+  scope: 'user' | 'project' | 'shared'
+  reloadTick: number
+  onChanged: () => void
+}): React.ReactElement {
+  const path = `governance?scope=${scope}&limit=50&tick=${String(reloadTick)}`
+  const { data, failed, reload } = useApi<GovernanceView>(path)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [failedAction, setFailedAction] = useState<string | null>(null)
+  const items = data?.items ?? []
+
+  const act = (body: GovernanceActionBody, key: string): void => {
+    if (busy !== null) return
+    setBusy(key)
+    setFailedAction(null)
+    api('governance', {
+      method: 'POST',
+      body: JSON.stringify({ ...body, scope }),
+    })
+      .then(() => { reload(); onChanged() })
+      .catch((actionError: unknown) => {
+        setFailedAction(actionError instanceof Error ? actionError.message : String(actionError))
+      })
+      .finally(() => setBusy(null))
+  }
+
+  const side = (row: GovernancePairView['first']): React.ReactElement => (
+    <div className={styles.govSide}>
+      <span className={roomPillClass(row.kind)}>{kindLabel(t, row.kind)}</span>
+      <p>{row.content}</p>
+      <span className={styles.govId} title={row.memoryId}>
+        {t('governanceStableId')}: {row.memoryId}
+      </span>
+    </div>
+  )
+
+  return (
+    <div>
+      {failed !== null && <div className={styles.expandLoading}>{t('governanceFailed')}</div>}
+      {failed === null && (
+        <>
+          <div className={styles.toolbarRow}>
+            <span className={styles.toolbarCount}>{t('governanceCount', { n: items.length })}</span>
+          </div>
+          {items.length === 0 && <EmptyState title={t('governanceEmpty')} />}
+          <div className={styles.govList}>
+            {items.map(pair => {
+              const pairKey = `${String(pair.first.id)}:${String(pair.second.id)}`
+              return (
+                <article key={pairKey} className={styles.govCard}>
+                  <div className={styles.govSides}>
+                    {side(pair.first)}
+                    {side(pair.second)}
+                  </div>
+                  <div className={styles.govActions}>
+                    <button type="button" className={styles.button}
+                      disabled={busy !== null}
+                      onClick={() => { act({ action: 'dismiss', firstId: pair.first.id, secondId: pair.second.id }, `${pairKey}:dismiss`) }}>
+                      {t('governanceDismiss')}
+                    </button>
+                    <button type="button" className={styles.button}
+                      disabled={busy !== null}
+                      onClick={() => { act({ action: 'forget-loser', firstId: pair.first.id, secondId: pair.second.id, loserId: pair.first.id }, `${pairKey}:first`) }}>
+                      {t('governanceForget')}
+                    </button>
+                    <button type="button" className={styles.button}
+                      disabled={busy !== null}
+                      onClick={() => { act({ action: 'forget-loser', firstId: pair.first.id, secondId: pair.second.id, loserId: pair.second.id }, `${pairKey}:second`) }}>
+                      {t('governanceForget')}
+                    </button>
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+          {failedAction !== null && (
+            <div className={styles.expandLoading}>{t('governanceActionFailed')}: {failedAction}</div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 /** EngramSection 的 props：渲染器给的 t（locale 席位）+ 可选取用的宿主服务。 */
 export type EngramSectionProps = PropsLocale<typeof NS> & {
   /** 宿主工作区服务（缺席时 chip 显示「无工作区信息」，面板其余功能照常）。 */
@@ -5700,7 +5971,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   /** 批量遗忘的两段式确认。 */
   const [confirmForget, setConfirmForget] = useState(false)
   /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / episodes 往事时间线 / entities 实体词典 / log 管家日志 / backfill 历史回填 / jev Jev 裁决配置。 */
-  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'spiral' | 'episodes' | 'entities' | 'beliefs' | 'log' | 'ops'>('today')
+  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'replay' | 'spiral' | 'episodes' | 'entities' | 'beliefs' | 'log' | 'ops'>('today')
   /** 项目宫殿来源（持久化）：'follow' = 跟随 GUI 当前工作区；其它值 = 固定的 host 分库 dbName。 */
   const [projectMode, setProjectMode] = usePersistedString('library.project', 'follow')
   /** GUI 当前工作区（与侧边栏同一判定）与 host 的项目宫殿清单。 */
@@ -6045,6 +6316,13 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         </button>
         {/* 回忆螺旋（v0.9.x）：时间型鸟瞰视图，挨着「走廊」语义相邻，鸟瞰集合。 */}
         <button type="button" role="tab"
+          className={activeTab === 'replay' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
+          aria-selected={activeTab === 'replay'}
+          onClick={() => { setActiveTab('replay') }}>
+          <Icon name="clock" className={styles.tabIcon} />
+          {t('tabReplay')}
+        </button>
+        <button type="button" role="tab"
           className={activeTab === 'spiral' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
           aria-selected={activeTab === 'spiral'}
           onClick={() => { setActiveTab('spiral') }}>
@@ -6331,12 +6609,23 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
                 <span className={styles.sectionHint}>{t('benchNote')}</span>
               </div>
               <div className={styles.panelCard}>
-                <RecallBench t={t} scope={scope} />
+                <RecallBench t={t} scope={scope} onSelect={openReview} />
+              </div>
+            </section>
+            <section className={styles.section}>
+              <div className={styles.sectionHead}>
+                <h4 className={styles.sectionTitle}>{t('governanceTitle')}</h4>
+                <span className={styles.sectionHint}>{t('governanceHint')}</span>
+              </div>
+              <div className={styles.panelCard}>
+                <GovernancePanel t={t} scope={scope} reloadTick={reloadTick} onChanged={reload} />
               </div>
             </section>
           </div>
         </div>
       )}
+
+      {activeTab === 'replay' && <ContextReplayView t={t} scope={scope} reloadTick={reloadTick} />}
 
       {activeTab === 'spiral' && (
         <div className={styles.tabPanel}>

@@ -154,6 +154,23 @@ export function systemOneEndpoint(baseUrl: string): string | undefined {
   return joinUrl(baseUrl, 'systemone')
 }
 
+/**
+ * 宿主凭据只能发往 provider 配置中已信任的 origin。面板可以覆盖同源路径，
+ * 但不能把存储在 DSH 凭据库里的 Bearer key 指向另一个服务。
+ */
+export function isTrustedJevEndpoint(baseUrl: string, endpoint: string): boolean {
+  try {
+    const trusted = new URL(baseUrl)
+    const candidate = new URL(endpoint)
+    return (candidate.protocol === 'http:' || candidate.protocol === 'https:')
+      && candidate.username === ''
+      && candidate.password === ''
+      && candidate.origin === trusted.origin
+  } catch {
+    return false
+  }
+}
+
 /** Дескриптор конфигурации хоста по namespace (например `llm-pi-ai`). */
 async function readSettingsValue(ctx: HostContext, ns: string): Promise<unknown> {
   const settings = ctx.get('settings') as HostSettings | undefined
@@ -381,6 +398,9 @@ export async function resolveJevConnection(
   const chosen = endpointOverride !== undefined && endpointOverride.trim() !== ''
     ? endpointOverride.trim()
     : undefined
+  if (chosen !== undefined && (rekvisites.baseUrl === undefined || !isTrustedJevEndpoint(rekvisites.baseUrl, chosen))) {
+    return message('misc.jevEndpointOriginMismatch', { provider: providerId })
+  }
   const endpoint = chosen ?? (rekvisites.baseUrl === undefined ? undefined : systemOneEndpoint(rekvisites.baseUrl))
   if (endpoint === undefined) {
     return message('misc.jevProviderHasNoBaseUrl', { provider: providerId })

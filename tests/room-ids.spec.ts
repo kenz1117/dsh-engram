@@ -62,7 +62,7 @@ describe('房名归一化（schema v12 → v13）', () => {
     await reopened.close()
 
     const check = await import('node:sqlite').then(({ DatabaseSync }) => new DatabaseSync(path))
-    expect((check.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value).toBe('13')
+    expect((check.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value).toBe('15')
     check.close()
   })
 

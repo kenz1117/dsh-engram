@@ -183,11 +183,54 @@ describe('EngramStore (sqlite)', () => {
     expect(result.hits).toHaveLength(1)
   })
 
-  it('检索命中会强化访问计数', async () => {
-    await store.write({ scope: 'user', kind: 'fact', content: '访问计数条目' })
-    await store.search({ text: '访问计数', scopes: ['user'] }, undefined)
-    const result = await store.search({ text: '访问计数', scopes: ['user'] }, undefined)
-    expect(result.hits[0]!.record.accessCount).toBe(1)
+  it('检索命中不再强化：重复 search 不改 confidence/accessCount/lastAccessedAt（曝光≠反馈）', async () => {
+    const record = await store.write({ scope: 'user', kind: 'fact', content: '访问计数条目', confidence: 0.5 })
+    const first = await store.search({ text: '访问计数', scopes: ['user'] }, undefined)
+    expect(first.hits[0]!.record.accessCount).toBe(0)
+    expect(first.hits[0]!.record.confidence).toBeCloseTo(0.5, 5)
+    const before = await store.get(record.id)
+    await new Promise(resolve => setTimeout(resolve, 3))
+    const second = await store.search({ text: '访问计数', scopes: ['user'] }, undefined)
+    expect(second.hits[0]!.record.accessCount).toBe(0)
+    expect(second.hits[0]!.record.confidence).toBeCloseTo(0.5, 5)
+    // 落库值同样不动：曝光不伪造「最近访问」（衰减/recency boost 的判据不被读取污染）。
+    const after = await store.get(record.id)
+    expect(after!.accessCount).toBe(before!.accessCount)
+    expect(after!.lastAccessedAt).toBe(before!.lastAccessedAt)
+  })
+
+  it('search-exposure 曝光审计：一次 search 一行，命中 id 可追踪，query 原文与正文不落日志', async () => {
+    const record = await store.write({ scope: 'user', kind: 'fact', content: '曝光审计条目正文' })
+    await store.search({ text: '曝光审计 敏感查询词', scopes: ['user'] }, undefined)
+    await store.search({ text: '曝光审计 敏感查询词', scopes: ['user'] }, undefined)
+    const exposures = (await store.recentOps(20)).filter(op => op.op === 'search-exposure')
+    expect(exposures).toHaveLength(2)
+    for (const exposure of exposures) {
+      expect(exposure.targetId).toBe('AUX')
+      const detail = JSON.parse(exposure.detail!) as { ids: string[]; scopes: string[]; limit: number; degraded: boolean; q: string }
+      // 去重后的命中 id（scores 以 id 为键，天然去重）+ 检索元数据。
+      expect(detail.ids).toEqual([String(record.id)])
+      expect(detail.scopes).toEqual(['user'])
+      expect(detail.limit).toBe(8)
+      // queryVector 缺省 = 语义道不可用，degraded 如实入账（曝光元数据反映真实检索状况）。
+      expect(detail.degraded).toBe(true)
+      expect(detail.q).toMatch(/^[0-9a-f]{12}$/)
+      // 敏感内容不进 op_log：query 原文与命中正文都不出现。
+      expect(exposure.detail).not.toContain('敏感查询词')
+      expect(exposure.detail).not.toContain('曝光审计条目正文')
+    }
+  })
+
+  it('真实反馈与曝光解耦：search 不提权，reportOutcome 仍独立生效', async () => {
+    const record = await store.write({ scope: 'user', kind: 'fact', content: '反馈解耦条目', confidence: 0.5 })
+    await store.search({ text: '反馈解耦', scopes: ['user'] }, undefined)
+    expect((await store.get(record.id))!.confidence).toBeCloseTo(0.5, 5)
+    const rewarded = await store.reportOutcome(record.id, 'success')
+    expect(rewarded!.confidence).toBeCloseTo(0.55, 5)
+    // exposure 行与 outcome-report 行并存且是两种 op：审计上分得开。
+    const ops = await store.recentOps(20)
+    expect(ops.some(op => op.op === 'search-exposure')).toBe(true)
+    expect(ops.some(op => op.op === 'outcome-report' && op.targetId === record.id)).toBe(true)
   })
 
   it('topActive 按 importance 倒序', async () => {
@@ -269,11 +312,15 @@ describe('EngramStore (sqlite)', () => {
     const fetched = await migrated.get(record.id)
     expect(fetched?.content).toBe('迁移前写入的技能')
     expect(fetched?.outcome).toBeUndefined()
+    // 审计 F17 修复：升版快照用 VACUUM INTO 生成一致性文件，而不是拷贝可能缺 WAL 的主文件。
+    const snapshot = new DatabaseSync(`${path}.pre-migration`, { readOnly: true })
+    expect(snapshot.prepare("SELECT id FROM nodes WHERE content = '迁移前写入的技能'").get()).toBeDefined()
+    snapshot.close()
     await migrated.close()
     const db2 = new DatabaseSync(path)
     const version = (db2.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value
     db2.close()
-    expect(version).toBe('13')
+    expect(version).toBe('15')
   })
 
   it('v3 库打开时顺序迁移到 v5（数据保留，修订表可用）', async () => {
@@ -300,6 +347,27 @@ describe('EngramStore (sqlite)', () => {
     const record = await store.write({ scope: 'user', kind: 'fact', content: '品牌 id' })
     expect((await store.get(asMemoryId(record.id)))?.id).toBe(record.id)
   })
+
+  it('v15：update 继承稳定 memoryId，getMemory 解析当前修订，revision 链按身份聚合', async () => {
+    const a = await store.write({ scope: 'user', kind: 'fact', content: 'v15 初版' })
+    expect(a.memoryId).toBe(a.id)
+    const b = await store.update({ id: a.id, scope: 'user', kind: 'fact', content: 'v15 修正' })
+    expect(b.memoryId).toBe(a.memoryId)
+    expect(b.id).not.toBe(a.id)
+
+    expect((await store.getMemory(a.memoryId))?.id).toBe(b.id)
+    expect((await store.get(b.id))?.memoryId).toBe(a.memoryId)
+    const view = await store.review(b.id)
+    expect(view?.record.memoryId).toBe(a.memoryId)
+    expect(view?.revisions.map(rev => rev.content)).toEqual(['v15 初版'])
+
+    // 回滚旧 revision 时同一逻辑身份只允许一个 active；旧方向边改为 restore → b。
+    await store.restore(a.id)
+    expect((await store.get(a.id))?.status).toBe('active')
+    expect((await store.get(b.id))?.status).toBe('archived')
+    expect((await store.getMemory(a.memoryId))?.id).toBe(a.id)
+    expect((await store.review(a.id))?.supersedes.map(id => String(id))).toEqual([String(b.id)])
+  })
 })
 
 describe('修订历史与操作流（schema v4）', () => {
@@ -319,12 +387,13 @@ describe('修订历史与操作流（schema v4）', () => {
     const b = await store.update({ id: a.id, scope: 'user', kind: 'fact', content: '端口改为 4000' })
     const c = await store.update({ id: b.id, scope: 'user', kind: 'fact', content: '端口改为 5000' })
     // 快照记录的是被取代条目自己的旧内容；链式修订各自留痕。
-    expect((await store.review(a.id))?.revisions.map(rev => rev.content)).toEqual(['端口是 3000'])
+    // v15 起 revisions 按稳定 memory_id 聚合：任一 revision 都能看完整链。
+    expect((await store.review(a.id))?.revisions.map(rev => rev.content)).toEqual(['端口改为 4000', '端口是 3000'])
     expect((await store.review(a.id))!.revisions[0]!.kind).toBe('fact')
     expect((await store.review(a.id))!.revisions[0]!.importance).toBe(0.6)
     expect((await store.review(a.id))!.revisions[0]!.supersededAt).toBeGreaterThan(0)
-    expect((await store.review(b.id))?.revisions.map(rev => rev.content)).toEqual(['端口改为 4000'])
-    expect((await store.review(c.id))?.revisions).toEqual([])
+    expect((await store.review(b.id))?.revisions.map(rev => rev.content)).toEqual(['端口改为 4000', '端口是 3000'])
+    expect((await store.review(c.id))?.revisions.map(rev => rev.content)).toEqual(['端口改为 4000', '端口是 3000'])
     // 链路完整：c 超越 b，b 超越 a。
     expect((await store.review(c.id))?.supersedes.map(id => String(id))).toEqual([String(b.id)])
     expect((await store.review(a.id))?.supersededBy.map(id => String(id))).toEqual([String(b.id)])
@@ -514,7 +583,7 @@ describe('episodeTimeline (episode 情景独立时间线)', () => {
     expect(indexes).toContain('nodes_session_created')
   })
 
-  it('session_summaries 表在新建库与 v8 迁移后就位，schema_version 升到 13', async () => {
+  it('session_summaries 表在新建库与 v8 迁移后就位，schema_version 升到 15', async () => {
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(join(dir, 'user.db'))
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as unknown as { name: string }[])
@@ -523,7 +592,7 @@ describe('episodeTimeline (episode 情景独立时间线)', () => {
     db.close()
     expect(tables).toContain('session_summaries')
     expect(tables).toContain('observations')
-    expect(version).toBe('13')
+    expect(version).toBe('15')
     // v8 旧库（手工降版）重开时经 MIGRATIONS['8'] 建出摘要表，数据零搬运。
     const legacyPath = join(dir, 'legacy-v8.db')
     const legacy = await openEngramStore(legacyPath)

@@ -583,6 +583,48 @@ describe('ingestFinalTurn', () => {
     expect((await store.listAuditDetails(INGEST_PENDING_OP)).length).toBe(1)
   })
 
+  it.each([
+    ['empty-answer', async () => ''],
+    ['unparseable-output', async () => 'not-json'],
+  ])('结果型可重试失败 %s 落 pending，恢复后 done 且重复执行不重写', async (reason, call) => {
+    const outcome = await ingestFinalTurn(baseDeps({ events: finalEvents, turn: 2, call }))
+    expect(outcome?.skipped).toBe(reason)
+    expect(await store.hasAudit(INGEST_PENDING_OP, encodeTurnKey('sess-ingest-1', 2))).toBe(true)
+    expect(await store.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-ingest-1', 2))).toBe(false)
+
+    const recovered = await ingestFinalTurn(baseDeps({ events: finalEvents, turn: 2 }))
+    expect(recovered?.written).toBe(2)
+    expect(await store.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-ingest-1', 2))).toBe(true)
+    const again = await ingestFinalTurn(baseDeps({ events: finalEvents, turn: 2 }))
+    expect(again?.skipped).toBe('already-ingested')
+    expect(await store.topActive('user', 10)).toHaveLength(2)
+  })
+
+  it('所有候选异常失败也落 pending，而不是洗成成功零写入', async () => {
+    const broken = new Proxy(store, {
+      get: (target, property, receiver) => {
+        if (property === 'write') return async () => { throw new Error('database temporarily unavailable') }
+        const value = Reflect.get(target, property, receiver) as unknown
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    }) as EngramStore
+    const outcome = await ingestFinalTurn(baseDeps({
+      events: finalEvents,
+      turn: 2,
+      openStore: async () => broken,
+      openAuditStore: async () => store,
+    }))
+    expect(outcome?.skipped).toBe('all-candidates-failed')
+    expect(await store.hasAudit(INGEST_PENDING_OP, encodeTurnKey('sess-ingest-1', 2))).toBe(true)
+    expect(await store.hasAudit(INGEST_DONE_OP, encodeTurnKey('sess-ingest-1', 2))).toBe(false)
+  })
+
+  it('确定性无内容跳过不落 pending', async () => {
+    const outcome = await ingestFinalTurn(baseDeps({ events: [turnStart(1), routeHeader(2)], turn: 1 }))
+    expect(outcome?.skipped).toBe('no-user-content')
+    expect(await store.hasAudit(INGEST_PENDING_OP, encodeTurnKey('sess-ingest-1', 1))).toBe(false)
+  })
+
   it('无 turn/start 时不摄取也不落 pending', async () => {
     const outcome = await ingestFinalTurn(baseDeps({ events: [userMsg('孤儿消息', 1)] }))
     expect(outcome).toBeNull()

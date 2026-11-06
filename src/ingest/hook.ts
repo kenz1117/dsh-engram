@@ -731,23 +731,32 @@ export async function markPendingIngest(store: EngramStore, sessionId: string, t
  * pre-step 重放补做），绝不影响对话。
  * 本函数不 reject：从取轮次到摄取全程在 try 内，异常一律降级为告警 + pending 键
  * （dispose 观察器是 fire-and-forget，逃逸的 rejection 会被宿主的 fail-loud 当作致命错误）。
- * @returns 摄取结果；无末轮或失败（已落 pending）时返回 null。
+ * @returns 摄取结果；无末轮或异常失败（已尝试落 pending）时返回 null，结果型失败原样返回。
  */
 export async function ingestFinalTurn(deps: IngestDeps): Promise<IngestOutcome | null> {
   /** 末轮轮次号；取不到（无 turn/start 或事件源不可用）时不落 pending——键需要轮次。 */
   let round: number | undefined
+  const persistPending = async (): Promise<void> => {
+    if (round === undefined) return
+    try {
+      await markPendingIngest(await (deps.openAuditStore ?? deps.openStore)(), deps.sessionId, round)
+    } catch {
+      // pending 落库失败：摄取本就尽力而为，不再升级。
+    }
+  }
   try {
     round = lastTurnNumber(deps.events)
     if (round === undefined) return null
-    return await ingestPreviousTurn({ ...deps, slice: 'last' })
-  } catch (error) {
-    if (round !== undefined) {
-      try {
-        await markPendingIngest(await (deps.openAuditStore ?? deps.openStore)(), deps.sessionId, round)
-      } catch {
-        // pending 落库失败：摄取本就尽力而为，不再升级。
-      }
+    const outcome = await ingestPreviousTurn({ ...deps, slice: 'last' })
+    // 提取器用返回值报告的可重试失败与异常走同一恢复出口；确定性 skip 不落 pending。
+    if (outcome.skipped === 'empty-answer'
+      || outcome.skipped === 'unparseable-output'
+      || outcome.skipped === 'all-candidates-failed') {
+      await persistPending()
     }
+    return outcome
+  } catch (error) {
+    await persistPending()
     console.warn(message('llm.warnFinalIngestFailed'), error)
     return null
   }

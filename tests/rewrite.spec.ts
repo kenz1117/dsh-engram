@@ -9,6 +9,7 @@ import type { MemoryRecord, SearchHit } from '../src/types.ts'
 /** 构造最小 MemoryRecord（融合只读 id）。 */
 const record = (id: string): MemoryRecord => ({
   id: asMemoryId(id),
+  memoryId: asMemoryId(id),
   scope: 'user',
   kind: 'fact',
   content: `内容 ${id}`,

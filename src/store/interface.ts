@@ -8,7 +8,8 @@ import type {
   DecayOptions, EngramEdgeType, EngramScope, EntityDetail, EntityId, EntityListFilter,
   EntityListResult, EntityMention, EntityRecord, EpisodeTimelineQuery, EpisodeTimelineResult, ExportData,
   FactListFilter, FactListResult, FactRecord, FactWriteInput,
-  ForgettingTombstone, ForgottenAuditRow, ImportOptions, ImportPreview, ImportResult, ListFilter, ListResult,
+  ForgettingTombstone, ForgottenAuditRow, ImportOptions, ImportPreview, ImportResult,
+  InjectionSnapshot, InjectionSnapshotFilter, InjectionSnapshotHead, InjectionSnapshotInput, ListFilter, ListResult,
   MemoryId, MemoryOutcome, MemoryRecord, ObservationId, ObservationListFilter, ObservationRecord,
   ObservationWriteInput, OperationLogRow, ProfileBlock, ProfileBlockVersion,
   ReviewGrade, ReviewView, SearchQuery, SearchResult, Slot, StoreStats, TimelineQuery, UpdateInput, WriteInput,
@@ -51,8 +52,10 @@ export interface VectorTarget {
 export interface EngramStore {
   /** 追加一条 active 记忆，content 非空。 */
   write(input: WriteInput): Promise<MemoryRecord>
-  /** 按 id 取条目（任意状态）；不存在返回 undefined。 */
+  /** 按 revision id 取条目（任意状态）；不存在返回 undefined。 */
   get(id: MemoryId): Promise<MemoryRecord | undefined>
+  /** 按稳定逻辑身份取当前修订（active 优先，其次最新版）。 */
+  getMemory(id: MemoryId): Promise<MemoryRecord | undefined>
   /**
    * 渐进式披露：按 id 批量拉取条目，保留输入顺序，去重；缺 id 静默跳过。
    * 用于 engram_examine 等「先看门牌号再选进几间」场景。
@@ -64,7 +67,11 @@ export interface EngramStore {
    */
   neighbors(id: MemoryId, depth: number): Promise<MemoryRecord[]>
   /**
-   * 混合检索（向量 + FTS5 + 一跳扩展）。命中强化：accessCount+1、confidence+0.05（封顶 1）。
+   * 混合检索（向量 + FTS5 + 一跳扩展）。读取保持读取：命中不改 confidence/accessCount/
+   * lastAccessedAt，也不影响排序依据（0.12.0 起检索曝光不再冒充有效反馈——提权只来自
+   * reportOutcome / reinforce 等真实反馈）。曝光另记一条 'search-exposure' 审计行：
+   * 一次 search 一行，detail 含去重后的命中 id（排名序）与检索元数据（scopes/limit/
+   * degraded/query 摘要），不含 query 原文与命中正文。
    * @param queryVector - 查询向量；undefined 表示嵌入不可用（结果 degraded）。
    */
   search(query: SearchQuery, queryVector: Float32Array | undefined): Promise<SearchResult>
@@ -79,6 +86,14 @@ export interface EngramStore {
   setSessionSummary(sessionId: string, summary: string): Promise<void>
   /** 读取会话摘要；未生成过返回 undefined。 */
   getSessionSummary(sessionId: string): Promise<string | undefined>
+  /** 持久化实际注入的最终包；返回完整快照。 */
+  recordInjection(input: InjectionSnapshotInput): Promise<InjectionSnapshot>
+  /** 注入历史轻量列表（新到旧），不读取完整正文。 */
+  listInjections(filter: InjectionSnapshotFilter): Promise<readonly InjectionSnapshotHead[]>
+  /** 按 id 读取一次注入的完整最终包。 */
+  getInjection(id: string): Promise<InjectionSnapshot | undefined>
+  /** 清除时间戳早于 olderThanMs（绝对 epoch 毫秒）的注入快照；返回删除行数。 */
+  pruneInjections(olderThanMs: number): Promise<number>
   /** 修正：旧条目转 archived，建立 supersedes 边（from=新，to=旧），返回新条目。 */
   update(input: UpdateInput): Promise<MemoryRecord>
   /** 软删（可恢复）。 */
@@ -186,13 +201,30 @@ export interface EngramStore {
   decay(options: DecayOptions): Promise<number>
   /** 矛盾候选：与给定向量余弦 ≥ 0.88 的同库 active 条目（调用方裁决后用 linkEdge 建边）。 */
   findContradictions(embedding: Float32Array, limit?: number): Promise<MemoryRecord[]>
+  /** 治理队列：双侧仍 active 的 contradicts 边，按建边时间倒序。 */
+  listContradictions(limit: number): Promise<readonly {
+    readonly first: MemoryRecord
+    readonly second: MemoryRecord
+    readonly createdAt: number
+  }[]>
+  /**
+   * 处置一条矛盾边。dismiss = 改判为 related；forget-loser = 闭馆 loser。
+   * 两个 id 必须确实由同一条 contradicts 边连接；否则 NOT_FOUND。
+   */
+  resolveContradiction(input: {
+    readonly firstId: MemoryId
+    readonly secondId: MemoryId
+    readonly action: 'dismiss' | 'forget-loser'
+    readonly loserId?: MemoryId
+  }): Promise<{ readonly dismissed: boolean; readonly forgotten?: MemoryRecord }>
   /** 建立一条关系边（幂等）。 */
   linkEdge(from: MemoryId, to: MemoryId, type: EngramEdgeType): Promise<void>
   /** 最近邻：同库 active（user/project 行）中与给定向量余弦最高的条目及相似度；空库或无向量条目返回 undefined。 */
   nearestNeighbor(embedding: Float32Array): Promise<{ record: MemoryRecord; similarity: number } | undefined>
   /**
    * 并入强化：新内容被判为既有条目的复述（写入四态的 MERGE）时调用——accessCount+1、
-   * confidence+0.05（与检索命中强化同幅），并记一条 write-merge 审计行（detail 为调用方给的 JSON 说明）。
+   * confidence+0.05、刷新最近访问（真实反馈，与检索曝光无关），并记一条 write-merge
+   * 审计行（detail 为调用方给的 JSON 说明）。
    * @returns 强化后的条目；id 不存在返回 undefined。
    */
   reinforce(id: MemoryId, note: string): Promise<MemoryRecord | undefined>

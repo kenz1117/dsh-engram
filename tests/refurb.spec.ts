@@ -10,6 +10,7 @@ import type { EngramKind, MemoryRecord } from '../src/types.ts'
 function memory(id: string, overrides: Partial<MemoryRecord> = {}): MemoryRecord {
   return {
     id: id as unknown as MemoryRecord['id'],
+    memoryId: id as unknown as MemoryRecord['memoryId'],
     scope: 'user',
     kind: 'fact' as EngramKind,
     content: `记忆 ${id}`,

@@ -22,7 +22,7 @@ export function buildSelectionRationale(records: readonly MemoryRecord[]): strin
   ]
   for (const record of records) {
     const reasons = classifyRecord(record, now)
-    lines.push(`- #${record.id.slice(0, 8)} [${record.kind}/${record.scope}] ${reasonsLabel(reasons)}：${record.content.slice(0, 40)}${record.content.length > 40 ? '…' : ''}`)
+    lines.push(`- #${record.memoryId.slice(0, 8)} [${record.kind}/${record.scope}] ${reasonsLabel(reasons)}：${record.content.slice(0, 40)}${record.content.length > 40 ? '…' : ''}`)
   }
   lines.push('', message('core.rationaleFooter'), '</engram_selection_rationale>')
   return lines.join('\n')

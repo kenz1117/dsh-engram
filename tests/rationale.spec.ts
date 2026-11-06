@@ -9,6 +9,7 @@ const NOW = Date.now()
 function makeRecord(overrides: Partial<MemoryRecord> & { id?: string; content?: string } = {}): MemoryRecord {
   return {
     id: asMemoryId(overrides.id ?? '00000000-0000-0000-0000-000000000001'),
+    memoryId: overrides.memoryId ?? asMemoryId(overrides.id ?? '00000000-0000-0000-0000-000000000001'),
     scope: overrides.scope ?? 'user',
     kind: overrides.kind ?? 'fact',
     content: overrides.content ?? '测试房间',

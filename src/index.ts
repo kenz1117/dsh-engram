@@ -50,7 +50,7 @@ import type {
   HistorySessionHeader,
 } from './ingest/history.ts'
 import { runConsolidation } from './consolidation/run.ts'
-import { reflectObservations } from './consolidation/reflect.ts'
+import { startAutoReflectWorker } from './jobs/host-reflect.ts'
 import type { IngestRequestEventData } from './ingest/hook.ts'
 import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
@@ -276,6 +276,35 @@ async function compressProfileOverflow(
   }
 }
 
+interface PreStepSessionState {
+  lastProfileHash: string | null
+  lastProfileCompactions: number | null
+  lastAssessReminder: string | null
+  route: LlmRoute | undefined
+}
+
+interface PreStepState {
+  /** 跨会话 pending 重放只需进程内一次，与单会话注入状态分开。 */
+  pendingReplayed: boolean
+  /** 活跃会话的注入/路由状态；session/disposed 时删除。 */
+  sessions: Map<string, PreStepSessionState>
+  /** 面板与历史回填使用的最近可用路由，不参与会话内的注入去重。 */
+  route: LlmRoute | undefined
+}
+
+function preStepSession(state: PreStepState, sessionId: string): PreStepSessionState {
+  const existing = state.sessions.get(sessionId)
+  if (existing !== undefined) return existing
+  const created: PreStepSessionState = {
+    lastProfileHash: null,
+    lastProfileCompactions: null,
+    lastAssessReminder: null,
+    route: undefined,
+  }
+  state.sessions.set(sessionId, created)
+  return created
+}
+
 /**
  * agent/pre-step waterfall：每轮第一步注入画像（内容与上次相同则跳过重复注入）；
  * 同时 fire-and-forget 触发上一轮的自动摄取（不阻塞请求）；进程内首次第一步
@@ -288,7 +317,7 @@ async function preStep(
   openStoreForProjectCwd: (cwd: string) => Promise<EngramStore>,
   resolved: ResolvedEngramConfig,
   embedder: EmbedderHandle,
-  state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null; lastProfileCompactions: number | null; lastAssessReminder: string | null; route: LlmRoute | undefined },
+  state: PreStepState,
   logRequest: (data: IngestRequestEventData) => void,
   onDialogueLanguage: (language: EngramLanguage) => void,
   { agent, step, turn, signal }: { agent: Agent; step: number; turn: number; signal: AbortSignal },
@@ -296,6 +325,8 @@ async function preStep(
 ): Promise<PreStepDecision> {
   const decision = await next()
   if (decision.kind === 'reject') return decision
+  const sessionId = String(agent.session.id)
+  const sessionState = preStepSession(state, sessionId)
   // Язык дворца смотрит на диалоги (решение 21.10): реплики человека лежат в событиях
   // текущей сессии — для этого не нужно читать журналы, которые стоят сотни мегабайт.
   // Реплик может ещё не быть (первый ход) — тогда сигнала просто нет.
@@ -305,7 +336,10 @@ async function preStep(
   // 在当前环境可能已不可用（如换过提供商），用当前模型才跑得通。
   if (step === 1) {
     const currentRoute = resolved.routeOverride ?? routeFromEvents(agent.session.snapshotEvents() as unknown as readonly SessionEventLike[])
-    if (currentRoute !== undefined) state.route = currentRoute
+    if (currentRoute !== undefined) {
+      sessionState.route = currentRoute
+      state.route = currentRoute
+    }
   }
   const mode = resolved.ingest
   // 写入路由：本会话有 cwd 时默认进项目宫殿、逐条采纳模型的 scope 判定；无 cwd 只能进私人宫殿。
@@ -322,7 +356,7 @@ async function preStep(
         mode,
         routeOverride: resolved.routeOverride,
         // Провайдер Jev: панель → cordis.yml → маршрут этой сессии (тот же, что у извлечения).
-        ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => state.route?.provider),
+        ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => sessionState.route?.provider),
         call: params => streamText(ctx, { ...params, sessionId: agent.session.id }),
         logRequest,
         signal,
@@ -343,7 +377,7 @@ async function preStep(
         mode,
         routeOverride: resolved.routeOverride,
         // Провайдер Jev: панель → cordis.yml → маршрут этой сессии (тот же, что у извлечения).
-        ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => state.route?.provider),
+        ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => sessionState.route?.provider),
         call: params => streamText(ctx, { ...params, sessionId: agent.session.id }),
         logRequest,
         signal,
@@ -353,13 +387,12 @@ async function preStep(
     }
   }
   if (step !== 1 && resolved.assessReminder) {
-    // 证据门收尾提醒：本会话存在未判定批次时在下一步开始前提醒（插件层注入，
-    // 不动 agent-loop）；同一文本不重复注入，判定完成或批次清空后自然停发。
-    const sessionId = String(agent.session.id)
+    // 证据门收尾提醒按 session 去重；批次清空后重置，后续新批次可以再次提醒。
     const pending = evidenceBatches.pendingBatches(sessionId).length
     const reminder = buildAssessReminder(pending, evidenceBatches.insufficientStreak(sessionId))
-    if (reminder !== undefined && reminder !== state.lastAssessReminder) {
-      state.lastAssessReminder = reminder
+    if (reminder === undefined) sessionState.lastAssessReminder = null
+    if (reminder !== undefined && reminder !== sessionState.lastAssessReminder) {
+      sessionState.lastAssessReminder = reminder
       return {
         ...decision,
         messages: [
@@ -372,6 +405,8 @@ async function preStep(
       }
     }
   }
+  // 摄取和证据提醒可以独立开启；关闭画像后不再查询或拼装画像包。
+  if (!resolved.injectProfile) return decision
   // #32：画像「always present」不能只靠 step===1 的首轮注入——会话压缩（compaction）
   // 会把注入的快照摘要掉，而 step 在压缩/恢复后永远不会再等于 1，画像从此缺席直到
   // 重开对话。自上次注入以来出现 compaction/end 事件时，任何一轮都重新注入；哈希去重
@@ -380,8 +415,8 @@ async function preStep(
   // 保守不重注）；纯恢复（无压缩）时快照仍在历史里，维持不重注。
   const compactionCount = (agent.session.snapshotEvents() as unknown as readonly SessionEventLike[])
     .filter(event => event.type === 'compaction/end').length
-  const compacted = state.lastProfileCompactions !== null && compactionCount > state.lastProfileCompactions
-  if (state.lastProfileCompactions === null) state.lastProfileCompactions = compactionCount
+  const compacted = sessionState.lastProfileCompactions !== null && compactionCount > sessionState.lastProfileCompactions
+  if (sessionState.lastProfileCompactions === null) sessionState.lastProfileCompactions = compactionCount
   if (step !== 1 && !compacted) return decision
   const store = await openStore('user')
   // curated block：engram_profile_edit 维护的画像段，优先于自动派生画像注入。
@@ -432,26 +467,39 @@ async function preStep(
     ].join('\n').slice(0, OBSERVATION_INJECT_BLOCK_CHARS)
     text = `${text}\n\n${block}`
   }
-  // 注入去重：同一会话内画像文本与上次相同时跳过（上一轮注入仍在上下文里）；
-  // 新会话（lastProfileAgent 不同）必须注入，即使文本与上个会话相同。due 行纳入 hash 输入。
+  // 每个 session 独立去重；新会话天然没有旧 hash，不与相邻会话共享状态。
   const dueLine = dueTotal === 0
     ? ''
     : message('core.reviewDue', { count: dueTotal, plus: dueTotal >= 50 ? '+' : '' })
   const textWithRationale = wrapWithRationale(text, top) + dueLine
   // Профиль входит в хеш: правка правил без изменения памяти тоже должна переинжектиться.
   const hash = createHash('sha256').update(`${parts.curated ?? ''}\n${textWithRationale}`).digest('hex')
-  if (!compacted && state.lastProfileAgent === String(agent.id) && hash === state.lastProfileHash) return decision
-  state.lastProfileAgent = String(agent.id)
-  state.lastProfileHash = hash
-  state.lastProfileCompactions = compactionCount
+  if (!compacted && hash === sessionState.lastProfileHash) return decision
+  sessionState.lastProfileHash = hash
+  sessionState.lastProfileCompactions = compactionCount
   // 画像包协议标签：记忆条目是不可信历史上下文；当前请求取本轮 admitted 消息的最后一个文本块。
   // Правила профиля идут отдельным пакетом и первыми: это указания человека, а не память,
   // и шапка пакета памяти к ним не относится (решение 21.10).
   const requestText = currentUserRequestText(decision.messages)
-  const memoryPacket = renderMemoryPacket(text, 'turn_start', requestText)
+  // 哈希、会话日志和模型必须看到同一最终文本：rationale 与 due 行不能只参与去重。
+  const memoryPacket = renderMemoryPacket(textWithRationale, 'turn_start', requestText)
   const packet = parts.curated === undefined
     ? memoryPacket
     : `${renderProfilePacket(parts.curated)}\n\n${memoryPacket}`
+  const packetHash = createHash('sha256').update(packet).digest('hex')
+  try {
+    await store.recordInjection({
+      sessionId,
+      packetHash,
+      packet,
+      memoryIds: top.map(record => record.memoryId),
+      hasCurated: parts.curated !== undefined,
+      compactionCount,
+    })
+  } catch (error) {
+    // 观测落库失败不阻断对话；告警保留可诊断性。
+    console.warn(message('core.warnInjectionSnapshotFailed'), error)
+  }
   return {
     ...decision,
     messages: [
@@ -961,7 +1009,11 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     stores.clear()
   }
 
-  ctx.effect(() => () => closeStores(), 'dsh-engram: close stores')
+  let stopReflectJobs: (() => Promise<void>) | undefined
+  ctx.effect(() => async () => {
+    await stopReflectJobs?.()
+    await closeStores()
+  }, 'dsh-engram: close stores')
 
   /** cwd → 分库文件名（历史回填会对每个历史 cwd 解析一次，避免重复读 git 元数据）。 */
   const cwdDbNames = new Map<string, string>()
@@ -1044,15 +1096,9 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     void openStore('user').then(store => store.audit('ingest-request', 'AUX', JSON.stringify(data))).catch(() => { /* 审计失败不影响摄取 */ })
   }
 
-  // preStep 的可变状态：route 记录当前会话在用的路由，历史回填优先复用它。
-  const preStepState: {
-    pendingReplayed: boolean
-    lastProfileAgent: string | null
-    lastProfileHash: string | null
-    lastProfileCompactions: number | null
-    lastAssessReminder: string | null
-    route: LlmRoute | undefined
-  } = { pendingReplayed: false, lastProfileAgent: null, lastProfileHash: null, lastProfileCompactions: null, lastAssessReminder: null, route: undefined }
+  // pending 重放是进程级一次；画像、证据提醒和会话路由按 session 隔离。
+  // state.route 只供没有会话上下文的面板/历史任务选择最近可用路由。
+  const preStepState: PreStepState = { pendingReplayed: false, sessions: new Map(), route: undefined }
 
   // ---- 历史会话回填：把 dsh 持久化的历史会话逐轮摄取进宫殿（面板「历史回填」tab / engram_ingest_history）----
   /** 会话持久化服务（可选；缺席时历史回填不可用）。 */
@@ -1719,13 +1765,15 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     })
   })
 
-  if (resolved.injectProfile || resolved.ingest !== 'off') {
+  if (resolved.injectProfile || resolved.ingest !== 'off' || resolved.assessReminder) {
     ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, openStoreForProjectCwd, resolved, embedder, preStepState, logIngestRequest, observeDialogueLanguage, payload, next), { prepend: true })
   }
 
   // 会话结束即释放该会话的证据批次（进程内注册表，避免长驻进程累积）。
   ctx.on('session/disposed', (session) => {
-    evidenceBatches.clear(String(session.id))
+    const sessionId = String(session.id)
+    evidenceBatches.clear(sessionId)
+    preStepState.sessions.delete(sessionId)
   })
 
   if (resolved.ingest !== 'off') {
@@ -1780,25 +1828,14 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     })
   }
 
-  if (resolved.reflect !== 'off') {
-    // 后台巩固的限时（自审 P1）：分片改造后一次巩固是 3+ 次串行辅助调用，沿用末轮摄取的
-    // 5 秒预算等于让后台巩固几乎必然中途夭折（且只 console.warn 不可见）。给独立的宽预算——
-    // fire-and-forget 观察器仍有上界（进程退出照旧可能先打断），但真实模型跑得完三片。
-    const REFLECT_TIMEOUT_MS = 120_000
-    // 信念巩固：disposed 是 fire-and-forget 观察器。auto 后台巩固（user 库 + cwd 已建库的项目库）；
-    // suggest 只登记 reflect-pending（出口是 engram_reflect 工具）。与末轮摄取相互独立——
-    // reflect 取材幂等（已成为信念证据的记忆排除），并发漏抓由下次会话结束或手动调用补。
-    // 必须就地吞掉所有异常：宿主把未处理 rejection 当致命错误（见上一个 disposed 监听）。
+  if (resolved.reflect === 'suggest') {
+    // suggest 继续使用原有 op_log pending 出口（由 engram_reflect 工具手动消费）。
     ctx.on('session/disposed', (session) => {
-      // dispose 后事件源可能 detach：事件快照与 cwd 在同步段取一次。
-      const events = session.snapshotEvents() as unknown as readonly SessionEventLike[]
       const sessionId = String(session.id)
       const cwd = sessionCwd(session)
-      const route = resolved.routeOverride ?? routeFromEvents(events)
       const targets: { scope: EngramScope; open: () => Promise<EngramStore> }[] = [
         { scope: 'user', open: () => openStore('user') },
       ]
-      // 项目宫殿仅处理库文件已存在的，避免为一次性 cwd 建空库（与衰减调度同纪律）。
       if (cwd !== undefined && existsSync(join(resolved.dbDir, dbNameForCwd(cwd)))) {
         targets.push({ scope: 'project', open: () => openStoreForProjectCwd(cwd) })
       }
@@ -1806,45 +1843,50 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
         for (const target of targets) {
           try {
             const store = await target.open()
-            if (resolved.reflect === 'suggest') {
-              const detail = JSON.stringify({ scope: target.scope, sessionId })
-              if (!await store.hasAudit('reflect-pending', detail)) {
-                await store.audit('reflect-pending', 'AUX', detail)
-              }
-              continue
-            }
-            // auto：会话没有模型请求时取不到路由，跳过本次（下次会话补）。
-            if (route === undefined) continue
-            const outcome = await reflectObservations({
-              store,
-              // 反思在会话收尾的后台路径上，等真模型而非宽限降级——缺向量的信念质量差。
-              embedder: await embedderAttempt(),
-              scope: target.scope,
-              call: params => streamText(ctx, { ...params, sessionId: session.id }),
-              logRequest: data => {
-                void store.audit('reflect-request', 'AUX', JSON.stringify(data)).catch(() => { /* 审计失败不影响巩固 */ })
-              },
-              route,
-              signal: AbortSignal.timeout(REFLECT_TIMEOUT_MS),
-            })
-            if (outcome.formed + outcome.refined + outcome.confirmed + outcome.refuted > 0) {
-              console.log(message('core.logReflectDone', {
-                scope: target.scope,
-                formed: outcome.formed,
-                refined: outcome.refined,
-                confirmed: outcome.confirmed,
-                refuted: outcome.refuted,
-              }))
-            }
-            // 丢弃计数不再沉默（0.11.4 引入词条却漏了这条接线，message 字典门禁抓出死键）。
-            if (outcome.dropped > 0) {
-              console.warn(message('core.warnReflectBatchDropped', { count: outcome.dropped }))
-            }
+            const detail = JSON.stringify({ scope: target.scope, sessionId })
+            if (!await store.hasAudit('reflect-pending', detail)) await store.audit('reflect-pending', 'AUX', detail)
           } catch (error) {
             console.warn(message('core.warnReflectFailed', { scope: target.scope }), error)
           }
         }
       })()
+    })
+  }
+
+  if (resolved.reflect === 'auto') {
+    // auto 改为持久作业：120s 执行预算 + 180s 租约，启动时接管崩溃/重启留下的作业。
+    const reflectJobs = await startAutoReflectWorker({
+      dbDir: resolved.dbDir,
+      dbNameForCwd,
+      openStore,
+      openProjectStore: openStoreForProjectCwd,
+      embedder: () => embedderAttempt(),
+      call: (sessionId, params) => streamText(ctx, { ...params, sessionId }),
+    })
+    stopReflectJobs = reflectJobs.stop
+    ctx.on('session/disposed', (session) => {
+      const events = session.snapshotEvents() as unknown as readonly SessionEventLike[]
+      const route = resolved.routeOverride ?? routeFromEvents(events)
+      if (route === undefined) return
+      // 本次 dispose 的事件水位：同一快照重复入队幂等，恢复会话新增事件会生成新作业。
+      const eventSeq = events.reduce((max, event) => (
+        typeof event.seq === 'number' && Number.isInteger(event.seq) && event.seq > max ? event.seq : max
+      ), 0)
+      const sessionId = String(session.id)
+      try {
+        reflectJobs.enqueue({ sessionId, scope: 'user', route, eventSeq })
+        const cwd = sessionCwd(session)
+        if (cwd !== undefined && existsSync(join(resolved.dbDir, dbNameForCwd(cwd)))) {
+          reflectJobs.enqueue({ sessionId, scope: 'project', cwd, route, eventSeq })
+        }
+      } catch (error) {
+        // disposed 观察器不能让宿主 fail-loud；入队失败留下警告，下一 dispose 补做。
+        console.warn(message('core.warnReflectFailed', { scope: 'enqueue' }), error)
+        return
+      }
+      void reflectJobs.pump().catch((error: unknown) => {
+        console.warn(message('core.warnReflectFailed', { scope: 'scheduler' }), error)
+      })
     })
   }
 
@@ -1873,6 +1915,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       if (archived > 0) console.warn(message('core.warnDecayArchived', { label: target.label, count: archived }))
       try {
         await store.pruneOps(pruneBefore, LOG_KEEP_OPS)
+        await store.pruneInjections(pruneBefore)
       } catch (error) {
         // 保留窗口失败只影响磁盘占用，不影响任何功能——警告继续。
         console.warn(message('core.warnDecayPeriodicFailed'), error)
