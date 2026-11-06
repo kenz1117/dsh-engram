@@ -113,7 +113,7 @@
 /* 二级导航：一排下划线页签。胶囊按钮在这里读起来像筛选器，不像「你在哪个视图」。 */
 .contextNav {
   display: flex;
-  margin: 0 0 var(--space-3);
+  margin: 0 0 var(--space-4);
   padding: 0;
   border: 0;
   border-bottom: 1px solid var(--engram-border-soft);

@@ -2097,7 +2097,6 @@ function ContextReplayView({ t, scope, reloadTick }: {
 
   return (
     <div className={styles.tabPanel}>
-      <PageHeader title={t('workfaceReplay')} subtitle={t('pageHeaderReplaySubtitle')} />
       <div className={styles.toolbarCard}>
         <label className={styles.toolbarRow}>
           <span className={styles.fieldLabel}>{t('replayFilterLabel')}</span>
@@ -2367,6 +2366,39 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
     { id: 'logs' as const, label: t('tabLog') },
   ]
   // 状态条只报「需要人知道的事」：作用域由 Header 三宫格表达，不在这里重复。
+  /**
+   * 工作面标题与副标题：标题永远是工作面名，副标题说明「这一页具体能做什么」。
+   * 记忆与治理的副标题随二级视图切换（记录 / 时间线 / 实体 / 图谱 各说各的）。
+   */
+  const workfaceTitle = ((): string => {
+    switch (activeWorkface) {
+      case 'today': return t('workfaceToday')
+      case 'recall': return t('workfaceRecall')
+      case 'memory': return t('workfaceMemory')
+      case 'governance': return t('workfaceGovernance')
+      case 'replay': return t('workfaceReplay')
+      case 'system': return t('workfaceSystem')
+    }
+  })()
+  const workfaceSubtitle = ((): string => {
+    switch (activeWorkface) {
+      case 'today': return t('pageHeaderTodaySubtitle')
+      case 'recall': return t('pageHeaderRecallSubtitle')
+      case 'memory': return memoryTab === 'records'
+        ? t('pageHeaderLibrarySubtitle')
+        : memoryTab === 'timeline'
+          ? t('pageHeaderEpisodesSubtitle')
+          : memoryTab === 'entities'
+            ? t('pageHeaderEntitiesSubtitle')
+            : t('pageHeaderCorridorSubtitle')
+      case 'governance': return governanceTab === 'conflicts'
+        ? t('pageHeaderGovernanceSubtitle')
+        : t('pageHeaderBeliefsSubtitle')
+      case 'replay': return t('pageHeaderReplaySubtitle')
+      case 'system': return t('pageHeaderSystemSubtitle')
+    }
+  })()
+
   const statusItems = [
     ...(projectMode === 'project' && projectSelector !== null
       ? [{ id: 'project', label: projectSelector, level: 'neutral' as const }]
@@ -2505,6 +2537,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           items={workfaceItems} onChange={changeWorkface} />
         <div className={shellStyles.consoleBody}>
           <StatusStrip items={statusItems} />
+          {/* 标题与副标题由工作面决定；二级导航在其下——先认路，再选视图。 */}
+          <PageHeader title={workfaceTitle} subtitle={workfaceSubtitle} />
           {activeWorkface === 'memory' && (
             <ContextNav label={t('workfaceMemory')} active={memoryTab}
               items={memoryContextItems} onChange={setMemoryTab} />
@@ -2523,7 +2557,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
       <ViewErrorBoundary key={`${activeWorkface}:${memoryTab}:${governanceTab}:${systemTab}`} retryLabel={t('retry')} hintLabel={t('viewCrashed')}>
       {activeWorkface === 'memory' && memoryTab === 'records' && (
         <div className={styles.tabPanel}>
-          <PageHeader title={t('workfaceMemory')} subtitle={t('pageHeaderLibrarySubtitle')} />
           <RecordsPanel t={t} scope={scope} project={projectSelector} reloadTick={reloadTick}
             dueIds={dueIds} onToggle={toggleRecord} onChanged={reload} toast={toast}
             request={recordsRequest} onRequestApplied={clearRecordsRequest} />
@@ -2532,7 +2565,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeWorkface === 'today' && (
         <div className={styles.tabPanel}>
-          <PageHeader title={t('tabToday')} subtitle={t('pageHeaderTodaySubtitle')} />
           {/* 今日速览：主指标 + 健康环，替代原常驻日报条。 */}
           <TodayHero t={t} overview={overview} dueCount={dueCount} attention={attention} />
           {/* v0.8.1+ 活动热力日历：90 天写入/摄取/修缮分布，GitHub 风的 7×N 网格 */}
@@ -2601,7 +2633,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeWorkface === 'memory' && memoryTab === 'atlas' && (
         <div className={styles.tabPanel}>
-          <PageHeader title={t('workfaceMemory')} subtitle={t('pageHeaderCorridorSubtitle')} />
           {/* Atlas：结构鸟瞰与时间螺旋同属「可视化」——它们是记忆库里的模块，不是导航语言。 */}
           <div className={styles.mainCol}>
             <section className={styles.section}>
@@ -2624,7 +2655,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeWorkface === 'recall' && (
         <div className={styles.tabPanel}>
-          <PageHeader title={t('workfaceRecall')} subtitle={t('pageHeaderRecallSubtitle')} />
           <section className={styles.section}>
             <RecallView t={t} scope={scope} onSelect={openReview} />
           </section>
@@ -2633,7 +2663,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeWorkface === 'governance' && governanceTab === 'conflicts' && (
         <div className={styles.tabPanel}>
-          <PageHeader title={t('workfaceGovernance')} subtitle={t('pageHeaderGovernanceSubtitle')} />
           <section className={styles.section}>
             <GovernanceView t={t} scope={scope} reloadTick={reloadTick} onChanged={reload} />
           </section>
@@ -2644,7 +2673,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeWorkface === 'memory' && memoryTab === 'timeline' && (
         <div className={styles.tabPanel}>
-          <PageHeader title={t('workfaceMemory')} subtitle={t('pageHeaderEpisodesSubtitle')} />
           <section className={styles.section}>
             <EpisodeTimelineView t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
           </section>
@@ -2653,7 +2681,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeWorkface === 'memory' && memoryTab === 'entities' && (
         <div className={styles.tabPanel}>
-          <PageHeader title={t('workfaceMemory')} subtitle={t('pageHeaderEntitiesSubtitle')} />
           <section className={styles.section}>
             <EntityView t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
           </section>
@@ -2662,7 +2689,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeWorkface === 'governance' && governanceTab === 'beliefs' && (
         <div className={styles.tabPanel}>
-          <PageHeader title={t('workfaceGovernance')} subtitle={t('pageHeaderBeliefsSubtitle')} />
           <section className={styles.section}>
             <BeliefsView t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} toast={toast} />
           </section>
@@ -2671,7 +2697,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeWorkface === 'system' && (
         <div className={styles.tabPanel}>
-          <PageHeader title={t('workfaceSystem')} subtitle={t('pageHeaderSystemSubtitle')} />
           <SystemView t={t} section={systemTab} overlayHost={overlayHost} lang={lang} toast={toast}
             onTestPanel={() => { setPanelTest(true) }} telemetry={overview.telemetry}
             reloadTick={reloadTick} onCleared={reload} />
