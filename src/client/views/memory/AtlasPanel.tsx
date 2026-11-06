@@ -11,7 +11,7 @@ import { api } from '../../rpc.ts'
 import { usePersistedState } from '../../UiStorage.ts'
 import { CorridorMap, EDGE_STYLE, FloorplanMap, KIND_PALETTE } from '../../CorridorMap.tsx'
 import { SpiralMap, type SpiralRecord } from '../../SpiralMap.tsx'
-import { EmptyState, kindLabel, PageHeader, type T } from '../../ui/panel-kit.tsx'
+import { EmptyState, kindLabel, type T } from '../../ui/panel-kit.tsx'
 
 /** 走廊鸟瞰数据拉取与节点/边状态（命中 active + archived，forgotten 默认隐藏）。 */
 interface CorridorGraph {
@@ -198,7 +198,6 @@ export function SpiralPanel({ t, scope, project, reloadTick }: {
 
   return (
     <div className={styles.tabPanel}>
-      <PageHeader title={t('tabSpiral')} subtitle={t('pageHeaderCorridorSubtitle')} />
       <div className={spiralStyles.toolbar}>
         <div className={styles.segGroup}>
           <button type="button" role="tab" aria-selected={windowKey === '30d'}

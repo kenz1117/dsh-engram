@@ -14,8 +14,9 @@ interface StatusStripProps {
   readonly items: readonly StatusItem[]
 }
 
-export function StatusStrip({ items }: StatusStripProps): ReactElement {
-  if (items.length === 0) return <div className={styles.statusStrip} aria-hidden="true" />
+export function StatusStrip({ items }: StatusStripProps): ReactElement | null {
+  // 没有要报的事就不占一条：空条只会让人以为漏了东西。
+  if (items.length === 0) return null
   return (
     <div className={styles.statusStrip}>
       {items.map(item => (

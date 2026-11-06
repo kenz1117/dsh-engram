@@ -10,6 +10,24 @@ import styles from '../panel.module.css'
 import type { EngramKey } from '../locales/index.ts'
 import { kindLabel, type T } from './panel-kit.tsx'
 
+/** 宫殿遥测：最近 7 天 op_log 聚合（写 / 摄取 / 整理 / 闭环等计数）。 */
+export interface TelemetrySnapshot {
+  readonly windowDays: number
+  readonly counts: {
+    readonly writes: number
+    readonly forgets: number
+    readonly ingestRequests: number
+    readonly ingestDones: number
+    readonly distillRequests: number
+    readonly consolidations: number
+    readonly reviewAnswers: number
+    readonly searches?: number
+    readonly searchExposures?: number
+  }
+  /** v0.8.1+ 每日写入序列（活动热力日历用）。 */
+  readonly dailyWrites?: ReadonlyArray<{ readonly dayMs: number; readonly count: number }>
+}
+
 /** 列表/详情用的记忆视图（宿主 /api/engram/list 的行结构）。 */
 export interface MemoryRow {
   readonly id: string

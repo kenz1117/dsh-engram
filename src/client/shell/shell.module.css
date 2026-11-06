@@ -21,9 +21,22 @@
 
 .console {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  /* 固定列宽：导航列不许被内容撑开（auto 列 + min-width:auto 会把中文标题挤成一列竖字）。 */
+  grid-template-columns: 132px minmax(0, 1fr);
   gap: var(--space-4);
   align-items: stretch;
+  /* 撑满面板剩余高度：内容列（.consoleBody）自己滚动，导航列固定在左边。
+     没有 flex:1 + min-height:0，.console 会按内容高度排版，滚动条会跑到宿主页面上，
+     或者（面板高度被宿主裁剪时）干脆不出现。 */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 内容列：状态条与二级导航在上，工作面内容在下（.panelBody 自己滚）。 */
+.consoleBody {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -34,7 +47,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  width: 172px;
+  min-width: 0;
   padding: var(--space-3);
   background: color-mix(in srgb, var(--engram-text) 2%, var(--engram-surface));
   border: 1px solid var(--engram-border-soft);
@@ -52,11 +65,11 @@
 
 .railItem {
   position: relative;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  display: flex;
   align-items: center;
   gap: var(--space-2);
   width: 100%;
+  min-width: 0;
   min-height: 38px;
   padding: var(--space-2);
   border: 1px solid transparent;
@@ -68,6 +81,14 @@
   text-align: left;
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease-spring), color var(--dur-fast) var(--ease-spring), border-color var(--dur-fast) var(--ease-spring);
+}
+
+/* 标题不换行：中文两字标签在窄列里会一个字一行，读起来像坏掉了。 */
+.railItem > span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .railItem:hover { background: color-mix(in srgb, var(--engram-text) 5%, transparent); color: var(--engram-text); }
@@ -89,35 +110,38 @@
 
 .railItem svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 
+/* 二级导航：一排下划线页签。胶囊按钮在这里读起来像筛选器，不像「你在哪个视图」。 */
 .contextNav {
   display: flex;
-  margin: 0;
+  margin: 0 0 var(--space-3);
   padding: 0;
   border: 0;
-  align-items: center;
-  gap: var(--space-2);
+  border-bottom: 1px solid var(--engram-border-soft);
+  align-items: flex-end;
+  gap: var(--space-4);
   flex-wrap: wrap;
-  margin-bottom: var(--space-3);
 }
 
 .contextItem {
-  min-height: 30px;
-  padding: 4px 10px;
-  border: 1px solid var(--engram-border-soft);
-  border-radius: 999px;
-  background: var(--engram-surface);
+  position: relative;
+  min-height: 32px;
+  padding: 4px 2px 8px;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
   color: var(--engram-text-muted);
   font: inherit;
-  font-size: var(--fs-micro);
+  font-size: var(--fs-body);
   cursor: pointer;
-  transition: all var(--dur-fast) var(--ease-spring);
+  transition: color var(--dur-fast) var(--ease-spring), border-color var(--dur-fast) var(--ease-spring);
 }
 
-.contextItem:hover { color: var(--engram-text); border-color: var(--engram-border); }
+.contextItem:hover { color: var(--engram-text); }
 .contextItem[aria-pressed="true"] {
   color: var(--engram-text);
-  border-color: color-mix(in srgb, var(--engram-accent) 40%, var(--engram-border-soft));
-  background: color-mix(in srgb, var(--engram-accent) 8%, transparent);
+  border-bottom-color: var(--engram-accent);
   font-weight: 600;
 }
 
@@ -158,7 +182,7 @@
   }
   .rail::-webkit-scrollbar { display: none; }
   .railLabel { display: none; }
-  .railItem { grid-template-columns: minmax(0, auto); min-width: max-content; justify-content: center; }
+  .railItem { width: auto; min-width: max-content; justify-content: center; }
 }
 
 @media (max-width: 680px) {

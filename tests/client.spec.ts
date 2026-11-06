@@ -6,7 +6,7 @@ import { makeT, ruPluralForm } from '../src/client/translate.ts'
 import { en, ru, zh } from '../src/client/locales/index.ts'
 
 const REPLAY_KEYS = [
-  'tabReplay', 'pageHeaderReplaySubtitle', 'replayFilterLabel', 'replayFilterPlaceholder', 'replayCount',
+  'workfaceReplay', 'pageHeaderReplaySubtitle', 'replayFilterLabel', 'replayFilterPlaceholder', 'replayCount',
   'replayEmpty', 'replayFailed', 'replayOpen', 'replayClose', 'replayPacketTitle', 'replayMetaTitle',
   'replayExactNote', 'replaySession', 'replayHash', 'replayMemories', 'replayCurated', 'replayCompactions', 'replaySize',
 ] as const
@@ -14,6 +14,23 @@ const REPLAY_KEYS = [
 const SHELL_KEYS = [
   'navWorkfaces', 'workfaceToday', 'workfaceRecall', 'workfaceMemory', 'workfaceGovernance',
   'workfaceReplay', 'workfaceSystem',
+  // 二级导航与各工作面的副标题：0.13 把十个旧 tab 折进六个工作面后，视图名与说明各归其位。
+  'memoryRecords', 'memoryTimeline', 'memoryEntities', 'memoryAtlas',
+  'governanceConflicts', 'governanceBeliefs',
+  'pageHeaderLibrarySubtitle', 'pageHeaderCorridorSubtitle', 'pageHeaderEpisodesSubtitle',
+  'pageHeaderEntitiesSubtitle', 'pageHeaderBeliefsSubtitle', 'pageHeaderGovernanceSubtitle',
+  'pageHeaderRecallSubtitle', 'pageHeaderTodaySubtitle',
+  'pageHeaderSystemSubtitle', 'pageHeaderRuntimeSubtitle', 'pageHeaderStorageSubtitle',
+  'pageHeaderModelsSubtitle', 'pageHeaderLogSubtitle', 'pageHeaderBackfillSubtitle',
+  'pageHeaderJevSubtitle',
+  'systemRuntime', 'systemStorage', 'systemModels',
+  'systemVersionPlugin', 'systemVersionClient', 'systemVersionOk', 'systemVersionDiff',
+  'systemJobsTitle', 'systemJobsUnavailable', 'systemJobsQueued', 'systemJobsRunning',
+  'systemJobsDone', 'systemJobsDead', 'systemJobAttempts', 'systemJobError', 'systemJobEmpty',
+  'systemStorageTotal', 'systemStorageActive', 'systemStorageArchived',
+  'systemStorageForgotten', 'systemStorageOpLog', 'systemStorageLogSize', 'systemStorageLogPath',
+  'systemStorageFailed', 'systemModelStatus', 'systemModelNone',
+  'identityStable', 'identityRevision', 'identityRevisionNote',
 ] as const
 
 const ATTENTION_KEYS = [
