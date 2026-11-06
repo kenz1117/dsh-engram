@@ -25,6 +25,13 @@
   background: color-mix(in srgb, var(--engram-accent) 8%, transparent);
 }
 
+/* 确认态的按钮不许把行撑爆：长说明放 title，按钮只留短词。 */
+.confirmArmed {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .confirmArmed { border-color: color-mix(in srgb, var(--engram-danger) 48%, var(--engram-border)); color: var(--engram-text); background: color-mix(in srgb, var(--engram-danger) 10%, transparent); }
 
 .dialogScrim {
