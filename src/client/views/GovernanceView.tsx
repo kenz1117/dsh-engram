@@ -95,7 +95,7 @@ export function GovernanceView({ t, scope, reloadTick, onChanged }: GovernanceVi
       <p>{row.content}</p>
       <IdentityBadge memoryId={row.memoryId} memoryLabel={t('governanceStableId')} />
       <ConfirmButton className={styles.govSideAction ?? ''} disabled={busy !== null}
-        label={t('governanceForgetSide')} confirmLabel={t('governanceForgetConfirm')}
+        label={t('governanceForgetSide')} confirmLabel={t('governanceForgetConfirmShort')}
         title={t('governanceForgetConfirm')}
         onConfirm={() => {
           act({

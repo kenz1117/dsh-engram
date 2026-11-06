@@ -1005,7 +1005,8 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast, lang }:
                     {suggestion.action === 'demote'
                       ? (
                         <ConfirmButton className={`${styles.refurbExec} ${styles.button}`} disabled={busy}
-                          label={t('refurbExecute')} confirmLabel={t('refurbConfirmDemote')}
+                          label={t('refurbExecute')} confirmLabel={t('refurbConfirmDemoteShort')}
+                          title={t('refurbConfirmDemote')}
                           onConfirm={() => { execute(suggestion) }} />
                       )
                       : suggestion.action === 'merge'
@@ -1017,7 +1018,8 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast, lang }:
                           : (
                             <ConfirmButton className={`${styles.refurbExec} ${styles.button}`} disabled={busy}
                               label={t('refurbExecute')}
-                              confirmLabel={t('refurbConfirmMerge', { n: suggestion.candidates.length + 1 })}
+                              confirmLabel={t('refurbConfirmMergeShort')}
+                              title={t('refurbConfirmMerge', { n: suggestion.candidates.length + 1 })}
                               onConfirm={() => { execute(suggestion) }} />
                           )
                         : (
