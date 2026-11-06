@@ -55,3 +55,9 @@ Label written: {label}	Метка записана: {label}
 Could not write the base label	Не удалось записать метку базы
 bases do not exist yet: {n} — the author's code creates them	баз ещё нет: {n} — их создаёт код автора
 The schema declaration did not load: base states are unknown.	Объявление схемы не прочитано: состояние баз неизвестно.
+Action failed: {msg}	Не удалось выполнить: {msg}
+Refute	Опровергнуть
+Click again to refute	Нажми ещё раз для опровержения
+Restore	Восстановить
+Belief refuted	Убеждение опровергнуто
+Belief restored	Убеждение восстановлено

@@ -18,6 +18,8 @@ export type IngestModeConfig = 'off' | 'light' | 'eager'
 
 /** 信念巩固档位：off 仅允许手动 engram_reflect；suggest 会话结束只登记待巩固；auto 会话结束后自动巩固。 */
 export type ReflectModeConfig = 'off' | 'suggest' | 'auto'
+/** 管理面板 API 的访问面：loopback 仅回环（默认）；lan 额外放行私网（RFC1918/ULA/链路本地）。 */
+export type PanelAccessConfig = 'loopback' | 'lan'
 
 /**
  * 嵌入后端。
@@ -142,6 +144,8 @@ export interface EngramConfig {
   historyBackfillIncludeSeeded?: boolean
   /** 历史回填默认规则：是否包含无 cwd 的会话（无法归属项目分库）；默认 false。 */
   historyBackfillIncludeNoCwd?: boolean
+  /** 管理面板 API 的访问面：默认 loopback（行为不变）；lan 放行私网 peer（手机/无头服务器场景，#49）。 */
+  panelAccess?: PanelAccessConfig
   /** Jev System One 裁决子配置；默认关闭（纯规则四态判定，行为与旧版一致）。 */
   jev?: JevConfig
   /** 嵌入器：本地离线模型或远程 OpenAI 兼容端点；默认 local。 */
@@ -233,6 +237,8 @@ export interface ResolvedEngramConfig {
   readonly queryRewrite: boolean
   readonly autoSlot: boolean
   readonly reviewScheduling: boolean
+  /** 管理面板 API 的访问面（默认 loopback；lan 放行私网 peer 与字面 IP Host/Origin）。 */
+  readonly panelAccess: PanelAccessConfig
   /**
    * Окно собранного условия смены языка дворца, в секундах. Читают оба: панель считает
    * по нему отсчёт, сервер — принимает ли он запрос смены языка (окно истекло — отказ).
@@ -262,7 +268,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'ingest', 'reflect', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
   'injectTokenBudget', 'injectItemBudgetStart', 'injectItemBudgetDecay', 'injectItemBudgetFloor',
   'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
-  'autoSlot', 'reviewScheduling', 'assessReminder', 'palaceChangeWindowSec',
+  'autoSlot', 'reviewScheduling', 'assessReminder', 'palaceChangeWindowSec', 'panelAccess',
   'historyBackfillDays', 'historyBackfillMaxTurnsPerSession', 'historyBackfillMaxTotalTurns',
   'historyBackfillIncludeSubagents', 'historyBackfillIncludeSeeded', 'historyBackfillIncludeNoCwd',
   'jev', 'embedder', 'language', 'redactWords',
@@ -299,6 +305,7 @@ export const Config: z<EngramConfig> = z.object({
   queryRewrite: z.boolean(),
   autoSlot: z.boolean(),
   reviewScheduling: z.boolean(),
+  panelAccess: z.string() as unknown as z<PanelAccessConfig>,
   palaceChangeWindowSec: z.number().step(1).min(5).max(600),
   assessReminder: z.boolean(),
   historyBackfillDays: z.number().step(1).min(0).max(3650),
@@ -353,7 +360,7 @@ export function readLanguageSetting(
  * 显式 resolve 步骤：默认值只在唯一的此处落地，非法值 loud 失败。
  * @param config - cordis.yml 传入的未校验配置。
  * @returns 完整解析配置。
- * @throws 未知键、ingest 档位非法、provider/model 只给其一、decay/预算/排序权重/历史回填规则越界时抛错。
+ * @throws 未知键、ingest/reflect/panelAccess 档位非法、provider/model 只给其一、decay/预算/排序权重/历史回填规则越界时抛错。
  */
 export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   for (const key of Object.keys(config)) {
@@ -367,6 +374,9 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   }
   if (config.reflect !== undefined && !REFLECT_MODES.has(config.reflect)) {
     throw new Error(`dsh-engram: reflect must be one of off|suggest|auto, got "${String(config.reflect)}"`)
+  }
+  if (config.panelAccess !== undefined && config.panelAccess !== 'loopback' && config.panelAccess !== 'lan') {
+    throw new Error(`dsh-engram: panelAccess must be one of loopback|lan, got "${String(config.panelAccess)}"`)
   }
   const languageSetting = readLanguageSetting(config.language)
   if (languageSetting !== undefined && languageSetting !== 'auto' && !isLanguageCode(languageSetting)) {
@@ -535,6 +545,7 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     queryRewrite: config.queryRewrite ?? true,
     autoSlot: config.autoSlot ?? true,
     reviewScheduling: config.reviewScheduling ?? true,
+    panelAccess: config.panelAccess ?? 'loopback',
     palaceChangeWindowSec: config.palaceChangeWindowSec ?? 30,
     historyBackfill: {
       days: config.historyBackfillDays ?? 7,

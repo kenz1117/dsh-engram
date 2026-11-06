@@ -1,8 +1,8 @@
 /**
  * /engram 管理页与 /api/engram/* 数据接口的回环路由。
- * 安全面：peer socket + Host 头必须为本机回环；写操作额外校验 Origin 与
- * Content-Type（billing guardLoopback 同款三重防线）。下游插件不进宿主
- * client 模块表，管理页为 host 直出的自包含单文件页。
+ * 安全面：peer socket + Host 头校验（默认仅本机回环；panelAccess='lan' 放宽到私网，
+ * 防线结构不变）；写操作额外校验 Origin 与 Content-Type（billing guardLoopback
+ * 同款三重防线）。下游插件不进宿主 client 模块表，管理页为 host 直出的自包含单文件页。
  * @module @kenz1117/dsh-engram/routes
  */
 
@@ -13,7 +13,7 @@ import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, EpisodeTimelineAroundResponse, EpisodeTimelineGroupsResponse, ExportData, ListFilter, MemoryRecord, ObservationStatus } from './types.ts'
-import { asMemoryId } from './types.ts'
+import { asMemoryId, asObservationId } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
 import { embedImportedRecords, parseImportData, parseMarkdownExport } from './store/import.ts'
 import { formatBytes } from './body-limits.ts'
@@ -23,7 +23,7 @@ import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, History
 import type { ProjectPalaceKind } from './project/registry.ts'
 import type { BaseActionId, BaseStateId } from './registry/base-state.ts'
 import type { PalaceGuard } from './registry/palace-guard.ts'
-import type { ResolvedHistoryRules, ResolvedJevConfig } from './config.ts'
+import type { PanelAccessConfig, ResolvedHistoryRules, ResolvedJevConfig } from './config.ts'
 import { effectiveJevConfig, jevConfigView, loadJevOverride, parseJevPatch, saveJevOverride } from './jev/runtime.ts'
 import { testJevConnection } from './jev/client.ts'
 import type { JevCatalog, JevConnection, JevModelList } from './jev/host.ts'
@@ -41,51 +41,117 @@ import { aggregateTelemetry } from './telemetry/aggregate.ts'
 import { buildTourProposal } from './tour-proposal.ts'
 import { gatherRefurbSuggestions, DEFAULT_REFURB_OPTIONS } from './refurb.ts'
 
-/** 回环 peer：IPv4 127/8、IPv6 ::1、IPv4-mapped IPv6。 */
-function isLoopbackPeer(req: IncomingMessage): boolean {
-  const address = req.socket.remoteAddress
-  if (address === undefined) return false
+/** 回环地址：IPv4 127/8、IPv6 ::1、IPv4-mapped IPv6。 */
+function isLoopbackAddress(address: string): boolean {
   return address === '::1' || address.startsWith('127.') || address.startsWith('::ffff:127.')
 }
 
-/** Host 头必须为回环字面量（防 DNS rebinding：拒绝 `127.0.0.1.attacker.com`）。 */
-function isLoopbackHost(req: IncomingMessage): boolean {
-  const host = req.headers.host
-  if (host === undefined || host === '') return true
-  const name = host.split(':')[0]
-  return name === 'localhost' || name === '::1' || (name !== undefined && /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(name))
+/** RFC1918 私网 IPv4 字面量（10/8、172.16/12、192.168/16；每段 ≤255 才算字面量）。 */
+function isPrivateIPv4(address: string): boolean {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address)
+  if (match === null) return false
+  const [first, second] = [Number(match[1]), Number(match[2])]
+  if ([first, second, Number(match[3]), Number(match[4])].some(octet => octet > 255)) return false
+  return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168)
 }
 
-/** 写操作的 Origin 必须为回环（防跨站表单/fetch）。缺失视为放行，由 Content-Type 兜底。 */
-function isLoopbackOrigin(origin: string | undefined): boolean {
+/** IPv6 ULA fc00::/7（fc/fd 开头）与链路本地 fe80::/10（fe80-febf）。 */
+function isPrivateIPv6(address: string): boolean {
+  const lower = address.toLowerCase()
+  return lower.startsWith('fc') || lower.startsWith('fd')
+    || lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')
+}
+
+/** lan 模式的 peer 面：回环 + 私网（含 IPv4-mapped IPv6 去映射后判定）。 */
+function isAllowedPeer(req: IncomingMessage, lan: boolean): boolean {
+  const address = req.socket.remoteAddress
+  if (address === undefined) return false
+  if (isLoopbackAddress(address)) return true
+  if (!lan) return false
+  const unMapped = address.startsWith('::ffff:') ? address.slice('::ffff:'.length) : address
+  return isPrivateIPv4(unMapped) || isPrivateIPv6(unMapped)
+}
+
+/** Host 头去端口：IPv6 字面量按方括号取；其余在「末冒号后是纯数字端口」时才切。 */
+function hostNameOf(header: string): string {
+  if (header.startsWith('[')) {
+    const end = header.indexOf(']')
+    return end === -1 ? header.slice(1) : header.slice(1, end)
+  }
+  const colon = header.lastIndexOf(':')
+  if (colon === -1) return header
+  const port = header.slice(colon + 1)
+  return /^\d+$/.test(port) ? header.slice(0, colon) : header
+}
+
+/** 回环 Host 名：localhost、::1、127/8 字面量。 */
+function isLoopbackHostName(name: string): boolean {
+  return name === 'localhost' || name === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(name)
+}
+
+/** IPv4 字面量（点分四段、每段 ≤255）；与 peer 判定解耦——Host 只看字面性，不看私网段。 */
+function isIPv4Literal(name: string): boolean {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(name)
+  if (match === null) return false
+  return [Number(match[1]), Number(match[2]), Number(match[3]), Number(match[4])].every(octet => octet <= 255)
+}
+
+/**
+ * lan 模式的 Host 放宽面：字面 IPv4/IPv6、localhost、单标签主机名、`*.local`。
+ * 多标签域名仍拒绝——防 DNS rebinding（`127.0.0.1.attacker.com` 解析回环的老把戏）。
+ */
+function isLanHostName(name: string): boolean {
+  if (isLoopbackHostName(name)) return true
+  if (isIPv4Literal(name)) return true
+  if (name.includes(':')) return true
+  if (!name.includes('.')) return true
+  return name.toLowerCase().endsWith('.local')
+}
+
+/** Host 头校验：缺省放行（同旧版）；loopback 模式要回环名，lan 模式再放行私网名字面量。 */
+function isAllowedHost(req: IncomingMessage, lan: boolean): boolean {
+  const host = req.headers.host
+  if (host === undefined || host === '') return true
+  const name = hostNameOf(host)
+  return lan ? isLanHostName(name) : isLoopbackHostName(name)
+}
+
+/** 写操作的 Origin 校验（防跨站表单/fetch）。缺失视为放行，由 Content-Type 兜底。 */
+function isAllowedOrigin(origin: string | undefined, lan: boolean): boolean {
   if (origin === undefined || origin === '') return true
   try {
     const host = new URL(origin).hostname
-    return host === 'localhost' || host === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+    return lan ? isLanHostName(host) : isLoopbackHostName(host)
   } catch {
     return false
   }
 }
 
+/** 访问面拒绝时的说法：loopback 模式与 lan 模式各说各的边界，方便排障。 */
+function forbiddenReason(lan: boolean): string {
+  return lan ? 'forbidden: loopback or private LAN only' : 'forbidden: loopback only'
+}
+
 /**
- * 回环守卫：仅放行回环 GET/POST 请求（peer + Host 同时校验）。
+ * 访问面守卫：GET/POST + peer + Host 同时校验。
+ * @param lan - 是否已开启局域网访问（config.panelAccess = 'lan'）。
  * @returns 是否放行；false = 已拒绝并结束响应。
  */
-export function guardLoopback(req: IncomingMessage, res: ServerResponse): boolean {
+export function guardLoopback(req: IncomingMessage, res: ServerResponse, lan = false): boolean {
   const methodOk = req.method === 'GET' || req.method === 'POST'
-  if (!methodOk || !isLoopbackPeer(req) || !isLoopbackHost(req)) {
+  if (!methodOk || !isAllowedPeer(req, lan) || !isAllowedHost(req, lan)) {
     res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' })
-    res.end(JSON.stringify({ error: 'forbidden: loopback only' }))
+    res.end(JSON.stringify({ error: forbiddenReason(lan) }))
     return false
   }
   return true
 }
 
-/** 写操作守卫：Origin 回环 + Content-Type JSON。 */
-function guardWrite(req: IncomingMessage, res: ServerResponse): boolean {
-  if (!isLoopbackOrigin(req.headers.origin)) {
+/** 写操作守卫：Origin 访问面 + Content-Type JSON（导出仅供守卫单元测试，#49）。 */
+export function guardWrite(req: IncomingMessage, res: ServerResponse, lan: boolean): boolean {
+  if (!isAllowedOrigin(req.headers.origin, lan)) {
     res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' })
-    res.end(JSON.stringify({ error: 'forbidden: loopback only' }))
+    res.end(JSON.stringify({ error: forbiddenReason(lan) }))
     return false
   }
   if (!(req.headers['content-type'] ?? '').toLowerCase().includes('application/json')) {
@@ -515,6 +581,11 @@ export interface RouteDeps {
   /** 房间名的显示语言（服务器侧渲染的文本用它取词，如镜像 _index.md）。 */
   readonly language: EngramLanguage
   /**
+   * 面板 API 的访问面（'loopback' 默认 | 'lan' 放行私网，#49）。守卫只看
+   * `=== 'lan'` 这个布尔面，未来加新档位时这里仍是唯一开关点。
+   */
+  readonly panelAccess: PanelAccessConfig
+  /**
    * Обслуживание: выбранная модель и прочитанные словари.
    *
    * Функция, а не готовое значение: снимок собирается там, где известны и конфиг,
@@ -669,7 +740,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
       kind: 'prefix',
       path: '/api/engram',
       handler: async (req, res) => {
-        if (!guardLoopback(req, res)) return
+        if (!guardLoopback(req, res, deps.panelAccess === 'lan')) return
         const url = new URL(req.url ?? '/', 'http://127.0.0.1')
         const route = url.pathname.slice('/api/engram/'.length)
         // 项目宫殿选择器：GET 从 query 取，POST 在读 body 后覆盖（body.project）。
@@ -784,6 +855,29 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             if (ids.length === 0) { json(res, 400, { error: 'ids required' }); return }
             const items = await (await storeFor(scope)).getMany(ids as never)
             json(res, 200, { scope, items })
+            return
+          }
+          if (req.method === 'POST' && route === 'observation-status') {
+            // 人工更正信念状态（#48）：面板三态按钮 → 复核原语（active=确认维持、refuted=否定、stale=标待复核）。
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
+            adoptBodySelector(body)
+            if (typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
+            const status = body.status
+            if (status !== 'active' && status !== 'refuted' && status !== 'stale') {
+              json(res, 400, { error: 'status must be one of active|refuted|stale' })
+              return
+            }
+            const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')
+            const store = await storeFor(scope)
+            const observation = status === 'active'
+              ? await store.confirmObservation(asObservationId(body.id))
+              : status === 'refuted'
+                ? await store.refuteObservation(asObservationId(body.id))
+                : await store.markObservationStale(asObservationId(body.id))
+            if (observation === undefined) { json(res, 404, { error: 'observation not found' }); return }
+            json(res, 200, { ok: true, observation })
             return
           }
           if (req.method === 'GET' && route === 'entities') {
@@ -922,7 +1016,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if ((req.method === 'GET' && route === 'log-info') || (req.method === 'POST' && route === 'log-clear')) {
             const clear = req.method === 'POST'
             if (clear) {
-              if (!guardWrite(req, res)) return
+              if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
               const body = await readBody(req, res, deps.language)
               if (body === null) return
               adoptBodySelector(body)
@@ -1002,7 +1096,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           }
           if (req.method === 'POST' && route === 'review-answer') {
             // 检索练习自评：面板 记得/模糊/忘了 三档映射 SM-2 grade 5/3/1，推进调度。
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             if (typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
@@ -1061,7 +1155,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'POST' && route === 'import') {
             // 面板导入（#33）：body = { data, scope?, format?: 'json'|'markdown', dryRun?, keepDuplicates?, selectedIds? }。
             // format=markdown 时 data 是导出 MD 原文（有损恢复，见 parseMarkdownExport）；dryRun=true 只分类不写库。
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             // 导入 payload 是整份导出（实测 165 KB 量级），不能沿用普通接口的 64 KiB 上限——
             // 沿用会把合法导出件当成坏 body 拒掉，还报成「不是 JSON 对象」（issue #34）。
             const bodyResult = await readJsonBody(req, IMPORT_BODY_LIMIT_BYTES)
@@ -1351,7 +1445,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // { set, entries: [[английская строка, перевод], ...] } — только изменённые
             // клетки: пустое значение снимает правку, отсутствие строки оставляет прежнюю.
             // Наложение на текущий слой — в deps.dictionary.write (applyDictionaryPatch).
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             // null = тело не прочиталось (битый JSON или больше 64 КиБ). Продолжать нельзя:
             // пустой список правок — это «снять всё», то есть молчаливая потеря слоя.
@@ -1368,7 +1462,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // Заведение пустого словаря для языка, которого в плагине ещё нет. Тело:
             // { language }. Заводятся оба набора сразу и только в пользовательском
             // слое: поставка принадлежит выпуску, и дописывать в неё новый язык нельзя.
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             const language = languageOf(body.language)
@@ -1382,7 +1476,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'POST' && route === 'dictionary-fill') {
             // Заполнение словаря моделью. Тело: { set, terms: [английская строка, ...] }.
             // Пишем только в черновик панели: файл словаря меняет «Сохранить», а не модель.
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             const set = body.set
@@ -1399,7 +1493,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // Обслуживание: поставить метку модели. Метка — единственное, что мы пишем
             // в чужую базу (решение 20.10); подтверждение одно на все базы, поэтому
             // тела у запроса нет: набор баз определяет состояние, а не клиент.
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             json(res, 200, await deps.writeBaseLabels())
             return
           }
@@ -1407,7 +1501,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // Обслуживание: пересчитать векторы тем базам, которые стоят не на целевой
             // модели или растеряли векторы. Тела нет по той же причине, что у метки:
             // что делать — следует из состояния баз, а не из того, что прислал браузер.
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             json(res, 200, await deps.convertBases())
             return
           }
@@ -1416,7 +1510,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // его начало и язык, на котором стояли базы в этот момент. Панель после этого
             // только показывает отсчёт — но отсчёт считается по серверному началу, а не по
             // её собственному таймеру (решение 24.10).
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const language = await deps.palaceCurrentLanguage()
             const window = deps.palaceGuard.open(language, Date.now())
             json(res, 200, {
@@ -1439,7 +1533,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // его открытия сервер запомнил сам), а язык, от которого уходят, сервер знает
             // тоже сам. Присланные панелью `from` и `startedAt` не входят в решение:
             // иначе условие выполнялось бы по построению у любого клиента (ревью #36).
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             const verdict = deps.palaceGuard.check(
@@ -1477,7 +1571,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // «Язык должен отличаться» здесь не требуется: этот маршрут записывает
             // выбранный язык (первая настройка), и «язык тот же» здесь — не ошибка, а
             // отсутствие изменений. Проверка на отличие живёт в palace-change.
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             const wanted = body.language
@@ -1522,7 +1616,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             return
           }
           if (req.method === 'POST' && route === 'history-backfill/start') {
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             const started = deps.history.start(historyRulesOf(body))
@@ -1531,7 +1625,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             return
           }
           if (req.method === 'POST' && route === 'history-backfill/cancel') {
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             deps.history.cancel()
             json(res, 200, { ok: true, status: deps.history.status() })
             return
@@ -1550,7 +1644,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'POST' && route === 'jev-config') {
             // Панель сохраняет выбор: негодная правка отвергается целиком (400),
             // годная — перезаписывает файл перекрытия и возвращает новый вид.
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             const parsed = parseJevPatch(loadJevOverride(deps.jev.dbDir), body)
@@ -1567,7 +1661,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // Проверка связи: адрес и ключ собирает хост по выбранному провайдеру,
             // запрос — минимальный ping. Он же подтверждает, что модель отвечает
             // протоколом System One, то есть действительно является Jev.
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             const base = effectiveJevConfig(deps.jev.base, loadJevOverride(deps.jev.dbDir))
@@ -1610,7 +1704,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // Живой список моделей провайдера (`GET {baseURL}/models` его ключом):
             // панель берёт его как подсказки к полю модели, сужая до Jev-моделей,
             // когда такие в списке есть.
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             const provider = typeof body.provider === 'string' ? body.provider.trim() : ''
@@ -1633,7 +1727,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'POST' && route === 'consolidate') {
             // 闭馆整理手动触发：面板「管家整理」按钮；嵌入不可用时仅归档 + 启发式去重。
             // 可选 candidates：仅把指定 ids 当作合并阶段种子（其它条目仅在与种子相似时被并入）。
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             adoptBodySelector(body)
@@ -1650,13 +1744,13 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             return
           }
           if (req.method === 'POST' && route === 'backup') {
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const result = await createBackup(deps.dbDir, deps.pluginVersion)
             json(res, 200, { archivePath: result.archivePath, bytes: result.bytes, meta: result.meta, schemaVersion: BACKUP_SCHEMA_VERSION })
             return
           }
           if (req.method === 'POST' && route === 'restore-backup') {
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             if (typeof body.archivePath !== 'string' || body.archivePath === '') {
@@ -1685,7 +1779,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             return
           }
           if (req.method === 'POST' && (route === 'update' || route === 'forget' || route === 'restore')) {
-            if (!guardWrite(req, res)) return
+            if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
             if (typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }

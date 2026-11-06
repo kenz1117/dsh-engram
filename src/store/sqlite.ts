@@ -664,6 +664,10 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlImportEntityAliases = db.prepare('UPDATE entities SET aliases_json = ?, updated_at = ? WHERE id = ?')
   const sqlDecay = db.prepare(`UPDATE nodes SET status = 'archived'
     WHERE status = 'active' AND importance < ? AND last_accessed_at < ? AND next_review_at IS NULL`)
+  // 与 sqlDecay 同判准的先行 SELECT：先取本次将归档的 id，归档后做证据死亡传播（#48）。
+  // 单连接单写者，SELECT 与 UPDATE 之间无并发窗口，两次判准必然命中同一批行。
+  const sqlDecayVictims = db.prepare(`SELECT id FROM nodes
+    WHERE status = 'active' AND importance < ? AND last_accessed_at < ? AND next_review_at IS NULL`)
   // 进入 SM-2 复习调度的条目（next_review_at 非空）不参与自动衰减：到期未复习的记忆
   // 该被优先复习而非归档，其退出由翻新清单 demote 规则（人工确认）接管。
   const sqlScheduleReview = db.prepare(`UPDATE nodes
@@ -735,9 +739,57 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlObservationSetStatus = db.prepare('UPDATE observations SET status = ?, updated_at = ?, last_validated_at = ? WHERE id = ?')
   const sqlObservationMarkStale = db.prepare('UPDATE observations SET status = \'stale\' WHERE id = ?')
   const sqlObservationRefute = db.prepare('UPDATE observations SET status = \'refuted\', updated_at = ? WHERE id = ?')
+  // 证据死亡预筛（#48）：sources_json 含 `"id"` 子串的 active/stale 信念。UUID 字符集不含
+  // 引号，带引号子串不会误命中相邻 id；精确成员校验由 detachArchivedEvidence 在 JSON.parse 后做。
+  const sqlObservationEvidenceHit = db.prepare(`SELECT id, sources_json FROM observations
+    WHERE status IN ('active','stale') AND instr(sources_json, ?) > 0`)
+  // 扣源降级（#48）：证据尚有余时置 stale 并重写证据链与 proof_count。
+  // 刻意不刷 updated_at——与 sqlObservationMarkStale 同纪律，复核队列顺序语义不被传播打乱。
+  const sqlObservationDetachStale = db.prepare('UPDATE observations SET status = \'stale\', sources_json = ?, proof_count = ? WHERE id = ?')
   // 与三个 nodes 向量池同一坏行标准（审计 N10）：一个损坏行曾让整场 reflect 中止。
   const sqlObservationActiveVectors = db.prepare(`SELECT * FROM observations WHERE status != 'refuted' AND embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0`)
   const sqlPurgeObservations = db.prepare('DELETE FROM observations')
+
+  /**
+   * 归档传播（#48 Fix A）：源记忆死亡（forget/闭馆/supersede/蒸馏/衰减归档）时，把以它为
+   * 证据的 active/stale 信念扣源——instr 带引号子串只是预筛，落库前对 JSON.parse 结果做
+   * 精确成员过滤再去重。证据耗尽置 refuted（与 refuteObservation 同款：刷 updated_at，
+   * last_validated_at 保留为上次成立时间）；尚有余证置 stale 并重写 sources_json/proof_count
+   * （不刷 updated_at，复核队列顺序语义不变）。refuted 是终态审计标记，不参与传播；
+   * restore 也不调用本 helper：节点复活时信念保持既有状态，由下次复核确认回来。
+   * 返回 { staled, refuted } 计数，调用方可忽略。
+   */
+  const detachArchivedEvidence = (nodeIds: readonly string[]): { staled: number; refuted: number } => {
+    const dead = [...new Set(nodeIds.map(String))].filter(nodeId => nodeId !== '')
+    let staled = 0
+    let refuted = 0
+    const processed = new Set<string>()
+    for (const deadId of dead) {
+      const hits = sqlObservationEvidenceHit.all(`"${deadId}"`) as unknown as { id: string; sources_json: string }[]
+      for (const hit of hits) {
+        // 一条信念可能同时含多个本次死 id：按观察行去重，一次过滤掉全部死 id 落一次库。
+        if (processed.has(hit.id)) continue
+        processed.add(hit.id)
+        let sources: string[]
+        try {
+          const parsed: unknown = JSON.parse(hit.sources_json)
+          sources = Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+        } catch {
+          // sources_json 由本插件自写，解析失败按空证据兜底（与读侧同一纪律）。
+          sources = []
+        }
+        const remaining = [...new Set(sources.filter(source => !dead.includes(source)))]
+        if (remaining.length === 0) {
+          sqlObservationRefute.run(Date.now(), hit.id)
+          refuted += 1
+        } else {
+          sqlObservationDetachStale.run(JSON.stringify(remaining), remaining.length, hit.id)
+          staled += 1
+        }
+      }
+    }
+    return { staled, refuted }
+  }
 
   /** FTS 道：按 scope 集合检索（占位符动态生成，scope 集合由调用方去重）；rooms 非空时只查指定房间。 */
   const ftsSearch = (match: string, scopes: readonly EngramScope[], rooms: readonly string[] | undefined): NodeRow[] => {
@@ -1273,6 +1325,8 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         sqlRevisionInsert.run(input.id, old.content, old.kind, old.importance, at)
         sqlSetStatus.run('archived', at, input.id)
         sqlLog.run(at, 'superseded', input.id, JSON.stringify({ supersededBy: id }))
+        // 归档传播：证据死亡的信念扣源/降级（#48）。
+        detachArchivedEvidence([input.id])
         // 新条目是新物品：重新排桩/评分/排期（宫殿里修正一件物品 = 在新桩位放新版）。
         const imagery = input.imagery ?? jsonToImagery(old.imagery_json)
         const updateInput: WriteInput = { scope: input.scope, kind: input.kind, content }
@@ -1299,6 +1353,8 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       if (row === undefined) throw new EngramError('NOT_FOUND', message('store.entryNotFound', { id }))
       sqlSetStatus.run('forgotten', Date.now(), id)
       sqlLog.run(Date.now(), 'forget', id, null)
+      // 归档传播：证据死亡的信念扣源/降级（#48）。
+      detachArchivedEvidence([id])
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
     },
 
@@ -1314,6 +1370,8 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       }
       sqlSetStatus.run('forgotten', at, id)
       sqlLog.run(at, 'forget', id, JSON.stringify({ tombstone: cleaned }))
+      // 归档传播：证据死亡的信念扣源/降级（#48）。
+      detachArchivedEvidence([id])
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
     },
 
@@ -1750,9 +1808,15 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
 
     async decay(options: DecayOptions) {
       const cutoff = Date.now() - options.olderThanDays * 86_400_000
+      // 先取本次将归档的 id（与 sqlDecay 同判准），归档后做证据死亡传播（#48）。
+      const victims = (sqlDecayVictims.all(options.importanceBelow, cutoff) as unknown as { id: string }[]).map(row => row.id)
       const result = sqlDecay.run(options.importanceBelow, cutoff)
       const changed = Number(result.changes)
-      if (changed > 0) sqlLog.run(Date.now(), 'decay', 'BATCH', JSON.stringify({ archived: changed }))
+      if (changed > 0) {
+        sqlLog.run(Date.now(), 'decay', 'BATCH', JSON.stringify({ archived: changed }))
+        // 归档传播：证据死亡的信念扣源/降级（#48）。
+        detachArchivedEvidence(victims)
+      }
       return changed
     },
 
@@ -1838,6 +1902,8 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
           sqlSetStatus.run('archived', at, oldId)
           sqlEdgeUpsert.run(id, oldId, 'supersedes', at)
         }
+        // 归档传播：证据死亡的信念扣源/降级（#48）。
+        detachArchivedEvidence(oldIds)
       })
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
     },

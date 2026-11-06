@@ -86,6 +86,13 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig({ ingest: 'aggressive' as never })).toThrow(/ingest/)
   })
 
+  it('panelAccess 缺省 loopback，显式 lan 生效，非法档位 loud 失败', () => {
+    expect(resolveConfig({}).panelAccess).toBe('loopback')
+    expect(resolveConfig({ panelAccess: 'lan' }).panelAccess).toBe('lan')
+    expect(resolveConfig({ panelAccess: 'loopback' }).panelAccess).toBe('loopback')
+    expect(() => resolveConfig({ panelAccess: 'all' as never })).toThrow(/panelAccess/)
+  })
+
   it('provider/model 只给其一 loud 失败', () => {
     expect(() => resolveConfig({ provider: 'deepseek' })).toThrow(/provider and model/)
     expect(() => resolveConfig({ model: 'v4' })).toThrow(/provider and model/)

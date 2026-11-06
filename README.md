@@ -241,6 +241,7 @@ DeepSeek Harness 跨会话长期记忆插件 —— 把记忆宫殿的**信息�
     queryRewrite: true              # engram_search 用辅助 LLM 改写 ≤3 个查询做 RRF 融合（失败自动降级单查询）
     autoSlot: true                  # 写入期自动排桩（按 kind 分房、钉「房间#桩位」坐标、登记巡游路线）
     reviewScheduling: true          # 写入期自动排入复习调度（1 天后首次到期；关则新条目不进 SM-2 队列）
+    panelAccess: 'loopback'         # 面板 API 访问面：loopback 仅本机回环（默认）| lan 放行私网（见下方说明）
     # 历史回填默认规则（面板/工具的初始值；总轮数上限是硬顶，按次只能调低）
     historyBackfillDays: 7                  # 默认时间窗天数，0 = 不限
     historyBackfillMaxTurnsPerSession: 20   # 单个会话默认最多摄取轮数
@@ -262,6 +263,8 @@ DeepSeek Harness 跨会话长期记忆插件 —— 把记忆宫殿的**信息�
       # contradictMinProbability: 0.8       # 矛盾确认概率≥此值才建 contradicts 边
     # 以上 enabled/provider/model/endpoint/timeoutMs 五项可在管理面板「裁决」tab 覆盖（存 <dbDir>/jev-config.json，字段级覆盖，保存即时生效）；三阈值仅此处可配。令牌不是插件设置：调用时从所选提供商的密钥库解析，插件手里没有可掩码、可同步、可轮换的副本。此处或覆盖文件中遗留的 apiKey/baseUrl 会被忽略，并给出一次性告警，指明字段与密钥的去处
 ```
+
+**面板访问面（`panelAccess`，#49）**：面板 API 默认只接受本机回环（peer socket + Host 头双校验，写操作再校验 Origin 与 Content-Type）。手机或局域网其他设备要看记忆宫殿时，把 `panelAccess: 'lan'` 与宿主 webServer 的 `host: 0.0.0.0` 一起打开：私网 peer（RFC1918 / IPv6 ULA / 链路本地）即可访问，Host/Origin 接受字面 IP、localhost、单标签名与 `*.local`（多标签域名仍拒，防 DNS rebinding）。公网 IP 任何档位都拒绝——公网暴露请走反向代理到回环上游（此时无需改任何配置）。API 没有鉴权，`lan` 档等于把记忆库的读写向整个局域网公开，只应在信任的家庭/办公网开启。
 
 ## 工作原理
 

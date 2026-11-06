@@ -1670,6 +1670,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       dbDir: resolved.dbDir,
       pluginVersion: VERSION,
       language: resolved.language,
+      panelAccess: resolved.panelAccess,
       registry: () => registryView,
       dictionaryLanguages: languagesWithDictionary,
       baseStates,
@@ -1834,6 +1835,10 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
                 confirmed: outcome.confirmed,
                 refuted: outcome.refuted,
               }))
+            }
+            // 丢弃计数不再沉默（0.11.4 引入词条却漏了这条接线，message 字典门禁抓出死键）。
+            if (outcome.dropped > 0) {
+              console.warn(message('core.warnReflectBatchDropped', { count: outcome.dropped }))
             }
           } catch (error) {
             console.warn(message('core.warnReflectFailed', { scope: target.scope }), error)

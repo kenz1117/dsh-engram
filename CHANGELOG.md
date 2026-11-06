@@ -8,7 +8,17 @@
 
 > **v0.x 阶段的版本约定**：`0.MINOR.PATCH` 里的 `MINOR` 是**功能批次**而不是稳定性刻度——0.7.x 整批是「记忆宫殿信息架构」，0.8.x 整批是「面板重构」，0.9.x 整批是「稳定性与可审计」，0.10.x 整批是「多语言与数据驱动」。同一批次内的 `PATCH` 位通常是修复与加固。
 
-## [Unreleased]
+## [0.11.6] - 2026-11-06
+
+### Added
+
+- **#49（面板访问面开关）**：新增配置 `panelAccess: 'loopback' | 'lan'`（默认 `loopback`,行为不变）。`lan` 档在宿主 webServer 绑定 `0.0.0.0` 时放行私网访问面板 API:peer 放行 RFC1918(10/8、172.16/12、192.168/16)、IPv6 ULA(fc/fd)与链路本地(fe80-febf)及 mapped 地址;Host/Origin 放宽到字面 IP、localhost、单标签名、`*.local`(多标签域名仍拒,防 DNS rebinding);公网 IP 任何档位都拒——公网暴露走反代到回环上游。附修:带方括号的 IPv6 Host(`[::1]:5655`)此前必被 403,现正确放行。API 无鉴权,LAN 档等于把记忆库读写在信任的局域网内公开,请勿在不可信网络开启。
+- **#48（信念人工更正入口）**：新增 `POST /api/engram/observation-status`(active=确认维持 / refuted=否定 / stale=标待复核,404/400 纯英文错误与邻居路由同款)；面板信念卡片按状态给操作——active 可「作废」(两次点击确认,同日志清理模式)、stale 可「作废/恢复」、refuted 可「恢复」,成功局部刷新 + Toast,中/英/俄三语齐备。
+
+### Fixed
+
+- **#48（信念层减法：证据死亡传播）**：源记忆被遗忘/取代/蒸馏归档/衰减归档时,以它为证据的信念此前永远保持 active、proof_count 不减——矛盾信念长期并存且注入每轮上下文(fgql 实测:错的名字信念 proofCount 2 > 正确的 1)。现在四条归档路径统一反查 `sources_json`:摘除死源并扣减 proof_count,证据耗尽置 refuted(刷 updated_at),尚有余证置 stale 待复核(不刷 updated_at,复核队列顺序语义不变);restore 有意不联动(节点复活,信念保持既有状态等下次复核确认)。
+- **message 字典门禁红灯（v0.11.4 遗留,0.11.5 带红发版）**：#45 批次新增的 `tool.reflectDropped` 缺俄语翻译、`core.warnReflectBatchDropped` 有词条但从未被代码接线——`check-messages` 门禁自 0.11.4 起在 main 与 v0.11.5 tag 上都是红的。现在补齐 ru 词条、把丢弃计数接到会话结束后台巩固的告警处（此前 `dropped > 0` 时 console 完全沉默）,门禁恢复绿。
 
 ## [0.11.5] - 2026-11-02
 
@@ -390,7 +400,8 @@
 
 - 首个可用版本：`engram_*` 工具集、插件入口、画像注入、SQLite + FTS5 + 关系边 + op log 的本地存储。
 
-[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.11.5...HEAD
+[Unreleased]: https://github.com/kenz1117/dsh-engram/compare/v0.11.6...HEAD
+[0.11.6]: https://github.com/kenz1117/dsh-engram/compare/v0.11.5...v0.11.6
 [0.11.5]: https://github.com/kenz1117/dsh-engram/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/kenz1117/dsh-engram/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/kenz1117/dsh-engram/compare/v0.11.2...v0.11.3

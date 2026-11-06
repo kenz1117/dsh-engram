@@ -2259,13 +2259,16 @@ const BELIEF_STATUS: Readonly<Record<'active' | 'stale' | 'refuted', { key: Engr
  * 信念视图：巩固器（engram_reflect / auto 档）产出的信念列表。
  * 状态筛选（成立/待复核/已否定）；点「证据」展开证据链——拉原始记忆行只读回查，
  * 证据已被物理清理时给出「信念保留」提示（信念永不因证据消失而删除）。
+ * 卡片按状态给操作：作废（→ refuted，两次点击确认，同日志清理模式）与
+ * 恢复（→ active，直发）；成功后局部刷新列表并弹 Toast，失败只弹错误。
  */
-function BeliefsView({ t, scope, project, reloadTick }: {
+function BeliefsView({ t, scope, project, reloadTick, toast }: {
   t: T
   scope: 'user' | 'project' | 'shared'
   /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
   project: string | null
   reloadTick: number
+  toast: ToastController
 }): React.ReactElement {
   const [status, setStatus] = useState<'all' | 'active' | 'stale' | 'refuted'>('all')
   const [data, setData] = useState<{ items: readonly BeliefRow[]; total: number } | null>(null)
@@ -2274,26 +2277,63 @@ function BeliefsView({ t, scope, project, reloadTick }: {
   const [openId, setOpenId] = useState<string | null>(null)
   const [evidence, setEvidence] = useState<readonly MemoryRow[] | null>(null)
   const [evidenceBusy, setEvidenceBusy] = useState(false)
+  /** 本视图私有的重载信号：作废/恢复成功后 bump，让 useEffect 重拉列表（不惊动父级 reloadTick）。 */
+  const [localTick, setLocalTick] = useState(0)
+  /** 列表取数中（含动作成功后的刷新）：动作按钮统一禁用，避免在半新数据上重复操作。 */
+  const [listBusy, setListBusy] = useState(false)
+  /** 提交中的动作 `${beliefId}:${target}`；null = 空闲。提交期间禁用所有动作按钮防双击重发。 */
+  const [actionBusy, setActionBusy] = useState<string | null>(null)
+  /** 待二次确认的作废目标 `${beliefId}:refuted`（两次点击模式，同日志清理 confirmClear）。 */
+  const [confirmKey, setConfirmKey] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
+    setListBusy(true)
     const params = new URLSearchParams({ scope })
     if (status !== 'all') params.set('status', status)
     api<{ items: readonly BeliefRow[]; total: number }>(`observations?${params.toString()}`)
       .then(d => { if (!cancelled) { setData(d); setFailed(null) } })
       .catch((err: Error) => { if (!cancelled) setFailed(err.message) })
+      .finally(() => { if (!cancelled) setListBusy(false) })
     return () => { cancelled = true }
-  }, [scope, project, status, reloadTick])
+  }, [scope, project, status, reloadTick, localTick])
 
   /** 展开/收起证据链：ids 逗号拼 query（上限 50，store 端截断兜底）；切换时清旧证据。 */
   const toggleEvidence = (row: BeliefRow): void => {
     if (openId === row.id) { setOpenId(null); setEvidence(null); return }
     setOpenId(row.id)
     setEvidence(null)
+    setConfirmKey(null)
     setEvidenceBusy(true)
     api<{ items: readonly MemoryRow[] }>(`observation-evidence?scope=${scope}&ids=${encodeURIComponent(row.sourceIds.join(','))}`)
       .then(d => { setEvidence(d.items); setEvidenceBusy(false); setFailed(null) })
       .catch((err: Error) => { setFailed(err.message); setEvidenceBusy(false) })
+  }
+
+  /**
+   * 作废/恢复（POST observation-status）：作废是破坏性语义走两次点击确认，
+   * 恢复直发。scope 用行自带的（shared 合并视图里行可能来自另一侧库）；
+   * project 选择器由 api() 在 body.scope === 'project' 时自动注入。成功后
+   * bump localTick 重拉列表（filtered 视图里行会按新状态正确出现/消失）。
+   */
+  const setBeliefStatus = (row: BeliefRow, target: 'active' | 'refuted'): void => {
+    const busyKey = `${row.id}:${target}`
+    if (target === 'refuted' && confirmKey !== busyKey) { setConfirmKey(busyKey); return }
+    setConfirmKey(null)
+    setActionBusy(busyKey)
+    api<{ ok: boolean }>('observation-status', {
+      method: 'POST',
+      body: JSON.stringify({ id: row.id, status: target, scope: row.scope }),
+    })
+      .then(() => {
+        setActionBusy(null)
+        setLocalTick(tick => tick + 1)
+        toast.push('success', t(target === 'refuted' ? 'beliefRefuteDone' : 'beliefRestoreDone'))
+      })
+      .catch((err: Error) => {
+        setActionBusy(null)
+        toast.push('error', t('beliefActionFailed', { msg: err.message }))
+      })
   }
 
   return (
@@ -2307,7 +2347,7 @@ function BeliefsView({ t, scope, project, reloadTick }: {
         ] as const).map(([value, label]) => (
           <button key={value} type="button" aria-pressed={status === value}
             className={status === value ? `${styles.chip} ${styles.chipOn}` : styles.chip}
-            onClick={() => { setStatus(value); setOpenId(null); setEvidence(null) }}>
+            onClick={() => { setStatus(value); setOpenId(null); setEvidence(null); setConfirmKey(null) }}>
             {label}
           </button>
         ))}
@@ -2331,6 +2371,19 @@ function BeliefsView({ t, scope, project, reloadTick }: {
               onClick={() => { toggleEvidence(row) }}>
               {t('beliefEvidence', { n: row.proofCount })}
             </button>
+            {row.status !== 'refuted' && (
+              <button type="button" disabled={listBusy || actionBusy !== null}
+                className={confirmKey === `${row.id}:refuted` ? `${styles.button} ${styles.danger}` : styles.button}
+                onClick={() => { setBeliefStatus(row, 'refuted') }}>
+                {confirmKey === `${row.id}:refuted` ? t('beliefRefuteConfirm') : t('beliefRefute')}
+              </button>
+            )}
+            {row.status !== 'active' && (
+              <button type="button" disabled={listBusy || actionBusy !== null} className={styles.button}
+                onClick={() => { setBeliefStatus(row, 'active') }}>
+                {t('beliefRestore')}
+              </button>
+            )}
             <time className={styles.beliefTime} title={new Date(row.updatedAt).toLocaleString()}>
               {fmtTime(row.updatedAt)}
             </time>
@@ -6313,7 +6366,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabBeliefs')} subtitle={t('pageHeaderBeliefsSubtitle')} />
           <section className={styles.section}>
-            <BeliefsView t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
+            <BeliefsView t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} toast={toast} />
           </section>
         </div>
       )}

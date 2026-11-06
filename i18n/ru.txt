@@ -518,3 +518,5 @@ Jev: provider "{provider}" has no key (credential "{ref}" is empty)	Jev: у пр
 Jev: no provider — neither the panel, nor the plugin settings, nor the session route names one	Jev: провайдер не назван — ни панель, ни настройки плагина, ни маршрут сессии его не указывают
 Jev: provider "{provider}" has no JEV model in its DSH settings; name the model explicitly	Jev: у провайдера «{provider}» нет JEV-модели в настройках DSH; назовите модель явно
 invalid: jev.endpoint must be an http(s) URL	некорректно: jev.endpoint должен быть http(s)-адресом
+[dsh-engram] Belief consolidation dropped {count} candidates (output budget/parse failure; not consolidated, will be picked up next consolidation)	[dsh-engram] Закрепление убеждений отбросило {count} кандидатов (бюджет вывода/сбой разбора; не закреплены, доберут при следующем закреплении)
+Additionally, {count} candidates were dropped (output budget/parse failure; not consolidated, rerun to pick up).	Кроме того, {count} кандидатов было отброшено (бюджет вывода/сбой разбора; не закреплены — перезапустите, чтобы добрать).
