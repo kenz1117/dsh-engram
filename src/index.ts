@@ -66,6 +66,7 @@ import { loadVectorSchema } from './registry/vector-schema.ts'
 import { migrateProjectDb, migrationWarning, resolveProjectIdentity } from './project/identity.ts'
 import { findProjectPalace, listProjectPalaces } from './project/registry.ts'
 import type { ProjectPalace, WorkspaceRef } from './project/registry.ts'
+import { adoptLegacyDbDir } from './store/home-adoption.ts'
 import { openEngramStore } from './store/sqlite.ts'
 import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
@@ -722,6 +723,44 @@ function persistPalaceLanguage(ctx: Context, language: EngramLanguage): void {
  */
 export async function apply(ctx: Context, config: EngramConfig = {}): Promise<void> {
   const resolvedConfig = resolveConfig(config)
+  // #51：数据目录默认跟着宿主的 `$DSH_HOME` 走；旧目录（`~/.dsh/engram`）里若还有库，
+  // 先把它收编过来——否则迁移 home 的机器上会出现“两处各有一份、插件只读一处”的分裂。
+  // 显式配置了 dbDir 的人自己说了算，这里一个字都不动。
+  const adoption = resolvedConfig.dbDirExplicit
+    ? { dbDir: resolvedConfig.dbDir, legacyDbDir: resolvedConfig.legacyDbDir, outcome: 'none' as const }
+    : adoptLegacyDbDir({
+      target: resolvedConfig.dbDir,
+      legacy: resolvedConfig.legacyDbDir,
+      policy: resolvedConfig.legacyMigration,
+    })
+  // 收编的每个结局都写进日志：人得知道记忆库到底在哪儿、动没动过。
+  if (adoption.outcome === 'moved') {
+    console.warn(message('store.homeAdoptionMoved', { from: adoption.legacyDbDir, to: adoption.dbDir }))
+  }
+  if (adoption.outcome === 'copied') {
+    console.warn(message('store.homeAdoptionCopied', { from: adoption.legacyDbDir, to: adoption.dbDir }))
+  }
+  if (adoption.outcome === 'deferred') {
+    console.warn(message('store.homeAdoptionDeferred', { from: adoption.legacyDbDir, to: adoption.dbDir }))
+  }
+  if (adoption.outcome === 'kept-both') {
+    console.warn(message('store.homeAdoptionKeptBoth', { from: adoption.legacyDbDir, to: adoption.dbDir }))
+  }
+  if (adoption.outcome === 'failed') {
+    console.warn(message('store.homeAdoptionFailed', {
+      from: adoption.legacyDbDir,
+      to: adoption.dbDir,
+      detail: adoption.detail ?? '',
+    }))
+  }
+  // 收编改变了实际目录时，模型缓存也跟着走（除非人显式指定过）。
+  const effectiveConfig: ResolvedEngramConfig = adoption.dbDir === resolvedConfig.dbDir
+    ? resolvedConfig
+    : {
+      ...resolvedConfig,
+      dbDir: adoption.dbDir,
+      ...(config.modelCacheDir === undefined ? { modelCacheDir: join(adoption.dbDir, 'models') } : {}),
+    }
   // Реестры читаются до языка: умолчание пакета живёт в привязках (см. src/registry),
   // а от языка уже зависят и словарь, и шаблоны сообщений. Чтение чистое — файлы без
   // сети, — поэтому порядок ничего не стоит.
@@ -749,7 +788,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   // Настройка главнее умолчания, умолчание — главнее системной локали (см.
   // src/i18n/language.ts): «наш язык» должен зависеть от объявленного выпуска, а не
   // от машины, на которой плагин запущен.
-  const resolved: ResolvedEngramConfig = { ...resolvedConfig, language, languageSetting }
+  const resolved: ResolvedEngramConfig = { ...effectiveConfig, language, languageSetting }
   // Запись решения — отдельным тиком, когда фибер уже поднялся: правка конфигурации
   // на стартующем фибере пошла бы обычным путём (перемонтирование посреди apply),
   // а на живом идёт volatile-путём — значение меняется на ходу, плагин не грузится заново.
@@ -1716,6 +1755,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       exportDir: `${resolved.dbDir}/exports`,
       mirrorDir: `${resolved.dbDir}/palaces`,
       dbDir: resolved.dbDir,
+      dshHome: resolved.dshHome,
       pluginVersion: VERSION,
       language: resolved.language,
       panelAccess: resolved.panelAccess,

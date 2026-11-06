@@ -502,6 +502,8 @@ export type EngramKey =
   | 'systemJobError'
   | 'systemJobEmpty'
   | 'systemStorageScope'
+  | 'systemStorageHome'
+  | 'systemStorageOutsideHome'
   | 'systemStorageTotal'
   | 'systemStorageActive'
   | 'systemStorageArchived'

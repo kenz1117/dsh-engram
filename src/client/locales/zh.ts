@@ -501,6 +501,8 @@ export const zh: Record<EngramKey, string> = {
   systemJobEmpty: '队列为空：没有待处理、也没有失败的作业。',
   systemStorageTotal: '总条数',
   systemStorageScope: '库',
+  systemStorageHome: '宿主数据根',
+  systemStorageOutsideHome: '数据目录不在宿主数据根之下：记忆库落在别处，迁移 home 时不会跟着走。',
   systemStorageActive: '活跃',
   systemStorageArchived: '归档',
   systemStorageForgotten: '已遗忘',

@@ -1,6 +1,6 @@
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resolveConfig } from '../src/config.ts'
 
 describe('resolveConfig', () => {
@@ -246,5 +246,38 @@ describe('окно смены языка дворца', () => {
     expect(() => resolveConfig({ palaceChangeWindowSec: 4 })).toThrow(/palaceChangeWindowSec/)
     expect(() => resolveConfig({ palaceChangeWindowSec: 601 })).toThrow(/palaceChangeWindowSec/)
     expect(() => resolveConfig({ palaceChangeWindowSec: 12.5 })).toThrow(/palaceChangeWindowSec/)
+  })
+})
+
+describe('数据目录跟随宿主数据根（#51）', () => {
+  const previous = process.env.DSH_HOME
+  afterEach(() => {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+  })
+
+  it('默认数据目录与模型缓存跟着 $DSH_HOME 走', () => {
+    process.env.DSH_HOME = join(tmpdir(), 'dsh-home-moved')
+    const resolved = resolveConfig({})
+    expect(resolved.dshHome).toBe(join(tmpdir(), 'dsh-home-moved'))
+    expect(resolved.dbDir).toBe(join(tmpdir(), 'dsh-home-moved', 'engram'))
+    expect(resolved.modelCacheDir).toBe(join(tmpdir(), 'dsh-home-moved', 'engram', 'models'))
+    expect(resolved.dbDirExplicit).toBe(false)
+    // 旧默认目录仍是 ~/.dsh/engram：迁移过的机器上那里可能还留着上一份库，收编时要看它。
+    expect(resolved.legacyDbDir).toBe(join(homedir(), '.dsh', 'engram'))
+  })
+
+  it('空白或只有空格的 $DSH_HOME 视同未设置（不能把 home 解析成当前目录）', () => {
+    process.env.DSH_HOME = '   '
+    const resolved = resolveConfig({})
+    expect(resolved.dshHome).toBe(join(homedir(), '.dsh'))
+    expect(resolved.dbDir).toBe(join(homedir(), '.dsh', 'engram'))
+  })
+
+  it('显式 dbDir 优先，并标记为显式（收编不碰它）', () => {
+    process.env.DSH_HOME = join(tmpdir(), 'dsh-home-moved')
+    const resolved = resolveConfig({ dbDir: join(tmpdir(), 'explicit-engram') })
+    expect(resolved.dbDir).toBe(join(tmpdir(), 'explicit-engram'))
+    expect(resolved.dbDirExplicit).toBe(true)
   })
 })

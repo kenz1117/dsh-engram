@@ -501,6 +501,8 @@ export const en: Record<EngramKey, string> = {
   systemJobEmpty: 'The queue is empty: nothing pending and nothing failed.',
   systemStorageTotal: 'Total',
   systemStorageScope: 'Store',
+  systemStorageHome: 'Harness home',
+  systemStorageOutsideHome: 'The data directory sits outside the harness home: the memory database stays where it is and will not follow a relocated home.',
   systemStorageActive: 'Active',
   systemStorageArchived: 'Archived',
   systemStorageForgotten: 'Forgotten',

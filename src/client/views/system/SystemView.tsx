@@ -2288,12 +2288,17 @@ function StorageSection({ t, reloadTick }: {
         </div>
         <dl className={styles.attrGrid}>
           <dt>{t('systemStorageLogPath')}</dt>
-          <dd><code className={styles.identityCode}>{storage?.dir ?? '—'}</code></dd>
+          <dd><code className={styles.identityCode} title={storage?.dir ?? ''}>{storage?.dir ?? '—'}</code></dd>
+          <dt>{t('systemStorageHome')}</dt>
+          <dd><code className={styles.identityCode} title={storage?.home ?? ''}>{storage?.home ?? '—'}</code></dd>
           <dt>{t('systemStorageLogSize')}</dt>
           <dd>{storage === null ? '—' : formatBytes(storage.totals.fileBytes)}</dd>
           <dt>{t('systemStorageOpLog')}</dt>
           <dd>{storage === null ? '—' : String(storage.totals.rows)}</dd>
         </dl>
+        {storage?.outsideHome === true && (
+          <p className={styles.degradedNote}>{t('systemStorageOutsideHome')}</p>
+        )}
       </div>
     </div>
   )

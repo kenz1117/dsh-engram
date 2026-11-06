@@ -1179,6 +1179,18 @@ describe('dsh-engram real Loader composition', () => {
       items: [],
     })
   })
+
+  it('log-info 报告数据目录与宿主数据根的关系（#51）', async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+    const info = await call(port, 'GET', '/api/engram/log-info')
+    expect(info.status).toBe(200)
+    const view = info.json as { dir: string; home: string; outsideHome: boolean }
+    // 数据目录就是配置里写的那个；宿主数据根单独报出来，人能一眼看出库在不在 home 之下。
+    expect(view.dir).toBe(join(root as string, 'engram'))
+    expect(view.home.length).toBeGreaterThan(0)
+    expect(typeof view.outsideHome).toBe('boolean')
+  })
 })
 
 

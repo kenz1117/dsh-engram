@@ -342,6 +342,10 @@ export interface LogStoragePart {
 /** Отчёт о журнале: где лежит, сколько занимает, сколько в нём строк. */
 export interface LogStorageInfo {
   readonly dir: string
+  /** 宿主数据根（`$DSH_HOME`）：数据目录不在它下面时要对人说明（#51）。 */
+  readonly home?: string | undefined
+  /** 数据目录是否落在宿主数据根之外。 */
+  readonly outsideHome?: boolean | undefined
   readonly parts: readonly LogStoragePart[]
   readonly totals: {
     readonly fileBytes: number
