@@ -11,6 +11,11 @@ const REPLAY_KEYS = [
   'replayExactNote', 'replaySession', 'replayHash', 'replayMemories', 'replayCurated', 'replayCompactions', 'replaySize',
 ] as const
 
+const SHELL_KEYS = [
+  'navWorkfaces', 'workfaceToday', 'workfaceRecall', 'workfaceMemory', 'workfaceGovernance',
+  'workfaceReplay', 'workfaceSystem',
+] as const
+
 const GOVERNANCE_KEYS = [
   'benchInspect', 'governanceTitle', 'governanceHint', 'governanceCount', 'governanceEmpty', 'governanceFailed',
   'governanceDismiss', 'governanceForget', 'governanceActionFailed', 'governanceStableId',
@@ -19,6 +24,14 @@ const GOVERNANCE_KEYS = [
 describe('context replay locale parity', () => {
   it('回放工作面的 18 个文案键在 zh/en/ru 三语齐备', () => {
     for (const key of REPLAY_KEYS) {
+      expect(zh[key], `zh:${key}`).toBeTruthy()
+      expect(en[key], `en:${key}`).toBeTruthy()
+      expect(ru[key], `ru:${key}`).toBeTruthy()
+    }
+  })
+
+  it('0.13 shell 的 7 个文案键在 zh/en/ru 三语齐备', () => {
+    for (const key of SHELL_KEYS) {
       expect(zh[key], `zh:${key}`).toBeTruthy()
       expect(en[key], `en:${key}`).toBeTruthy()
       expect(ru[key], `ru:${key}`).toBeTruthy()

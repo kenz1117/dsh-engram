@@ -16,6 +16,10 @@ import { CorridorMap, EDGE_STYLE, FloorplanMap, KIND_PALETTE } from './CorridorM
 import { SpiralMap, type SpiralRecord } from './SpiralMap.tsx'
 import spiralStyles from './spiral.module.css'
 import { useToast, type ToastController } from './Toast.tsx'
+import { ContextNav } from './shell/ContextNav.tsx'
+import { StatusStrip } from './shell/StatusStrip.tsx'
+import { WorkfaceRail, type Workface } from './shell/WorkfaceRail.tsx'
+import shellStyles from './shell/shell.module.css'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
 import { IMPORT_BODY_LIMIT_BYTES } from '../body-limits.ts'
 // Пределы — общие с сервером (src/i18n/dictionary-limits.ts): модуль без зависимостей,
@@ -5972,6 +5976,16 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   const [confirmForget, setConfirmForget] = useState(false)
   /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / episodes 往事时间线 / entities 实体词典 / log 管家日志 / backfill 历史回填 / jev Jev 裁决配置。 */
   const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'replay' | 'spiral' | 'episodes' | 'entities' | 'beliefs' | 'log' | 'ops'>('today')
+  /** 0.13 transitional mapping: new six-workface shell wraps legacy views until each view is extracted. */
+  const [activeWorkface, setActiveWorkface] = useState<Workface>('today')
+  const WORKFACE_DEFAULT: Record<Workface, typeof activeTab> = {
+    today: 'today',
+    recall: 'corridor',
+    memory: 'library',
+    governance: 'beliefs',
+    replay: 'replay',
+    system: 'ops',
+  }
   /** 项目宫殿来源（持久化）：'follow' = 跟随 GUI 当前工作区；其它值 = 固定的 host 分库 dbName。 */
   const [projectMode, setProjectMode] = usePersistedString('library.project', 'follow')
   /** GUI 当前工作区（与侧边栏同一判定）与 host 的项目宫殿清单。 */
@@ -6169,6 +6183,51 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
     return () => { cancelled = true }
   }, [])
 
+  // 0.13 transitional workface shell. Legacy tabs stay intact until each view is extracted,
+  // but navigation is already expressed as the six stable workfaces rather than feature tabs.
+  const workfaceItems = [
+    { id: 'today' as Workface, label: t('workfaceToday') },
+    { id: 'recall' as Workface, label: t('workfaceRecall') },
+    { id: 'memory' as Workface, label: t('workfaceMemory') },
+    { id: 'governance' as Workface, label: t('workfaceGovernance') },
+    { id: 'replay' as Workface, label: t('workfaceReplay') },
+    { id: 'system' as Workface, label: t('workfaceSystem') },
+  ]
+  const contextItemsByWorkface: Record<Workface, Array<{ id: typeof activeTab; label: string }>> = {
+    today: [{ id: 'today', label: t('tabToday') }],
+    recall: [{ id: 'corridor', label: t('benchTitle') }],
+    memory: [
+      { id: 'library', label: t('tabLibrary') },
+      { id: 'episodes', label: t('tabEpisodes') },
+      { id: 'entities', label: t('tabEntities') },
+      { id: 'spiral', label: t('tabSpiral') },
+    ],
+    governance: [
+      { id: 'beliefs', label: t('tabBeliefs') },
+      { id: 'corridor', label: t('governanceTitle') },
+    ],
+    replay: [{ id: 'replay', label: t('tabReplay') }],
+    system: [
+      { id: 'ops', label: t('tabOps') },
+      { id: 'log', label: t('tabLog') },
+    ],
+  }
+  const changeWorkface = (workface: Workface): void => {
+    setActiveWorkface(workface)
+    setActiveTab(WORKFACE_DEFAULT[workface])
+    setExpanded(null)
+    clearSelection()
+  }
+  const statusItems = [
+    { id: 'scope', label: `${t('labelScope')}: ${scope}`, level: 'neutral' as const },
+    ...(projectMode === 'project' && projectSelector !== null
+      ? [{ id: 'project', label: projectSelector, level: 'neutral' as const }]
+      : []),
+    ...(versionMismatch !== null
+      ? [{ id: 'version', label: t('versionMismatch', { client: CLIENT_VERSION, server: versionMismatch }), level: 'warn' as const }]
+      : []),
+  ]
+
   return (
     // v0.8+ 主列满宽：.panelRoot 接管纵向滚动（宿主主列可能是 grid 子项不滚动；这里自管滚动后，sticky 浮层定位到 panelRoot 即生效）
     <div className={styles.panelRoot}>
@@ -6290,86 +6349,20 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         </div>
       </div>
 
-      {/* 顶部 Tab Bar：八个视图，每个 Tab 项前置线性图标；当前项用 amber→rose 渐变彩条作下划线。
-          排序沿用旧版（先管家后陈展与配置）。 */}
-      <div className={styles.tabs} role="tablist">
-        <button type="button" role="tab"
-          className={activeTab === 'today' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'today'}
-          onClick={() => { setActiveTab('today') }}>
-          <Icon name="today" className={styles.tabIcon} />
-          {t('tabToday')}
-        </button>
-        <button type="button" role="tab"
-          className={activeTab === 'library' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'library'}
-          onClick={() => { setActiveTab('library') }}>
-          <Icon name="library" className={styles.tabIcon} />
-          {t('tabLibrary')}
-        </button>
-        <button type="button" role="tab"
-          className={activeTab === 'corridor' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'corridor'}
-          onClick={() => { setActiveTab('corridor') }}>
-          <Icon name="corridor" className={styles.tabIcon} />
-          {t('tabCorridor')}
-        </button>
-        {/* 回忆螺旋（v0.9.x）：时间型鸟瞰视图，挨着「走廊」语义相邻，鸟瞰集合。 */}
-        <button type="button" role="tab"
-          className={activeTab === 'replay' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'replay'}
-          onClick={() => { setActiveTab('replay') }}>
-          <Icon name="clock" className={styles.tabIcon} />
-          {t('tabReplay')}
-        </button>
-        <button type="button" role="tab"
-          className={activeTab === 'spiral' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'spiral'}
-          onClick={() => { setActiveTab('spiral') }}>
-          <Icon name="spiral" className={styles.tabIcon} />
-          {t('tabSpiral')}
-        </button>
-        <button type="button" role="tab"
-          className={activeTab === 'episodes' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'episodes'}
-          onClick={() => { setActiveTab('episodes') }}>
-          <Icon name="episodes" className={styles.tabIcon} />
-          {t('tabEpisodes')}
-        </button>
-        <button type="button" role="tab"
-          className={activeTab === 'entities' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'entities'}
-          onClick={() => { setActiveTab('entities') }}>
-          <Icon name="entities" className={styles.tabIcon} />
-          {t('tabEntities')}
-        </button>
-        <button type="button" role="tab"
-          className={activeTab === 'beliefs' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'beliefs'}
-          onClick={() => { setActiveTab('beliefs') }}>
-          <Icon name="beliefs" className={styles.tabIcon} />
-          {t('tabBeliefs')}
-        </button>
-        <button type="button" role="tab"
-          className={activeTab === 'log' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'log'}
-          onClick={() => { setActiveTab('log') }}>
-          <Icon name="log" className={styles.tabIcon} />
-          {t('tabLog')}
-        </button>
-        <button type="button" role="tab"
-          className={activeTab === 'ops' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'ops'}
-          onClick={() => { setActiveTab('ops') }}>
-          <Icon name="jev" className={styles.tabIcon} />
-          {t('tabOps')}
-        </button>
-      </div>
       </div>
 
-      {/* Тело вкладки: единственная прокручиваемая область панели. Меню выше в прокрутке
-          не участвует, поэтому содержимое физически не может оказаться над ним. */}
-      <div className={styles.panelBody}>
+      {/* 0.13 console shell: stable workface rail + contextual legacy navigation.
+          The legacy body remains unchanged in this transitional slice, so behavior cannot regress. */}
+      <div className={shellStyles.console}>
+        <WorkfaceRail label={t('navWorkfaces')} active={activeWorkface}
+          items={workfaceItems} onChange={changeWorkface} />
+        <div>
+          <StatusStrip items={statusItems} />
+          <ContextNav label={t('navWorkfaces')} active={activeTab}
+            items={contextItemsByWorkface[activeWorkface]} onChange={setActiveTab} />
+          {/* Тело вкладки: единственная прокручиваемая область панели. Меню выше в прокрутке
+              не участвует, поэтому содержимое физически не может оказаться над ним. */}
+          <div className={styles.panelBody}>
       <ViewErrorBoundary key={activeTab} retryLabel={t('retry')} hintLabel={t('viewCrashed')}>
       {activeTab === 'library' && (
         <div className={styles.tabPanel}>
@@ -6674,6 +6667,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         </div>
       )}
     </ViewErrorBoundary>
+          </div>
+        </div>
       </div>
 
       {/* Toast 叠层（右上角，position:fixed 脱离 panel 容器）。 */}

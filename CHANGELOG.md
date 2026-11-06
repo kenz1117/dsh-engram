@@ -8,6 +8,13 @@
 
 > **v0.x 阶段的版本约定**：`0.MINOR.PATCH` 里的 `MINOR` 是**功能批次**而不是稳定性刻度——0.7.x 整批是「记忆宫殿信息架构」，0.8.x 整批是「面板重构」，0.9.x 整批是「稳定性与可审计」，0.10.x 整批是「多语言与数据驱动」。同一批次内的 `PATCH` 位通常是修复与加固。
 
+## [Unreleased]
+
+### Changed
+
+- **0.13 控制台 Shell（第一批）**：新增六工作面导航骨架（Today / Recall / Memory / Governance / Replay / System）、现代控制台语义 token、上下文导航与状态条。旧 10 个视图先按工作面安全映射，保证功能不回退；后续切片逐个抽取真实 view。
+- 新增共享 UI primitives：`Segmented`、`ConfirmButton`、`Dialog`、`DataState`、`IdentityBadge`、`WorkfaceRail`。Dialog 提供 Esc、初始 focus、focus return 和 focus trap；确认操作不再依赖各处临时实现。
+
 ## [0.12.0] - 2026-11-06
 
 ### Added
