@@ -520,7 +520,9 @@ export const zh: Record<EngramKey, string> = {
   governanceEmpty: '没有待处置矛盾',
   governanceFailed: '治理队列加载失败',
   governanceDismiss: '改判为相关',
-  governanceForget: '闭馆此条',
+  governanceForgetSide: '闭馆此条',
+  governanceForgetConfirm: '确认闭馆？此操作会软删该条记忆，并让以它为证据的信念按证据死亡规则处置。',
+  governanceDismissHint: '「改判为相关」作用于这一对矛盾：两条记忆都保留，矛盾边改成相关边。',
   governanceActionFailed: '处置失败',
   governanceStableId: '稳定身份',
   // Memory Spiral tab (v0.9.x)

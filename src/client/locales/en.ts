@@ -520,7 +520,9 @@ export const en: Record<EngramKey, string> = {
   governanceEmpty: 'No contradictions pending',
   governanceFailed: 'Failed to load governance queue',
   governanceDismiss: 'Reclassify as related',
-  governanceForget: 'Close this memory',
+  governanceForgetSide: 'Close this memory',
+  governanceForgetConfirm: 'Close it? The memory is soft-deleted, and beliefs backed by it follow the evidence-death rules.',
+  governanceDismissHint: '“Reclassify as related” applies to this pair: both memories are kept, the contradiction edge becomes a related one.',
   governanceActionFailed: 'Action failed',
   governanceStableId: 'Stable ID',
   // Memory Spiral tab (v0.9.x)
