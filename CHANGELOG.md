@@ -8,15 +8,29 @@
 
 > **v0.x 阶段的版本约定**：`0.MINOR.PATCH` 里的 `MINOR` 是**功能批次**而不是稳定性刻度——0.7.x 整批是「记忆宫殿信息架构」，0.8.x 整批是「面板重构」，0.9.x 整批是「稳定性与可审计」，0.10.x 整批是「多语言与数据驱动」。同一批次内的 `PATCH` 位通常是修复与加固。
 
-## [Unreleased]
+## [0.13.0] - 2026-11-06
 
 ### Changed
 
-- **0.13 控制台 Shell（第一批）**：新增六工作面导航骨架（Today / Recall / Memory / Governance / Replay / System）、现代控制台语义 token、上下文导航与状态条。旧 10 个视图先按工作面安全映射，保证功能不回退；后续切片逐个抽取真实 view。
-- 新增共享 UI primitives：`Segmented`、`ConfirmButton`、`Dialog`、`DataState`、`IdentityBadge`、`WorkfaceRail`。Dialog 提供 Esc、初始 focus、focus return 和 focus trap；确认操作不再依赖各处临时实现。
-- **Today 真实待办面**：移除合成 sparkline；保留真实写入序列，新增 governance pending、dead/queued jobs、jobs unavailable 和 search exposures 展示。Today 现在区分“真实待办事实源”和启发式健康分。
-- **Jobs / identity / exposure 后端补口**：新增 `GET /api/engram/jobs`（available、summary、轻量 items，不暴露 payload）；`GET /api/engram/review?id=` 支持稳定 `memoryId` 解析到当前 revision，真实 revision id 仍精确回看历史；telemetry 新增 `counts.searchExposures`，与改写请求口径分开。
-- **Recall / Governance 成为独立工作面**：召回台与矛盾治理从「走廊」页抽出为独立视图（`src/client/views/`），共用件下沉到 `src/client/ui/panel-kit.tsx` 以避免 CJS 闭包产物里的循环依赖。旧 10 页签横条移除：Recall 独立成工作面；Memory 分 Records/Timeline/Entities/Atlas，Atlas 收编走廊图谱与回忆螺旋；Governance 分 Conflicts/Beliefs；System 分 Ops/Logs。
+- **面板改造成六工作面控制台**：十个横向页签换成左侧工作面导航——今日 / 召回 / 记忆 / 治理 / 回放 / 系统，每个工作面内部再切二级视图。宫殿隐喻（平面图、走廊图谱、回忆螺旋）降级为「记忆」工作面里的可视化模块，不再是导航语言；品牌色从主色降为强调色，只用在选中态、focus 与关键状态上。
+- **今日总览**：移除合成 sparkline——没有真实时间序列的指标不画线；改为展示真实写入序列，并把治理待办、dead/queued 作业、作业队列不可用与真实检索曝光分开呈现；健康分明确标注为启发式。
+- **召回工作面**：真实召回实验台独立成面，命中行展示稳定身份、revision id、得分、命中通道（关键词 / 语义 / 边扩展）与降级状态；降级检索必须显式标出，不能让关键词结果冒充完整召回。
+- **记忆工作面**：分记录 / 时间线 / 实体 / 图谱。记录列表自己持有查询状态与请求——数据只在打开这一面时才拉，其它工作面不再为一份看不见的列表付请求代价；详情抽屉升级为「身份与修订」面板，展示稳定 `memoryId`、当前 revision id、修订链、取代与矛盾关系及来源。
+- **治理工作面**：分矛盾 / 信念。矛盾队列展示双侧记忆与稳定 id，处置前说清后果（改判为相关保留两条、闭馆指定侧软删并触发证据死亡传播）；信念按成立 / 待复核 / 已否定给出不同动作。
+- **系统工作面**：分运行时 / 存储 / 模型与词典 / 历史回填 / Jev / 日志。运行时展示插件与面板版本握手、持久作业队列与嵌入模型状态；存储展示三个分库的规模与日志占用；模型与词典收编宫殿语言、面板语言与词典编辑器。
+- **控制台待办降级**：后端进程版本落后（路由不存在）时如实说「不可用」，不再把版本偏斜当故障甩给人看。
+- **面板代码分层**：视图与共用件不再回引 `EngramPanel.tsx`——client 半按 CJS 闭包工厂打包，循环依赖在产物里表现为「用到时还是 undefined」。新增 `src/client/ui/model.ts`（记忆行 / 列表 / 审计返回形状与纯显示辅助）与 `src/client/ui/panel-kit.tsx`（翻译签名、kind 标签、房间色相、select 包装、空态、页眉、指标卡），视图落在 `src/client/views/`（召回 / 治理 / 记忆四面板 / 系统）。面板主体从 6,500 行降到 2,700 行。
+- **色相单一事实源**：房间色相与实体色点统一到 CSS 变量。原先 `KIND_PALETTE` 的硬编码 hex 与 CSS 的 `--room-*` 是两套不同色值，pills、房间索引、平面图、关系图与时间螺旋各画各的；现在 JS 只引用变量名，暗色换色不必再改十六进制。
+- **死代码清理**：十个旧 tab 时代的样式类（25 个）与对应文案键（24 个）删除；`scripts/check-messages.mjs` 改为在整个 client 目录里查找 `SKIP_KEY`，卡片搬家不再让门禁失去支点。
+
+### Fixed
+
+- **左侧工作面导航字竖排**：导航项用 `grid-template-columns: 18px minmax(0,1fr)` 预留图标列，图标缺席时中文标题落进 18px 的那一列，一个字一行读起来像坏掉了。改为 flex 布局、标题不换行、导航列固定 132px，并给六个工作面补上图标。
+- **面板无法上下滚动**：内容列不是 flex 容器，内层滚动区的 `flex: 1` 与 `min-height: 0` 失效，内容溢出后被面板根节点的 `overflow: hidden` 裁掉——整页既不滚也不显示。补上内容列的 flex 容器与工作面网格的 `flex: 1`，滚动回到工作面内容区，宿主页面不再出现第二条滚动条。
+- **标题与二级导航**：二级视图名仍是旧页签名（「陈展 / 往事 / 实体 / 回忆螺旋」），且胶囊按钮读起来像筛选器。改为工作面名做标题、副标题随二级视图切换，二级导航换成下划线页签。
+- **破坏性操作不再弹系统对话框**：翻新建议的降级 / 合并改用两段式确认按钮，与其它写操作一致——原生 `window.confirm` 会弹出脱离面板样式的窗口，也读不到词典。
+- **滚动条样式作用域化**：顶层 `::-webkit-scrollbar` 伪元素在 CSS modules 里会全局生效，把整个 DSH 界面的滚动条一起改了；现在限定在面板根节点之内。
+- **状态条重复表达作用域**：状态条里的「宫殿归属」与 Header 的作用域三宫格是同一件事，删掉；状态条没有要报的事时不占位置。
 
 ## [0.12.0] - 2026-11-06
 
