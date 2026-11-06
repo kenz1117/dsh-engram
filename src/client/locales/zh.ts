@@ -467,6 +467,8 @@ export const zh: Record<EngramKey, string> = {
   replayCompactions: '压缩次数',
   replaySize: '包大小',
   navWorkfaces: '工作面',
+  pageHeaderRecallSubtitle: '真实检索实验台：命中道、得分与稳定身份 provenance',
+  pageHeaderGovernanceSubtitle: '矛盾与信念的处置台：先看全貌再落动作',
   workfaceToday: '总览',
   workfaceRecall: '召回',
   workfaceMemory: '记忆',

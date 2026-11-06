@@ -16,6 +16,7 @@
 - 新增共享 UI primitives：`Segmented`、`ConfirmButton`、`Dialog`、`DataState`、`IdentityBadge`、`WorkfaceRail`。Dialog 提供 Esc、初始 focus、focus return 和 focus trap；确认操作不再依赖各处临时实现。
 - **Today 真实待办面**：移除合成 sparkline；保留真实写入序列，新增 governance pending、dead/queued jobs、jobs unavailable 和 search exposures 展示。Today 现在区分“真实待办事实源”和启发式健康分。
 - **Jobs / identity / exposure 后端补口**：新增 `GET /api/engram/jobs`（available、summary、轻量 items，不暴露 payload）；`GET /api/engram/review?id=` 支持稳定 `memoryId` 解析到当前 revision，真实 revision id 仍精确回看历史；telemetry 新增 `counts.searchExposures`，与改写请求口径分开。
+- **Recall / Governance 成为独立工作面**：召回台与矛盾治理从「走廊」页抽出为独立视图（`src/client/views/`），共用件下沉到 `src/client/ui/panel-kit.tsx` 以避免 CJS 闭包产物里的循环依赖。旧 10 页签横条移除：Recall 独立成工作面；Memory 分 Records/Timeline/Entities/Atlas，Atlas 收编走廊图谱与回忆螺旋；Governance 分 Conflicts/Beliefs；System 分 Ops/Logs。
 
 ## [0.12.0] - 2026-11-06
 

@@ -20,6 +20,9 @@ import { ContextNav } from './shell/ContextNav.tsx'
 import { StatusStrip } from './shell/StatusStrip.tsx'
 import { WorkfaceRail, type Workface } from './shell/WorkfaceRail.tsx'
 import shellStyles from './shell/shell.module.css'
+import { GovernanceView } from './views/GovernanceView.tsx'
+import { RecallView } from './views/RecallView.tsx'
+import { EmptyState, kindLabel, KINDS, roomClass, roomPillClass, SelectField, type T } from './ui/panel-kit.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
 import { IMPORT_BODY_LIMIT_BYTES } from '../body-limits.ts'
 // Пределы — общие с сервером (src/i18n/dictionary-limits.ts): модуль без зависимостей,
@@ -130,16 +133,12 @@ interface ReviewView {
 }
 
 /** 面板内部传递的翻译函数（渲染器按注册的 locale 声明合成的 t 的窄化签名）。 */
-type T = (key: EngramKey, params?: Record<string, unknown>) => string
-
 // 面板级词典合成与俄语复数抽到 translate.ts（审计批次 3）：纯函数零 react 依赖，
 // client 测试直接可测。此处 re-export 维持既有引用面。
 export { makeT, ruPluralForm } from './translate.ts'
 import { makeT, type PanelLang } from './translate.ts'
 
 
-/** kind 数据值（存储层英文枚举，编辑表单下拉的 value 保持英文）。 */
-const KINDS = ['fact', 'preference', 'decision', 'episode', 'skill'] as const
 const PAGE_SIZE = 20
 
 /** 数据层枚举 → 词典键映射（显示层本地化，存储值不变）。 */
@@ -152,14 +151,6 @@ const SCOPE_KEY: Record<MemoryRow['scope'], EngramKey> = {
   user: 'scopeUser',
   project: 'scopeProject',
   shared: 'scopeShared',
-}
-/** 房间色相类（panel.module.css 的 .roomFact 等）；未知 kind 回退通用的 .kind。 */
-const ROOM_CLASS: Record<string, string> = {
-  fact: 'roomFact',
-  preference: 'roomPreference',
-  decision: 'roomDecision',
-  episode: 'roomEpisode',
-  skill: 'roomSkill',
 }
 const OP_KEY: Record<string, EngramKey> = {
   write: 'opWrite',
@@ -200,16 +191,6 @@ const DETAIL_KEY: Record<string, EngramKey> = {
   status: 'labelStatus',
 }
 
-/** kind 数据值 → 本地化标签（未知值回退原文）。 */
-function kindLabel(t: T, kind: string): string {
-  const key = KIND_KEY[kind]
-  return key === undefined ? kind : t(key)
-}
-
-/** 房间 pill 的类名：按 kind 取色相类，未知 kind 回退通用品牌色。 */
-function roomPillClass(kind: string): string {
-  return `${styles.pill} ${styles[ROOM_CLASS[kind] ?? 'kind'] ?? ''}`
-}
 
 /** op 数据值 → 本地化标签（未知值回退原文）。 */
 function opLabel(t: T, op: string): string {
@@ -553,48 +534,6 @@ function Metric({ label, value, tail, spark, color, delta, deltaTone, tone }: {
   )
 }
 
-/** 空态插画：宫殿剪影 + 标题 + 提示（v0.8.8 取代裸文案空态,往事/实体/信念/日志/陈展/走廊共用）。 */
-/** 统一的 <select> 包装：内联 SVG 箭头 + focus-within 时变品牌色。
- * 取代 panel.module.css 里的 `select.input` 用 background-image 画箭头的 hack。
- * selectClassName 通常传 `${styles.input}` 或 `${styles.input} ${styles.wsSelect}` 等组合。 */
-function SelectField({ selectClassName, value, onChange, children, ariaLabel, title }: {
-  readonly selectClassName: string | undefined
-  readonly value: string
-  readonly onChange: (event: React.ChangeEvent<HTMLSelectElement>) => void
-  readonly children: React.ReactNode
-  readonly ariaLabel?: string | undefined
-  readonly title?: string | undefined
-}): React.ReactElement {
-  return (
-    <span className={styles.selectWrap}>
-      <select className={selectClassName} value={value} onChange={onChange} aria-label={ariaLabel} title={title}>
-        {children}
-      </select>
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="M6 9 L12 15 L18 9" />
-      </svg>
-    </span>
-  )
-}
-
-function EmptyState({ title, hint }: { title: string; hint?: string | undefined }): React.ReactElement {
-  return (
-    <div className={styles.empty}>
-      <span className={styles.emptyArt} aria-hidden="true">
-        <svg viewBox="0 0 24 24" className={styles.emptyArtIcon}>
-          <path d="M3 10 L12 4 L21 10" />
-          <path d="M5 10 V20 H19 V10" />
-          <path d="M10 20 V14 Q10 12 12 12 Q14 12 14 14 V20" />
-          <rect x="6.5" y="12" width="2" height="2.5" rx="0.4" />
-          <rect x="15.5" y="12" width="2" height="2.5" rx="0.4" />
-        </svg>
-      </span>
-      <b>{title}</b>
-      {hint !== undefined && <span>{hint}</span>}
-    </div>
-  )
-}
-
 /** 健康分环：SVG 描边进度（0-100），颜色随分数分档。v0.8.8 对齐设计稿：120px / stroke 8 / 分数 22px。 */
 function HealthRing({ score, label }: { score: number; label: string }): React.ReactElement {
   const size = 120
@@ -845,25 +784,6 @@ function EditForm({ t, record, onClose, onSaved, toast }: {
   )
 }
 
-/** search-test API 的命中行。 */
-interface BenchHit {
-  readonly id: string
-  readonly memoryId: string
-  readonly revisionId: string
-  readonly score: number
-  readonly via: 'fts' | 'vec' | 'both'
-  readonly viaEdge?: { readonly from: string; readonly type: string }
-  readonly scope: string
-  readonly kind: string
-  readonly content: string
-}
-
-/** search-test API 的返回结构。 */
-interface BenchResult {
-  readonly degraded: boolean
-  readonly hits: readonly BenchHit[]
-}
-
 /** activity API 的行结构（两库 op_log 合并）。 */
 interface ActivityRow {
   readonly at: number
@@ -871,87 +791,6 @@ interface ActivityRow {
   readonly targetId: string
   readonly detail: string | null
   readonly scope: 'user' | 'project'
-}
-
-/** 命中道 → 词典键。 */
-const VIA_KEY: Record<BenchHit['via'], EngramKey> = { fts: 'viaFts', vec: 'viaVec', both: 'viaBoth' }
-
-/** 召回测试台：输入查询跑真实检索，展示得分、命中原委（关键词/语义/边扩展）与内容。 */
-function RecallBench({ t, scope, onSelect }: {
-  t: T
-  scope: 'user' | 'project' | 'shared'
-  onSelect?: (id: string) => void
-}): React.ReactElement {
-  const [query, setQuery] = useState('')
-  /** 默认随观察 scope，但用户可在 select 内手动切换 'all' / 其它；切换观察 scope 时重置。 */
-  const [benchScope, setBenchScope] = useState<string>(scope)
-  const [result, setResult] = useState<BenchResult | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  // 观察 scope 变化时同步 benchScope（用户在 select 里改过的「all」会被覆盖——刻意保持一致性）。
-  useEffect(() => { setBenchScope(scope) }, [scope])
-  const run = (): void => {
-    if (query.trim() === '' || busy) return
-    setBusy(true)
-    // forceProject：'all' 模式（user + project）与 project 模式都要用当前选中的项目分库。
-    api<BenchResult>(`search-test?q=${encodeURIComponent(query.trim())}&scope=${benchScope}`, undefined, true)
-      .then((data) => { setResult(data); setError(null) })
-      .catch((benchError: Error) => setError(benchError.message))
-      .finally(() => setBusy(false))
-  }
-  const hits = result?.hits ?? []
-  return (
-    <div>
-      <div className={styles.benchBar}>
-        <input className={`${styles.input} ${styles.search}`} placeholder={t('benchPlaceholder')} value={query}
-          onChange={event => setQuery(event.target.value)}
-          onKeyDown={event => { if (event.key === 'Enter') run() }} />
-        <SelectField selectClassName={styles.input} value={benchScope}
-          onChange={event => setBenchScope(event.target.value)}>
-          <option value="all">{t('benchScopeAll')}</option>
-          <option value="user">{t('scopeUser')}</option>
-          <option value="project">{t('scopeProject')}</option>
-          <option value="shared">{t('scopeShared')}</option>
-        </SelectField>
-        <button type="button" className={`${styles.button} ${styles.primary}`}
-          disabled={busy || query.trim() === ''} onClick={run}>{t('benchRun')}</button>
-      </div>
-      {error !== null && <div className={styles.expandLoading}>{t('loadFailed', { msg: error })}</div>}
-      {result !== null && error === null && (
-        <div className={styles.benchMeta}>
-          <span>{t('benchHits', { n: hits.length })}</span>
-          {result.degraded && <span className={styles.degradedNote}>{t('benchDegraded')}</span>}
-        </div>
-      )}
-      <div className={styles.benchList}>
-      {hits.map(hit => (
-        <div key={hit.id} className={styles.benchRow}>
-          <div className={styles.benchHead}>
-            <span className={styles.viaChip}>{t(VIA_KEY[hit.via])}</span>
-            {hit.viaEdge !== undefined && (
-              <span className={styles.viaChip}
-                title={`${hit.viaEdge.type} ${hit.viaEdge.from}`}>{t('viaEdgeLabel')} · {hit.viaEdge.type}</span>
-            )}
-            <span className={roomPillClass(hit.kind)}>{kindLabel(t, hit.kind)}</span>
-            <span className={styles.benchScore}>{hit.score.toFixed(4)}</span>
-          </div>
-          <div className={styles.benchContent}>{hit.content}</div>
-          <div className={styles.benchProvenance}>
-            <span className={styles.benchId} title={hit.memoryId}>{`M ${hit.memoryId}`}</span>
-            <span className={styles.benchId} title={hit.revisionId}>{`R ${hit.revisionId}`}</span>
-          </div>
-          {onSelect !== undefined && (
-            <button type="button" className={styles.button}
-              onClick={() => { onSelect(hit.revisionId) }}>{t('benchInspect')}</button>
-          )}
-        </div>
-      ))}
-      </div>
-      {result !== null && hits.length === 0 && error === null && (
-        <div className={styles.benchEmpty}>{t('benchEmpty')}</div>
-      )}
-    </div>
-  )
 }
 
 /** 活动日志 detail 的摘要：摄取/改写/压缩请求解析 JSON 字段，其余原样截断。
@@ -1277,7 +1116,7 @@ function LoadFailedLine({ t, msg, onRetry }: { t: T; msg: string; onRetry: () =>
 
 /** 视图级错误边界（审计 §1.1）：单个页签渲染异常降级为错误卡 + 重载按钮，
  *  不再放大成宿主 slot 错误边界那种「整面板白屏且无恢复 UI」。
- *  key=activeTab：切页签即换边界实例，错误不跨页签扩散；重试经 remount 重新拉取。
+ *  key=工作面 + 二级视图：切换即换边界实例，错误不跨视图扩散；重试经 remount 重新拉取。
  *  注意这只是兜底：新增响应字段仍必须可选 + 兜底（见 CONTRIBUTING 契约约定）。
  *
  *  兜底卡里带组件栈：错误消息只说「哪里错了」（「Cannot read properties of
@@ -2445,7 +2284,7 @@ function RoomDirectory({ t, byKind }: { t: T; byKind: Readonly<Record<string, nu
     <div className={styles.roomList}>
       {KINDS.map(kind => (
         <div key={kind} className={styles.roomRow}>
-          <span className={`${styles.roomSwatch} ${styles[ROOM_CLASS[kind] ?? ''] ?? ''}`} aria-hidden="true" />
+          <span className={`${styles.roomSwatch} ${roomClass(kind)}`} aria-hidden="true" />
           <span>{kindLabel(t, kind)}</span>
           <b className={styles.roomCount}>{byKind[kind] ?? 0}</b>
         </div>
@@ -5884,127 +5723,6 @@ function ContextReplayView({ t, scope, reloadTick }: {
   )
 }
 
-/** 治理队列的 contradicts 边（host `/governance`）。 */
-interface GovernancePairView {
-  readonly first: {
-    readonly id: string
-    readonly memoryId: string
-    readonly kind: string
-    readonly content: string
-    readonly status: string
-  }
-  readonly second: {
-    readonly id: string
-    readonly memoryId: string
-    readonly kind: string
-    readonly content: string
-    readonly status: string
-  }
-  readonly createdAt: number
-}
-
-interface GovernanceView {
-  readonly items: readonly GovernancePairView[]
-  readonly total: number
-}
-
-/** 请求治理动作的窄负载；scope 由 rpc.ts 的 project 注入机制处理。 */
-interface GovernanceActionBody {
-  readonly action: 'dismiss' | 'forget-loser'
-  readonly firstId: string
-  readonly secondId: string
-  readonly loserId?: string
-}
-
-/**
- * 矛盾治理面板：处置前完整展示两条记忆和稳定身份。
- * “改判为相关”只改边类型；“闭馆此条”会归档所选记忆，按钮文案直接写后果。
- */
-function GovernancePanel({ t, scope, reloadTick, onChanged }: {
-  t: T
-  scope: 'user' | 'project' | 'shared'
-  reloadTick: number
-  onChanged: () => void
-}): React.ReactElement {
-  const path = `governance?scope=${scope}&limit=50&tick=${String(reloadTick)}`
-  const { data, failed, reload } = useApi<GovernanceView>(path)
-  const [busy, setBusy] = useState<string | null>(null)
-  const [failedAction, setFailedAction] = useState<string | null>(null)
-  const items = data?.items ?? []
-
-  const act = (body: GovernanceActionBody, key: string): void => {
-    if (busy !== null) return
-    setBusy(key)
-    setFailedAction(null)
-    api('governance', {
-      method: 'POST',
-      body: JSON.stringify({ ...body, scope }),
-    })
-      .then(() => { reload(); onChanged() })
-      .catch((actionError: unknown) => {
-        setFailedAction(actionError instanceof Error ? actionError.message : String(actionError))
-      })
-      .finally(() => setBusy(null))
-  }
-
-  const side = (row: GovernancePairView['first']): React.ReactElement => (
-    <div className={styles.govSide}>
-      <span className={roomPillClass(row.kind)}>{kindLabel(t, row.kind)}</span>
-      <p>{row.content}</p>
-      <span className={styles.govId} title={row.memoryId}>
-        {t('governanceStableId')}: {row.memoryId}
-      </span>
-    </div>
-  )
-
-  return (
-    <div>
-      {failed !== null && <div className={styles.expandLoading}>{t('governanceFailed')}</div>}
-      {failed === null && (
-        <>
-          <div className={styles.toolbarRow}>
-            <span className={styles.toolbarCount}>{t('governanceCount', { n: items.length })}</span>
-          </div>
-          {items.length === 0 && <EmptyState title={t('governanceEmpty')} />}
-          <div className={styles.govList}>
-            {items.map(pair => {
-              const pairKey = `${String(pair.first.id)}:${String(pair.second.id)}`
-              return (
-                <article key={pairKey} className={styles.govCard}>
-                  <div className={styles.govSides}>
-                    {side(pair.first)}
-                    {side(pair.second)}
-                  </div>
-                  <div className={styles.govActions}>
-                    <button type="button" className={styles.button}
-                      disabled={busy !== null}
-                      onClick={() => { act({ action: 'dismiss', firstId: pair.first.id, secondId: pair.second.id }, `${pairKey}:dismiss`) }}>
-                      {t('governanceDismiss')}
-                    </button>
-                    <button type="button" className={styles.button}
-                      disabled={busy !== null}
-                      onClick={() => { act({ action: 'forget-loser', firstId: pair.first.id, secondId: pair.second.id, loserId: pair.first.id }, `${pairKey}:first`) }}>
-                      {t('governanceForget')}
-                    </button>
-                    <button type="button" className={styles.button}
-                      disabled={busy !== null}
-                      onClick={() => { act({ action: 'forget-loser', firstId: pair.first.id, secondId: pair.second.id, loserId: pair.second.id }, `${pairKey}:second`) }}>
-                      {t('governanceForget')}
-                    </button>
-                  </div>
-                </article>
-              )
-            })}
-          </div>
-          {failedAction !== null && (
-            <div className={styles.expandLoading}>{t('governanceActionFailed')}: {failedAction}</div>
-          )}
-        </>
-      )}
-    </div>
-  )
-}
-
 /** EngramSection 的 props：渲染器给的 t（locale 席位）+ 可选取用的宿主服务。 */
 export type EngramSectionProps = PropsLocale<typeof NS> & {
   /** 宿主工作区服务（缺席时 chip 显示「无工作区信息」，面板其余功能照常）。 */
@@ -6055,18 +5773,12 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   /** 批量遗忘的两段式确认。 */
   const [confirmForget, setConfirmForget] = useState(false)
-  /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / episodes 往事时间线 / entities 实体词典 / log 管家日志 / backfill 历史回填 / jev Jev 裁决配置。 */
-  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'replay' | 'spiral' | 'episodes' | 'entities' | 'beliefs' | 'log' | 'ops'>('today')
-  /** 0.13 transitional mapping: new six-workface shell wraps legacy views until each view is extracted. */
+  /** 0.13 工作面：today 总览 / recall 召回 / memory 记忆 / governance 治理 / replay 回放 / system 系统。 */
   const [activeWorkface, setActiveWorkface] = useState<Workface>('today')
-  const WORKFACE_DEFAULT: Record<Workface, typeof activeTab> = {
-    today: 'today',
-    recall: 'corridor',
-    memory: 'library',
-    governance: 'beliefs',
-    replay: 'replay',
-    system: 'ops',
-  }
+  /** 工作面内的二级视图：每个工作面有自己的二级导航，不把所有能力抬到一级。 */
+  const [memoryTab, setMemoryTab] = useState<'records' | 'timeline' | 'entities' | 'atlas'>('records')
+  const [governanceTab, setGovernanceTab] = useState<'conflicts' | 'beliefs'>('conflicts')
+  const [systemTab, setSystemTab] = useState<'ops' | 'logs'>('ops')
   /** 项目宫殿来源（持久化）：'follow' = 跟随 GUI 当前工作区；其它值 = 固定的 host 分库 dbName。 */
   const [projectMode, setProjectMode] = usePersistedString('library.project', 'follow')
   /** GUI 当前工作区（与侧边栏同一判定）与 host 的项目宫殿清单。 */
@@ -6131,9 +5843,10 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   }, [scope, projectSelector])
   useEffect(() => { refreshDue() }, [refreshDue])
 
-  /** 角标点击：切到宫殿陈展并启用「今日到期」筛选（复习调度的消费者是 agent，面板只做观测）。 */
+  /** 角标点击：切到记忆工作面的条目列表并启用「今日到期」筛选（复习调度的消费者是 agent，面板只做观测）。 */
   const goToDue = (): void => {
-    setActiveTab('library')
+    setActiveWorkface('memory')
+    setMemoryTab('records')
     setDueOnly(true)
   }
 
@@ -6266,8 +5979,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
     return () => { cancelled = true }
   }, [])
 
-  // 0.13 transitional workface shell. Legacy tabs stay intact until each view is extracted,
-  // but navigation is already expressed as the six stable workfaces rather than feature tabs.
+  // 0.13 console shell: six stable workfaces, each with its own secondary navigation.
   const workfaceItems = [
     { id: 'today' as Workface, label: t('workfaceToday') },
     { id: 'recall' as Workface, label: t('workfaceRecall') },
@@ -6276,31 +5988,26 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
     { id: 'replay' as Workface, label: t('workfaceReplay') },
     { id: 'system' as Workface, label: t('workfaceSystem') },
   ]
-  const contextItemsByWorkface: Record<Workface, Array<{ id: typeof activeTab; label: string }>> = {
-    today: [{ id: 'today', label: t('tabToday') }],
-    recall: [{ id: 'corridor', label: t('benchTitle') }],
-    memory: [
-      { id: 'library', label: t('tabLibrary') },
-      { id: 'episodes', label: t('tabEpisodes') },
-      { id: 'entities', label: t('tabEntities') },
-      { id: 'spiral', label: t('tabSpiral') },
-    ],
-    governance: [
-      { id: 'beliefs', label: t('tabBeliefs') },
-      { id: 'corridor', label: t('governanceTitle') },
-    ],
-    replay: [{ id: 'replay', label: t('tabReplay') }],
-    system: [
-      { id: 'ops', label: t('tabOps') },
-      { id: 'log', label: t('tabLog') },
-    ],
-  }
   const changeWorkface = (workface: Workface): void => {
     setActiveWorkface(workface)
-    setActiveTab(WORKFACE_DEFAULT[workface])
     setExpanded(null)
     clearSelection()
   }
+  /** 二级导航：只有多视图的工作面才有；其余工作面自带标题与工具条。 */
+  const memoryContextItems = [
+    { id: 'records' as const, label: t('tabLibrary') },
+    { id: 'timeline' as const, label: t('tabEpisodes') },
+    { id: 'entities' as const, label: t('tabEntities') },
+    { id: 'atlas' as const, label: t('tabSpiral') },
+  ]
+  const governanceContextItems = [
+    { id: 'conflicts' as const, label: t('governanceTitle') },
+    { id: 'beliefs' as const, label: t('tabBeliefs') },
+  ]
+  const systemContextItems = [
+    { id: 'ops' as const, label: t('tabOps') },
+    { id: 'logs' as const, label: t('tabLog') },
+  ]
   const statusItems = [
     { id: 'scope', label: `${t('labelScope')}: ${scope}`, level: 'neutral' as const },
     ...(projectMode === 'project' && projectSelector !== null
@@ -6434,20 +6141,29 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       </div>
 
-      {/* 0.13 console shell: stable workface rail + contextual legacy navigation.
-          The legacy body remains unchanged in this transitional slice, so behavior cannot regress. */}
+      {/* 0.13 console shell: workface rail + per-workface secondary navigation. */}
       <div className={shellStyles.console}>
         <WorkfaceRail label={t('navWorkfaces')} active={activeWorkface}
           items={workfaceItems} onChange={changeWorkface} />
         <div>
           <StatusStrip items={statusItems} />
-          <ContextNav label={t('navWorkfaces')} active={activeTab}
-            items={contextItemsByWorkface[activeWorkface]} onChange={setActiveTab} />
+          {activeWorkface === 'memory' && (
+            <ContextNav label={t('workfaceMemory')} active={memoryTab}
+              items={memoryContextItems} onChange={setMemoryTab} />
+          )}
+          {activeWorkface === 'governance' && (
+            <ContextNav label={t('workfaceGovernance')} active={governanceTab}
+              items={governanceContextItems} onChange={setGovernanceTab} />
+          )}
+          {activeWorkface === 'system' && (
+            <ContextNav label={t('workfaceSystem')} active={systemTab}
+              items={systemContextItems} onChange={setSystemTab} />
+          )}
           {/* Тело вкладки: единственная прокручиваемая область панели. Меню выше в прокрутке
               не участвует, поэтому содержимое физически не может оказаться над ним. */}
           <div className={styles.panelBody}>
-      <ViewErrorBoundary key={activeTab} retryLabel={t('retry')} hintLabel={t('viewCrashed')}>
-      {activeTab === 'library' && (
+      <ViewErrorBoundary key={`${activeWorkface}:${memoryTab}:${governanceTab}:${systemTab}`} retryLabel={t('retry')} hintLabel={t('viewCrashed')}>
+      {activeWorkface === 'memory' && memoryTab === 'records' && (
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabLibrary')} subtitle={t('pageHeaderLibrarySubtitle')} />
           {/* v0.8.9 工具行收进工具条卡;房间 chips 仍单独一行。 */}
@@ -6596,7 +6312,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         </div>
       )}
 
-      {activeTab === 'today' && (
+      {activeWorkface === 'today' && (
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabToday')} subtitle={t('pageHeaderTodaySubtitle')} />
           {/* 今日速览：主指标 + 健康环，替代原常驻日报条。 */}
@@ -6665,10 +6381,10 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         </div>
       )}
 
-      {activeTab === 'corridor' && (
+      {activeWorkface === 'memory' && memoryTab === 'atlas' && (
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabCorridor')} subtitle={t('pageHeaderCorridorSubtitle')} />
-          {/* 纵向堆叠：先看走廊结构（鸟瞰），再进检索实验台；两块都吃满宽度，图与命中行不被压窄。 */}
+          {/* Atlas：结构鸟瞰与时间螺旋同属「可视化」——它们是记忆库里的模块，不是导航语言。 */}
           <div className={styles.mainCol}>
             <section className={styles.section}>
               <div className={styles.sectionHead}>
@@ -6676,40 +6392,39 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
               </div>
               <div className={styles.panelCard}>
                 <CorridorPanel t={t} scope={scope} project={projectSelector} onSelect={openReview}
-                  onOpenRoom={kind => { setKind(kind); setOffset(0); setExpanded(null); clearSelection(); setActiveTab('library') }} />
+                  onOpenRoom={kind => { setKind(kind); setOffset(0); setExpanded(null); clearSelection(); setMemoryTab('records') }} />
               </div>
             </section>
             <section className={styles.section}>
-              <div className={styles.sectionHead}>
-                <h4 className={styles.sectionTitle}>{t('benchTitle')}</h4>
-                <span className={styles.sectionHint}>{t('benchNote')}</span>
-              </div>
               <div className={styles.panelCard}>
-                <RecallBench t={t} scope={scope} onSelect={openReview} />
-              </div>
-            </section>
-            <section className={styles.section}>
-              <div className={styles.sectionHead}>
-                <h4 className={styles.sectionTitle}>{t('governanceTitle')}</h4>
-                <span className={styles.sectionHint}>{t('governanceHint')}</span>
-              </div>
-              <div className={styles.panelCard}>
-                <GovernancePanel t={t} scope={scope} reloadTick={reloadTick} onChanged={reload} />
+                <SpiralPanel t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
               </div>
             </section>
           </div>
         </div>
       )}
 
-      {activeTab === 'replay' && <ContextReplayView t={t} scope={scope} reloadTick={reloadTick} />}
-
-      {activeTab === 'spiral' && (
+      {activeWorkface === 'recall' && (
         <div className={styles.tabPanel}>
-          <SpiralPanel t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
+          <PageHeader title={t('workfaceRecall')} subtitle={t('pageHeaderRecallSubtitle')} />
+          <section className={styles.section}>
+            <RecallView t={t} scope={scope} onSelect={openReview} />
+          </section>
         </div>
       )}
 
-      {activeTab === 'episodes' && (
+      {activeWorkface === 'governance' && governanceTab === 'conflicts' && (
+        <div className={styles.tabPanel}>
+          <PageHeader title={t('workfaceGovernance')} subtitle={t('pageHeaderGovernanceSubtitle')} />
+          <section className={styles.section}>
+            <GovernanceView t={t} scope={scope} reloadTick={reloadTick} onChanged={reload} />
+          </section>
+        </div>
+      )}
+
+      {activeWorkface === 'replay' && <ContextReplayView t={t} scope={scope} reloadTick={reloadTick} />}
+
+      {activeWorkface === 'memory' && memoryTab === 'timeline' && (
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabEpisodes')} subtitle={t('pageHeaderEpisodesSubtitle')} />
           <section className={styles.section}>
@@ -6718,7 +6433,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         </div>
       )}
 
-      {activeTab === 'entities' && (
+      {activeWorkface === 'memory' && memoryTab === 'entities' && (
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabEntities')} subtitle={t('pageHeaderEntitiesSubtitle')} />
           <section className={styles.section}>
@@ -6727,7 +6442,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         </div>
       )}
 
-      {activeTab === 'beliefs' && (
+      {activeWorkface === 'governance' && governanceTab === 'beliefs' && (
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabBeliefs')} subtitle={t('pageHeaderBeliefsSubtitle')} />
           <section className={styles.section}>
@@ -6736,14 +6451,14 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         </div>
       )}
 
-      {activeTab === 'log' && (
+      {activeWorkface === 'system' && systemTab === 'logs' && (
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabLog')} subtitle={t('pageHeaderLogSubtitle')} />
           <LogPanel t={t} telemetry={overview.telemetry} project={projectSelector} onCleared={reload} />
         </div>
       )}
 
-      {activeTab === 'ops' && (
+      {activeWorkface === 'system' && systemTab === 'ops' && (
         <div className={styles.tabPanel}>
           <OpsTab t={t} overlayHost={overlayHost} lang={lang} toast={toast}
             onTestPanel={() => { setPanelTest(true) }} />

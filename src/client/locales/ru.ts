@@ -478,6 +478,8 @@ export const ru: Record<EngramKey, string> = {
   replayCompactions: 'Сжатий',
   replaySize: 'Размер пакета',
   navWorkfaces: 'Рабочие зоны',
+  pageHeaderRecallSubtitle: 'Живой стенд припоминания: канал попадания, оценка и происхождение по стабильному ID',
+  pageHeaderGovernanceSubtitle: 'Разбор противоречий и убеждений: сначала картина, потом действие',
   workfaceToday: 'Обзор',
   workfaceRecall: 'Припоминание',
   workfaceMemory: 'Память',

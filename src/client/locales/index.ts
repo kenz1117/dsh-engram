@@ -469,6 +469,8 @@ export type EngramKey =
   | 'replayCompactions'
   | 'replaySize'
   | 'navWorkfaces'
+  | 'pageHeaderRecallSubtitle'
+  | 'pageHeaderGovernanceSubtitle'
   | 'workfaceToday'
   | 'workfaceRecall'
   | 'workfaceMemory'

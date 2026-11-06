@@ -467,6 +467,8 @@ export const en: Record<EngramKey, string> = {
   replayCompactions: 'Compactions',
   replaySize: 'Packet size',
   navWorkfaces: 'Workfaces',
+  pageHeaderRecallSubtitle: 'Live recall bench: hit channel, score and stable-identity provenance',
+  pageHeaderGovernanceSubtitle: 'Contradiction and belief desk: full context before any action',
   workfaceToday: 'Today',
   workfaceRecall: 'Recall',
   workfaceMemory: 'Memory',
