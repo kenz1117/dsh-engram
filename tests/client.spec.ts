@@ -40,7 +40,8 @@ const ATTENTION_KEYS = [
 
 const GOVERNANCE_KEYS = [
   'benchInspect', 'governanceTitle', 'governanceHint', 'governanceCount', 'governanceEmpty', 'governanceFailed',
-  'governanceDismiss', 'governanceForget', 'governanceActionFailed', 'governanceStableId',
+  'governanceDismiss', 'governanceForgetSide', 'governanceForgetConfirm', 'governanceDismissHint',
+  'governanceActionFailed', 'governanceStableId',
 ] as const
 
 describe('context replay locale parity', () => {

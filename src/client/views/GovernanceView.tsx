@@ -12,6 +12,7 @@ import { api } from '../rpc.ts'
 import { useApi } from '../useApi.ts'
 import { EmptyState, kindLabel, roomPillClass, type T } from '../ui/panel-kit.tsx'
 import { IdentityBadge } from '../ui/IdentityBadge.tsx'
+import { ConfirmButton } from '../ui/ConfirmButton.tsx'
 
 interface GovernanceSide {
   readonly id: string
@@ -84,11 +85,26 @@ export function GovernanceView({ t, scope, reloadTick, onChanged }: GovernanceVi
       .finally(() => setBusy(null))
   }
 
-  const side = (row: GovernanceSide): ReactElement => (
+  /**
+   * 一侧记忆的卡片：正文、身份与「闭馆此条」。
+   * 闭馆按钮长在它要闭的那条记忆上——两个同名按钮并排时，人无法知道点的是哪一侧。
+   */
+  const side = (row: GovernanceSide, pair: GovernancePair, key: string): ReactElement => (
     <div className={styles.govSide}>
       <span className={roomPillClass(row.kind)}>{kindLabel(t, row.kind)}</span>
       <p>{row.content}</p>
       <IdentityBadge memoryId={row.memoryId} memoryLabel={t('governanceStableId')} />
+      <ConfirmButton className={styles.govSideAction ?? ''} disabled={busy !== null}
+        label={t('governanceForgetSide')} confirmLabel={t('governanceForgetConfirm')}
+        title={t('governanceForgetConfirm')}
+        onConfirm={() => {
+          act({
+            action: 'forget-loser',
+            firstId: pair.first.id,
+            secondId: pair.second.id,
+            loserId: row.id,
+          }, key)
+        }} />
     </div>
   )
 
@@ -117,8 +133,8 @@ export function GovernanceView({ t, scope, reloadTick, onChanged }: GovernanceVi
               return (
                 <article key={pairKey} className={styles.govCard}>
                   <div className={styles.govSides}>
-                    {side(pair.first)}
-                    {side(pair.second)}
+                    {side(pair.first, pair, `${pairKey}:first`)}
+                    {side(pair.second, pair, `${pairKey}:second`)}
                   </div>
                   <div className={styles.govActions}>
                     <button type="button" className={styles.button}
@@ -126,16 +142,7 @@ export function GovernanceView({ t, scope, reloadTick, onChanged }: GovernanceVi
                       onClick={() => { act({ action: 'dismiss', firstId: pair.first.id, secondId: pair.second.id }, `${pairKey}:dismiss`) }}>
                       {t('governanceDismiss')}
                     </button>
-                    <button type="button" className={styles.button}
-                      disabled={busy !== null}
-                      onClick={() => { act({ action: 'forget-loser', firstId: pair.first.id, secondId: pair.second.id, loserId: pair.first.id }, `${pairKey}:first`) }}>
-                      {t('governanceForget')}
-                    </button>
-                    <button type="button" className={styles.button}
-                      disabled={busy !== null}
-                      onClick={() => { act({ action: 'forget-loser', firstId: pair.first.id, secondId: pair.second.id, loserId: pair.second.id }, `${pairKey}:second`) }}>
-                      {t('governanceForget')}
-                    </button>
+                    <span className={styles.sectionHint}>{t('governanceDismissHint')}</span>
                   </div>
                 </article>
               )

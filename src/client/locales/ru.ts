@@ -531,7 +531,9 @@ export const ru: Record<EngramKey, string> = {
   governanceEmpty: 'Нет противоречий для решения',
   governanceFailed: 'Не удалось загрузить очередь разбора',
   governanceDismiss: 'Переклассифицировать как связанные',
-  governanceForget: 'Закрыть это воспоминание',
+  governanceForgetSide: 'Закрыть это воспоминание',
+  governanceForgetConfirm: 'Закрыть? Воспоминание удаляется мягко, а убеждения, опирающиеся на него, следуют правилам смерти свидетельства.',
+  governanceDismissHint: '«Переклассифицировать как связанные» относится к этой паре: оба воспоминания остаются, ребро противоречия становится связанным.',
   governanceActionFailed: 'Не удалось выполнить действие',
   governanceStableId: 'Стабильный ID',
   // Memory Spiral tab (v0.9.x)
