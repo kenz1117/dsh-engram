@@ -1,0 +1,191 @@
+/* 0.13 modern console shell.
+   Semantic tokens derive from host aliases; no product hex values are introduced here. */
+
+:root {
+  --engram-surface: var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-base));
+  --engram-surface-raised: var(--dsw-alias-bg-base, var(--dsw-alias-bg-layer-1));
+  --engram-border: var(--dsw-alias-border-l2);
+  --engram-border-soft: var(--dsw-alias-border-l1);
+  --engram-text: var(--dsw-alias-label-primary);
+  --engram-text-muted: var(--dsw-alias-label-secondary);
+  --engram-text-faint: var(--dsw-alias-label-tertiary);
+  --engram-accent: var(--brand-1);
+  --engram-accent-alt: var(--brand-2);
+  --engram-accent-grad: var(--brand-grad);
+  --engram-success: var(--dsw-alias-state-success-primary, var(--dsw-alias-label-primary));
+  --engram-warning: var(--dsw-alias-state-warn-primary, var(--dsw-alias-label-secondary));
+  --engram-danger: var(--dsw-alias-state-danger-primary, var(--dsw-alias-label-secondary));
+  --engram-focus: color-mix(in srgb, var(--engram-accent) 55%, var(--engram-text));
+  --engram-shadow: 0 16px 40px -24px color-mix(in srgb, var(--engram-text) 28%, transparent);
+}
+
+.console {
+  display: grid;
+  /* 固定列宽：导航列不许被内容撑开（auto 列 + min-width:auto 会把中文标题挤成一列竖字）。 */
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: stretch;
+  /* 撑满面板剩余高度：内容列（.consoleBody）自己滚动，导航列固定在左边。
+     没有 flex:1 + min-height:0，.console 会按内容高度排版，滚动条会跑到宿主页面上，
+     或者（面板高度被宿主裁剪时）干脆不出现。 */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 内容列：状态条与二级导航在上，工作面内容在下（.panelBody 自己滚）。 */
+.consoleBody {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.rail {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  background: color-mix(in srgb, var(--engram-text) 2%, var(--engram-surface));
+  border: 1px solid var(--engram-border-soft);
+  border-radius: var(--radius-card);
+}
+
+.railLabel {
+  margin: 0 var(--space-2) var(--space-1);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--engram-text-faint);
+}
+
+.railItem {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--engram-text-muted);
+  font: inherit;
+  font-size: var(--fs-body);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-spring), color var(--dur-fast) var(--ease-spring), border-color var(--dur-fast) var(--ease-spring);
+}
+
+/* 标题不换行：中文两字标签在窄列里会一个字一行，读起来像坏掉了。 */
+.railItem > span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.railItem:hover { background: color-mix(in srgb, var(--engram-text) 5%, transparent); color: var(--engram-text); }
+.railItem[aria-current="true"] {
+  background: color-mix(in srgb, var(--engram-accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--engram-accent) 28%, var(--engram-border-soft));
+  color: var(--engram-text);
+  font-weight: 600;
+}
+.railItem[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  width: 3px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--engram-accent-grad);
+}
+
+.railItem svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+
+/* 二级导航：一排下划线页签。胶囊按钮在这里读起来像筛选器，不像「你在哪个视图」。 */
+.contextNav {
+  display: flex;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--engram-border-soft);
+  align-items: flex-end;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.contextItem {
+  position: relative;
+  min-height: 32px;
+  padding: 4px 2px 8px;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--engram-text-muted);
+  font: inherit;
+  font-size: var(--fs-body);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-spring), border-color var(--dur-fast) var(--ease-spring);
+}
+
+.contextItem:hover { color: var(--engram-text); }
+.contextItem[aria-pressed="true"] {
+  color: var(--engram-text);
+  border-bottom-color: var(--engram-accent);
+  font-weight: 600;
+}
+
+.statusStrip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+  padding: 6px var(--space-3);
+  border: 1px solid var(--engram-border-soft);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--engram-text) 3%, var(--engram-surface));
+}
+
+.statusItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  color: var(--engram-text-muted);
+  font-size: var(--fs-micro);
+}
+
+.statusDot { width: 7px; height: 7px; border-radius: 999px; background: var(--engram-text-faint); flex: none; }
+.statusDot.ok { background: var(--engram-success); }
+.statusDot.warn { background: var(--engram-warning); }
+.statusDot.error { background: var(--engram-danger); }
+
+@media (max-width: 960px) {
+  .console { grid-template-columns: minmax(0, 1fr); }
+  .rail {
+    position: static;
+    flex-direction: row;
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .rail::-webkit-scrollbar { display: none; }
+  .railLabel { display: none; }
+  .railItem { width: auto; min-width: max-content; justify-content: center; }
+}
+
+@media (max-width: 680px) {
+  .rail { padding: var(--space-2); gap: var(--space-1); }
+  .railItem { min-height: 34px; font-size: var(--fs-micro); }
+}

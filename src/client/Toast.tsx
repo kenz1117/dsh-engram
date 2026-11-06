@@ -1,7 +1,8 @@
 /**
  * 轻量 Toast：右上角叠层通知，3 秒自动消失，hover 暂停。
  * 4 种语义：info / success / error / warning（图标与配色由样式表决定，文案一律走调用方传入的字符串）。
- * confirm 不归本 hook 管——那是对话框决策，保留 window.confirm 以免破坏流程语义。
+ * confirm 不归本 hook 管——面板里的破坏性操作统一走 ConfirmButton 的两段式确认，
+ * 不再弹浏览器原生对话框（原生对话框会脱离面板样式，也读不到词典）。
  * @module @kenz1117/dsh-engram/client/Toast
  */
 

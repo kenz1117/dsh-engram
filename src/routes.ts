@@ -29,6 +29,7 @@ import { effectiveJevConfig, jevConfigView, loadJevOverride, parseJevPatch, save
 import { testJevConnection } from './jev/client.ts'
 import type { JevCatalog, JevConnection, JevModelList } from './jev/host.ts'
 import { listJevObservations } from './jev/observe.ts'
+import type { JobListFilter, JobQueueSummary, JobSummary } from './jobs/queue.ts'
 import { writeMirror } from './mirror/markdown.ts'
 import { isLanguageCode, type EngramLanguage } from './i18n/language.ts'
 import { message, messageIn } from './i18n/messages.ts'
@@ -709,6 +710,11 @@ export interface RouteDeps {
     /** 部署配置里的默认规则（面板表单初始值）。 */
     readonly defaults: ResolvedHistoryRules
   }
+  /** Durable jobs 只读诊断：reflect worker 未启动时回空摘要，面板显示“未运行”而不是假数据。 */
+  readonly jobs?: {
+    readonly summary: () => JobQueueSummary
+    readonly list: (filter?: JobListFilter) => readonly JobSummary[]
+  }
   /** Jev 裁决配置（GET/POST jev-config）：yml 基线 + 面板覆盖文件目录 + мост к хосту. */
   readonly jev: {
     /** Распознанная база из cordis.yml (адрес и ключ тут больше не хранятся — они у хоста). */
@@ -768,6 +774,22 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               processDefault: processDefault === undefined
                 ? null
                 : { dbName: processDefault.dbName, path: processDefault.path, title: processDefault.title },
+            })
+            return
+          }
+          if (req.method === 'GET' && route === 'jobs') {
+            // Durable jobs 是插件级队列，不属于 user/project/shared 任何分库；project 参数忽略。
+            const statusParam = url.searchParams.get('status')
+            const statuses = statusParam === null || statusParam === '' || statusParam === 'all'
+              ? undefined
+              : statusParam.split(',').map(raw => raw.trim()).filter((raw): raw is 'queued' | 'running' | 'done' | 'dead' => (
+                  raw === 'queued' || raw === 'running' || raw === 'done' || raw === 'dead'
+                ))
+            const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? 50) || 50))
+            json(res, 200, {
+              available: deps.jobs !== undefined,
+              summary: deps.jobs?.summary() ?? { total: 0, queued: 0, running: 0, done: 0, dead: 0 },
+              items: deps.jobs?.list({ ...(statuses === undefined ? {} : { statuses }), limit }) ?? [],
             })
             return
           }
@@ -1178,8 +1200,16 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const id = url.searchParams.get('id')
             if (id === null || id === '') { json(res, 400, { error: 'id required' }); return }
             const store = await storeFor(scope)
-            const view = await store.review(id as never)
-            if (view === undefined) { json(res, 404, { error: messageIn(deps.language, 'misc.recordNotFound', { id }) }); return }
+            let view = await store.review(id as never)
+            // v15：当传入的是稳定 memoryId（而不是具体旧 revision id）时，解析当前修订；
+            // 传入真实 revision id 仍精确回到该版本，保留历史审计路径。
+            if (view !== undefined && String(view.record.memoryId) === id) {
+              const current = await store.getMemory(id as never)
+              if (current !== undefined && String(current.id) !== id) view = await store.review(current.id)
+            } else if (view === undefined) {
+              const current = await store.getMemory(id as never)
+              if (current !== undefined) view = await store.review(current.id)
+            }
             json(res, 200, view)
             return
           }

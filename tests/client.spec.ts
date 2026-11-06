@@ -6,9 +6,36 @@ import { makeT, ruPluralForm } from '../src/client/translate.ts'
 import { en, ru, zh } from '../src/client/locales/index.ts'
 
 const REPLAY_KEYS = [
-  'tabReplay', 'pageHeaderReplaySubtitle', 'replayFilterLabel', 'replayFilterPlaceholder', 'replayCount',
+  'workfaceReplay', 'pageHeaderReplaySubtitle', 'replayFilterLabel', 'replayFilterPlaceholder', 'replayCount',
   'replayEmpty', 'replayFailed', 'replayOpen', 'replayClose', 'replayPacketTitle', 'replayMetaTitle',
   'replayExactNote', 'replaySession', 'replayHash', 'replayMemories', 'replayCurated', 'replayCompactions', 'replaySize',
+] as const
+
+const SHELL_KEYS = [
+  'navWorkfaces', 'workfaceToday', 'workfaceRecall', 'workfaceMemory', 'workfaceGovernance',
+  'workfaceReplay', 'workfaceSystem',
+  // 二级导航与各工作面的副标题：0.13 把十个旧 tab 折进六个工作面后，视图名与说明各归其位。
+  'memoryRecords', 'memoryTimeline', 'memoryEntities', 'memoryAtlas',
+  'governanceConflicts', 'governanceBeliefs',
+  'pageHeaderLibrarySubtitle', 'pageHeaderCorridorSubtitle', 'pageHeaderEpisodesSubtitle',
+  'pageHeaderEntitiesSubtitle', 'pageHeaderBeliefsSubtitle', 'pageHeaderGovernanceSubtitle',
+  'pageHeaderRecallSubtitle', 'pageHeaderTodaySubtitle',
+  'pageHeaderSystemSubtitle', 'pageHeaderRuntimeSubtitle', 'pageHeaderStorageSubtitle',
+  'pageHeaderModelsSubtitle', 'pageHeaderLogSubtitle', 'pageHeaderBackfillSubtitle',
+  'pageHeaderJevSubtitle',
+  'systemRuntime', 'systemStorage', 'systemModels',
+  'systemVersionPlugin', 'systemVersionClient', 'systemVersionOk', 'systemVersionDiff',
+  'systemJobsTitle', 'systemJobsUnavailable', 'systemJobsQueued', 'systemJobsRunning',
+  'systemJobsDone', 'systemJobsDead', 'systemJobAttempts', 'systemJobError', 'systemJobEmpty',
+  'systemStorageTotal', 'systemStorageActive', 'systemStorageArchived',
+  'systemStorageForgotten', 'systemStorageOpLog', 'systemStorageLogSize', 'systemStorageLogPath',
+  'systemStorageFailed', 'systemModelStatus', 'systemModelNone',
+  'identityStable', 'identityRevision', 'identityRevisionNote',
+] as const
+
+const ATTENTION_KEYS = [
+  'kpiExposures', 'attentionEmpty', 'attentionFailed', 'attentionGovernance', 'attentionJobsDead',
+  'attentionJobsQueued', 'attentionJobsUnavailable',
 ] as const
 
 const GOVERNANCE_KEYS = [
@@ -19,6 +46,22 @@ const GOVERNANCE_KEYS = [
 describe('context replay locale parity', () => {
   it('回放工作面的 18 个文案键在 zh/en/ru 三语齐备', () => {
     for (const key of REPLAY_KEYS) {
+      expect(zh[key], `zh:${key}`).toBeTruthy()
+      expect(en[key], `en:${key}`).toBeTruthy()
+      expect(ru[key], `ru:${key}`).toBeTruthy()
+    }
+  })
+
+  it('0.13 shell 的 7 个文案键在 zh/en/ru 三语齐备', () => {
+    for (const key of SHELL_KEYS) {
+      expect(zh[key], `zh:${key}`).toBeTruthy()
+      expect(en[key], `en:${key}`).toBeTruthy()
+      expect(ru[key], `ru:${key}`).toBeTruthy()
+    }
+  })
+
+  it('Today 真实待办与曝光指标的 7 个文案键三语齐备', () => {
+    for (const key of ATTENTION_KEYS) {
       expect(zh[key], `zh:${key}`).toBeTruthy()
       expect(en[key], `en:${key}`).toBeTruthy()
       expect(ru[key], `ru:${key}`).toBeTruthy()

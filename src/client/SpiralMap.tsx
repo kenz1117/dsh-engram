@@ -16,7 +16,7 @@
 
 import { useMemo } from 'react'
 import type { ReactElement } from 'react'
-import { KIND_PALETTE } from './CorridorMap.tsx'
+import { KIND_COLOR } from './CorridorMap.tsx'
 import type { EngramKey } from './locales/index.ts'
 import styles from './spiral.module.css'
 
@@ -126,7 +126,7 @@ export function SpiralMap({ t, records, windowMs }: SpiralMapProps): ReactElemen
         {positioned.map(node => (
           <circle key={node.id}
             cx={node.x} cy={node.y} r={node.radius}
-            fill={KIND_PALETTE[node.kind] ?? '#888'}
+            fill={KIND_COLOR[node.kind] ?? 'var(--dsw-alias-label-tertiary)'}
             opacity={node.opacity}>
             <title>{`${node.kind} · ${node.accessCount}× · ${formatDate(node.createdAt)}\n${truncate(node.content, 80)}`}</title>
           </circle>
@@ -135,7 +135,7 @@ export function SpiralMap({ t, records, windowMs }: SpiralMapProps): ReactElemen
       <aside className={styles.side}>
         <h4 className={styles.sideTitle}>{t('spiralSideTitle')}</h4>
         <div className={styles.legend}>
-          {Object.entries(KIND_PALETTE).map(([kind, color]) => (
+          {Object.entries(KIND_COLOR).map(([kind, color]) => (
             <div key={kind} className={styles.legendItem}>
               <span className={styles.legendDot} style={{ background: color }} />
               <span>{kind}</span>

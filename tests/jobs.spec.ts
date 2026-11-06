@@ -302,6 +302,32 @@ describe('JobQueue (durable jobs)', () => {
     expectJobError(() => queue.prune(Number.NaN), 'JOB_INVALID')
   })
 
+  it('list/summary：轻量投影、状态过滤、新到旧排序且不含 payload', () => {
+    queue.enqueue({ id: 'sum-queued', kind: 'reflect', payload: { n: 1 } }).job
+    const second = queue.enqueue({ id: 'sum-running', kind: 'consolidate', payload: { n: 2 } }).job
+    queue.claim({ owner: 'w1', leaseMs: 60_000, kinds: ['consolidate'] })
+    const done = queue.enqueue({ id: 'sum-done', kind: 'reflect', payload: { n: 3 } }).job
+    queue.claim({ owner: 'w2', leaseMs: 60_000 })
+    queue.complete({ id: done.id, owner: 'w2' })
+    const dead = queue.enqueue({ id: 'sum-dead', kind: 'reflect', payload: null, maxAttempts: 1 }).job
+    queue.claim({ owner: 'w3', leaseMs: 60_000 })
+    queue.fail({ id: dead.id, owner: 'w3', error: 'permanent' })
+
+    expect(queue.summary()).toEqual({ total: 4, queued: 1, running: 1, done: 1, dead: 1 })
+
+    const all = queue.list({ limit: 10 })
+    expect(all.map(job => job.id)).toEqual(['sum-dead', 'sum-done', 'sum-running', 'sum-queued'])
+    expect(all.every(job => !('payload' in job))).toBe(true)
+    expect(all.find(job => job.id === second.id)).toMatchObject({
+      kind: 'consolidate', status: 'running', attempts: 1, leaseOwner: 'w1',
+    })
+
+    expect(queue.list({ statuses: ['dead'], limit: 10 }).map(job => job.id)).toEqual(['sum-dead'])
+    expect(queue.list({ statuses: ['queued', 'done'], limit: 10 }).map(job => job.id)).toEqual(['sum-done', 'sum-queued'])
+    expect(() => queue.list({ statuses: ['bogus' as never] })).toThrowError(/status/)
+    expect(() => queue.list({ limit: 0 })).toThrowError(/limit/)
+  })
+
   it('打开校验：非法 path 与非有限时钟报 JOB_INVALID', async () => {
     await expect(openJobQueue('', { now: () => clock })).rejects.toMatchObject({ code: 'JOB_INVALID' })
     await expect(openJobQueue(join(dir, 'bad.db'), { now: () => Number.NaN })).rejects.toMatchObject({ code: 'JOB_INVALID' })

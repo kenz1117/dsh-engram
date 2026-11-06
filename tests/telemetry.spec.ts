@@ -42,6 +42,17 @@ describe('本地遥测 aggregateTelemetry', () => {
     expect(snapshot.counts.forgets).toBeGreaterThanOrEqual(1)
   })
 
+  it('search-exposure 是真实曝光计数，不与改写请求混用', async () => {
+    const memory = await user.write({ scope: 'user', kind: 'fact', content: 'SQLite 检索' })
+    await user.search({ text: 'SQLite', scopes: ['user'], limit: 5 }, undefined)
+    const snapshot = await aggregateTelemetry(async scope => scope === 'user' ? user : user, 7, 'user')
+    expect(snapshot.counts.searchExposures).toBe(1)
+    // 该 fixture 没有调用检索改写，searches 应保持 0；两者语义不同。
+    expect(snapshot.counts.searches).toBe(0)
+    expect(snapshot.counts.searchRewrites).toBe(0)
+    expect(memory).toBeDefined()
+  })
+
   it('查询 days 默认 7，越界夹到 [1, 90]', async () => {
     // 注：函数本身接受任意 windowDays；此处仅校验 defaults 行为。
     const snapshot = await aggregateTelemetry(async scope => scope === 'user' ? user : user)

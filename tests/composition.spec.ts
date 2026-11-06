@@ -1152,6 +1152,33 @@ describe('dsh-engram real Loader composition', () => {
     expect((await store.recentOps(20)).some(op => op.op === 'governance')).toBe(true)
     await store.close()
   })
+
+  it('jobs 只读 API 与 review-by-memoryId HTTP 链路', { timeout: 60_000 }, async () => {
+    let stableId = ''
+    const loaded = await loadComposition(["    reflect: 'auto'"], undefined, async (dbDir) => {
+      const store = await openEngramStore(join(dbDir, 'user.db'))
+      const first = await store.write({ scope: 'user', kind: 'fact', content: 'v15 初版' })
+      stableId = first.memoryId
+      await store.update({ id: first.id, scope: 'user', kind: 'fact', content: 'v15 当前版' })
+      await store.close()
+    })
+    const port = loaded.webServer.port
+
+    const review = await call(port, 'GET', `/api/engram/review?scope=user&id=${encodeURIComponent(stableId)}`)
+    expect(review.status).toBe(200)
+    expect((review.json as { record: { memoryId: string; content: string } }).record)
+      .toEqual(expect.objectContaining({ memoryId: stableId, content: 'v15 当前版' }))
+    expect((review.json as { revisions: { content: string }[] }).revisions.map(row => row.content))
+      .toEqual(['v15 初版'])
+
+    const jobs = await call(port, 'GET', '/api/engram/jobs?limit=10')
+    expect(jobs.status).toBe(200)
+    expect(jobs.json).toEqual({
+      available: true,
+      summary: { total: 0, queued: 0, running: 0, done: 0, dead: 0 },
+      items: [],
+    })
+  })
 })
 
 

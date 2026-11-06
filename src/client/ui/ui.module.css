@@ -1,0 +1,76 @@
+:root {
+  --engram-control: var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-base));
+}
+
+.segmented, .contextNav { display: inline-flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; margin: 0; padding: 0; border: 0; }
+.visuallyHidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.segmented { display: inline-flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; }
+.segmentedItem {
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid var(--engram-border-soft);
+  border-radius: var(--radius-control);
+  background: var(--engram-control);
+  color: var(--engram-text-muted);
+  font: inherit;
+  font-size: var(--fs-micro);
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-spring);
+}
+.segmentedItem:hover { color: var(--engram-text); border-color: var(--engram-border); }
+.segmentedItem[aria-pressed="true"] {
+  color: var(--engram-text);
+  font-weight: 600;
+  border-color: color-mix(in srgb, var(--engram-accent) 38%, var(--engram-border-soft));
+  background: color-mix(in srgb, var(--engram-accent) 8%, transparent);
+}
+
+.confirmArmed { border-color: color-mix(in srgb, var(--engram-danger) 48%, var(--engram-border)); color: var(--engram-text); background: color-mix(in srgb, var(--engram-danger) 10%, transparent); }
+
+.dialogScrim {
+  position: absolute;
+  inset: 0;
+  z-index: 42;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: color-mix(in srgb, var(--engram-text) 18%, transparent);
+}
+.dialog {
+  width: min(680px, 100%);
+  max-height: min(680px, calc(100vh - 120px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--engram-border);
+  border-radius: var(--radius-card);
+  background: var(--engram-surface-raised);
+  box-shadow: var(--engram-shadow);
+}
+.dialogHead { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--engram-border-soft); }
+.dialogTitle { margin: 0; min-width: 0; font-size: var(--fs-display); font-weight: 600; color: var(--engram-text); overflow-wrap: anywhere; }
+.dialogBody { min-height: 0; overflow-y: auto; padding: var(--space-4); overflow-wrap: anywhere; }
+.dialogClose {
+  width: 30px; height: 30px; display: inline-grid; place-items: center;
+  border: 1px solid transparent; border-radius: var(--radius-control);
+  background: transparent; color: var(--engram-text-muted); cursor: pointer;
+}
+.dialogClose:hover { border-color: var(--engram-border); color: var(--engram-text); }
+
+.dataState { display: grid; place-items: center; gap: var(--space-2); padding: var(--space-6) var(--space-4); text-align: center; color: var(--engram-text-muted); }
+.dataState b { color: var(--engram-text); font-size: var(--fs-body); }
+.dataState span { max-width: 420px; font-size: var(--fs-micro); line-height: 1.5; overflow-wrap: anywhere; }
+.dataActions { display: flex; gap: var(--space-2); }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  min-height: 22px; padding: 1px 7px;
+  border: 1px solid var(--engram-border-soft); border-radius: 999px;
+  background: color-mix(in srgb, var(--engram-text) 4%, transparent);
+  color: var(--engram-text-muted); font-size: var(--fs-micro); font-variant-numeric: tabular-nums;
+}
+.badgeAccent { border-color: color-mix(in srgb, var(--engram-accent) 32%, var(--engram-border-soft)); color: var(--engram-text); background: color-mix(in srgb, var(--engram-accent) 7%, transparent); }
+.badgeWarn { border-color: color-mix(in srgb, var(--engram-warning) 38%, var(--engram-border-soft)); color: var(--engram-text); background: color-mix(in srgb, var(--engram-warning) 8%, transparent); }
+.badgeError { border-color: color-mix(in srgb, var(--engram-danger) 38%, var(--engram-border-soft)); color: var(--engram-text); background: color-mix(in srgb, var(--engram-danger) 8%, transparent); }
+.identity { display: flex; gap: var(--space-2); flex-wrap: wrap; min-width: 0; }
+.identity code { padding: 1px 6px; border: 1px solid var(--engram-border-soft); border-radius: 6px; color: var(--engram-text-muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-micro); overflow-wrap: anywhere; }

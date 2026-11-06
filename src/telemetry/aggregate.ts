@@ -25,6 +25,8 @@ export interface TelemetrySnapshot {
     readonly distillRequests: number
     readonly compressRequests: number
     readonly searchRewrites: number
+    /** 0.12 起的真实检索曝光审计：曝光不是有效反馈，与 searches（改写请求）分开。 */
+    readonly searchExposures: number
     readonly consumptions: number
     readonly consolidations: number
     readonly reviewAnswers: number
@@ -90,7 +92,7 @@ export async function aggregateTelemetry(
   const countsAgg = {
     ingestRequests: 0, ingestDones: 0, searches: 0, writes: 0, updates: 0,
     forgets: 0, restores: 0, distillRequests: 0, compressRequests: 0,
-    searchRewrites: 0, consumptions: 0, consolidations: 0, reviewAnswers: 0,
+    searchRewrites: 0, searchExposures: 0, consumptions: 0, consolidations: 0, reviewAnswers: 0,
   }
   // scopeViews 局部可变（push），返回时满足 TelemetrySnapshot['scopes'] 的 readonly 形状。
   type ScopeView = TelemetrySnapshot['scopes'][number]
@@ -115,6 +117,7 @@ export async function aggregateTelemetry(
       countsAgg.distillRequests += counts['distill-request'] ?? 0
       countsAgg.compressRequests += counts['compress-request'] ?? 0
       countsAgg.searchRewrites += counts['search-rewrite-request'] ?? 0
+      countsAgg.searchExposures += counts['search-exposure'] ?? 0
       countsAgg.consumptions += (counts['outcome-report'] ?? 0)
       countsAgg.consolidations += counts.consolidation ?? 0
       countsAgg.reviewAnswers += counts['review-answer'] ?? 0

@@ -212,11 +212,22 @@ if (throttleStart !== -1) {
   const body = hookText.slice(throttleStart)
   for (const literal of body.slice(0, body.indexOf('\n}')).matchAll(/'([a-z][a-z-]*)'/g)) produced.add(literal[1])
 }
-const panelText = readFileSync(join(SRC, 'client', 'EngramPanel.tsx'), 'utf8')
+// SKIP_KEY переехал вместе с карточками обслуживания в views/system/SystemView.tsx:
+// ищем по всему клиенту, а не по одному файлу — иначе проверка теряет опору при переносе.
+function collectSources(dir) {
+  const out = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) out.push(...collectSources(full))
+    else if (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx')) out.push(full)
+  }
+  return out
+}
+const panelText = collectSources(join(SRC, 'client')).map(file => readFileSync(file, 'utf8')).join('\n')
 const mapStart = panelText.indexOf('const SKIP_KEY')
 const mapEnd = mapStart === -1 ? -1 : panelText.indexOf('\n}', mapStart)
 if (mapStart === -1 || mapEnd === -1) {
-  report('skip-key', 'не нашёл таблицу SKIP_KEY в src/client/EngramPanel.tsx — проверка потеряла опору')
+  report('skip-key', 'не нашёл таблицу SKIP_KEY в src/client — проверка потеряла опору')
 } else {
   const skipMap = panelText.slice(mapStart, mapEnd)
   const mapped = new Set()
