@@ -2138,7 +2138,7 @@ function RuntimeSection({ t, reloadTick }: {
       {failed !== null && <LoadFailedLine t={t} msg={failed} onRetry={() => { /* 重新拉取 */ }} />}
       <div className={styles.panelCard}>
         <div className={styles.cardHead}>
-          <h3 className={styles.cardTitle}>{t('systemVersionPlugin')}</h3>
+          <h3 className={styles.cardTitle}>{t('systemVersionCard')}</h3>
         </div>
         <dl className={styles.attrGrid}>
           <dt>{t('systemVersionPlugin')}</dt>
@@ -2180,12 +2180,12 @@ function RuntimeSection({ t, reloadTick }: {
                 {jobs.items.length === 0
                   ? <p className={styles.sectionHint}>{t('systemJobEmpty')}</p>
                   : (
-                    <div className={styles.logList}>
+                    <div className={styles.sysList}>
                       {jobs.items.map(job => (
-                        <div key={job.id} className={styles.logRow}>
-                          <span className={styles.logOp}>{job.kind}</span>
-                          <span className={styles.logScope}>{job.status}</span>
-                          <span className={styles.logDetail}>
+                        <div key={job.id} className={styles.sysRow}>
+                          <span className={styles.sysName} title={job.id}>{job.kind}</span>
+                          <span className={styles.sysTag}>{job.status}</span>
+                          <span className={styles.sysNum}>
                             {t('systemJobAttempts', { n: job.attempts })}
                             {job.lastError === null ? '' : ` · ${t('systemJobError')}: ${job.lastError}`}
                           </span>
@@ -2204,12 +2204,12 @@ function RuntimeSection({ t, reloadTick }: {
         {models.length === 0
           ? <p className={styles.sectionHint}>{t('systemModelNone')}</p>
           : (
-            <div className={styles.logList}>
+            <div className={styles.sysList}>
               {models.map(model => (
-                <div key={model.id} className={styles.logRow}>
-                  <span className={styles.logOp}>{model.label ?? model.id}</span>
-                  <span className={styles.logScope}>{model.dtype}</span>
-                  <span className={styles.logDetail}>{model.dimensions ?? '—'}</span>
+                <div key={model.id} className={styles.sysRow}>
+                  <span className={styles.sysName} title={model.id}>{model.label ?? model.id}</span>
+                  <span className={styles.sysTag}>{model.dtype}</span>
+                  <span className={styles.sysNum}>{model.dimensions ?? '—'}</span>
                 </div>
               ))}
             </div>
@@ -2256,17 +2256,30 @@ function StorageSection({ t, reloadTick }: {
         {stores === null
           ? <div className={styles.expandLoading}>{t('loading')}</div>
           : (
-            <div className={styles.logList}>
-              {stores.map(store => (
-                <div key={store.scope} className={styles.logRow}>
-                  <span className={styles.logOp}>{t(`scope${store.scope.charAt(0).toUpperCase()}${store.scope.slice(1)}` as EngramKey)}</span>
-                  <span className={styles.logScope}>{t('systemStorageTotal')}: {store.stats.total}</span>
-                  <span className={styles.logDetail}>
-                    {t('systemStorageActive')}: {store.stats.active} · {t('systemStorageArchived')}: {store.stats.archived} · {t('systemStorageForgotten')}: {store.stats.forgotten} · {t('systemStorageOpLog')}: {store.stats.opLogCount}
-                  </span>
-                </div>
-              ))}
-            </div>
+            <table className={styles.sysTable}>
+              <thead>
+                <tr>
+                  <th>{t('systemStorageScope')}</th>
+                  <th className={styles.num}>{t('systemStorageTotal')}</th>
+                  <th className={styles.num}>{t('systemStorageActive')}</th>
+                  <th className={styles.num}>{t('systemStorageArchived')}</th>
+                  <th className={styles.num}>{t('systemStorageForgotten')}</th>
+                  <th className={styles.num}>{t('systemStorageOpLog')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stores.map(store => (
+                  <tr key={store.scope}>
+                    <td>{t(`scope${store.scope.charAt(0).toUpperCase()}${store.scope.slice(1)}` as EngramKey)}</td>
+                    <td className={styles.num}>{store.stats.total}</td>
+                    <td className={styles.num}>{store.stats.active}</td>
+                    <td className={styles.num}>{store.stats.archived}</td>
+                    <td className={styles.num}>{store.stats.forgotten}</td>
+                    <td className={styles.num}>{store.stats.opLogCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
       </div>
       <div className={styles.panelCard}>

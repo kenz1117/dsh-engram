@@ -142,7 +142,7 @@
 .drawerLayer { position: relative; height: 0; z-index: 41; }
 .drawerScrim { position: absolute; inset: 0; background: color-mix(in srgb, var(--dsw-alias-label-primary) 18%, transparent); z-index: 40; animation: scrimIn var(--dur-base) var(--ease-spring) both; }
 @keyframes scrimIn { from { opacity: 0; } to { opacity: 1; } }
-.drawer { position: absolute; top: 12px; left: 24px; right: 24px; margin: 0 auto; max-width: 560px; max-height: min(560px, calc(100vh - 200px)); background: var(--dsw-alias-bg-base, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-card); box-shadow: 0 24px 56px -20px color-mix(in srgb, var(--dsw-alias-label-primary) 38%, transparent); display: flex; flex-direction: column; overflow: hidden; animation: drawerIn var(--dur-base) var(--ease-spring) both; }
+.drawer { position: absolute; top: 12px; left: 24px; right: 24px; margin: 0 auto; max-width: 720px; max-height: min(560px, calc(100vh - 200px)); background: var(--dsw-alias-bg-base, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-card); box-shadow: 0 24px 56px -20px color-mix(in srgb, var(--dsw-alias-label-primary) 38%, transparent); display: flex; flex-direction: column; overflow: hidden; animation: drawerIn var(--dur-base) var(--ease-spring) both; }
 @keyframes drawerIn { from { transform: translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
 .drawerHead { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--dsw-alias-border-l2); flex-shrink: 0; }
 .drawerTitle { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; flex: 1; }
@@ -154,8 +154,9 @@
 /* overflow-wrap 继承到全部子孙：长 ASCII 串（payments[].createdAt 等）在任意层都兜底折行，不再撑宽容器。 */
 .drawerBody { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: var(--space-4); scrollbar-width: none; overflow-wrap: anywhere; }
 .drawerBody::-webkit-scrollbar { display: none; }
-/* Review 双列：内容左 70%，时间线右 30%；窄屏自动单列。 */
-.reviewGrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-5); }
+/* Review 单列：铭牌正文是这里唯一的主角，必须占满宽度。
+   两列布局在「没有修订链」时会把正文压进半栏，右半空着——读起来像坏版了。 */
+.reviewGrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
 @media (max-width: 720px) {
   .reviewGrid { grid-template-columns: 1fr; }
 }
@@ -347,8 +348,13 @@ select.input { padding-right: 28px; appearance: none; }
 .attrGrid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; font-size: 12px; align-items: center; }
 .attrGrid > dt { color: var(--dsw-alias-label-tertiary); font-size: 11px; margin: 0; }
 .attrGrid > dd { margin: 0; color: var(--dsw-alias-label-primary); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; word-break: break-word; }
-/* 稳定身份 / 修订 id：等宽小字，长 id 换行而不是撑破属性网格轨道。 */
-.identityCode { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2); border-radius: 4px; padding: 1px 5px; max-width: 100%; overflow-wrap: anywhere; word-break: break-all; }
+/* 稳定身份 / 修订 id：元信息，不是主角——一行放下，超出用省略号，完整值在 title 里。 */
+.identityStrip { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); margin-bottom: var(--space-3); }
+.identityItem { display: inline-flex; align-items: baseline; gap: var(--space-2); min-width: 0; max-width: 100%; }
+.identityLabel { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); white-space: nowrap; }
+.identityCode { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2); border-radius: 4px; padding: 1px 5px; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 铭牌正文：面板里最该好读的一段，给足行距与整段宽度。 */
+.reviewContent { margin: 0 0 var(--space-4); font-size: var(--fs-body); line-height: 1.7; color: var(--dsw-alias-label-primary); white-space: pre-wrap; overflow-wrap: anywhere; }
 .relBlock { margin-top: 10px; }
 .relBlock > h5 { margin: 0 0 4px; font-size: 11px; font-weight: 500; color: var(--dsw-alias-label-tertiary); letter-spacing: 0.04em; text-transform: uppercase; }
 .relChips { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -733,6 +739,23 @@ select.input { padding-right: 28px; appearance: none; }
 .logTile { display: flex; flex-direction: column; gap: 4px; padding: var(--space-3) var(--space-4); background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-control); }
 .logTileTop { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
 .logTileValue { font-size: 22px; font-weight: 600; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; line-height: 1.1; }
+/* ---------- 运行时清单（模型 / 作业） ----------
+   不复用 .logRow：日志行是固定五列（色点 · 时间 · 操作 · 宫殿 · 摘要），
+   短字段专用。模型名这种长串落进第一列（8px）会被压成竖排，还和下一列叠字。 */
+.sysList { display: flex; flex-direction: column; }
+.sysRow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--space-3); align-items: baseline; padding: var(--space-2) 0; border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: var(--fs-body); }
+.sysRow:last-child { border-bottom: 0; }
+.sysName { min-width: 0; font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--dsw-alias-label-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sysTag { color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); white-space: nowrap; }
+.sysNum { color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+
+/* 多列数字用表格：把「总数 / 活跃 / 归档 / 已遗忘 / 日志行数」挤进一格会既难读又截断。 */
+.sysTable { width: 100%; border-collapse: collapse; font-size: var(--fs-body); }
+.sysTable th { text-align: left; font-size: var(--fs-micro); font-weight: 500; color: var(--dsw-alias-label-tertiary); padding: var(--space-2) var(--space-3) var(--space-2) 0; border-bottom: 1px solid var(--dsw-alias-border-l1); white-space: nowrap; }
+.sysTable td { padding: var(--space-2) var(--space-3) var(--space-2) 0; border-bottom: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-primary); }
+.sysTable tr:last-child td { border-bottom: 0; }
+.sysTable .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-secondary); }
+
 /* ---------- 管家日志（工具条 + 整页宽表：色点 · 时间 · 操作 · 宫殿 · 摘要） ---------- */
 /* 工具条：标题与条数居左，三类计数居中，类别筛选靠右；窄屏整体换行。 */
 .logToolbar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-3); }
