@@ -23,6 +23,7 @@ import { PalaceLanguageAsk, SystemView, type SystemSection } from './views/syste
 import { CorridorPanel, SpiralPanel } from './views/memory/AtlasPanel.tsx'
 import { EntityView } from './views/memory/EntitiesPanel.tsx'
 import { EpisodeTimelineView } from './views/memory/TimelinePanel.tsx'
+import { ConfirmButton } from './ui/ConfirmButton.tsx'
 import { EmptyState, kindLabel, KINDS, LoadFailedLine, Metric, PageHeader, roomClass, roomPillClass, SelectField, type T } from './ui/panel-kit.tsx'
 import {
   fmtTime,
@@ -924,7 +925,6 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast, lang }:
       return
     }
     if (suggestion.action === 'demote') {
-      if (!window.confirm(t('refurbConfirmDemote'))) return
       setBusy(true)
       // 墓志铭三问走词典（审计 I3）：原先是硬编码中文字面量，EN/RU 用户的 op_log 里全是中文。
       api<{ id: string }>('forget', {
@@ -953,7 +953,6 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast, lang }:
         toast.push('warning', t('refurbMergeEmpty'))
         return
       }
-      if (!window.confirm(t('refurbConfirmMerge', { n }))) return
       setBusy(true)
       // 透传 candidates：后端 runConsolidation 仅把这些 ids 当合并种子，其它条目仅在与种子相似时被并入。
       const candidates = [suggestion.primaryId, ...suggestion.candidates]
@@ -997,8 +996,28 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast, lang }:
                     </button>
                     <div className={styles.refurbReason} title={suggestion.reason}>{suggestion.reason}</div>
                     <span className={styles.refurbConfidence}>{(suggestion.confidence * 100).toFixed(0)}%</span>
-                    <button type="button" className={`${styles.refurbExec} ${styles.button}`} disabled={busy}
-                      onClick={() => { execute(suggestion) }}>{t('refurbExecute')}</button>
+                    {suggestion.action === 'demote'
+                      ? (
+                        <ConfirmButton className={`${styles.refurbExec} ${styles.button}`} disabled={busy}
+                          label={t('refurbExecute')} confirmLabel={t('refurbConfirmDemote')}
+                          onConfirm={() => { execute(suggestion) }} />
+                      )
+                      : suggestion.action === 'merge'
+                        ? suggestion.candidates.length + 1 < 2
+                          ? (
+                            <button type="button" className={`${styles.refurbExec} ${styles.button}`} disabled={busy}
+                              onClick={() => { toast.push('warning', t('refurbMergeEmpty')) }}>{t('refurbExecute')}</button>
+                          )
+                          : (
+                            <ConfirmButton className={`${styles.refurbExec} ${styles.button}`} disabled={busy}
+                              label={t('refurbExecute')}
+                              confirmLabel={t('refurbConfirmMerge', { n: suggestion.candidates.length + 1 })}
+                              onConfirm={() => { execute(suggestion) }} />
+                          )
+                        : (
+                          <button type="button" className={`${styles.refurbExec} ${styles.button}`} disabled={busy}
+                            onClick={() => { execute(suggestion) }}>{t('refurbExecute')}</button>
+                        )}
                   </div>
                   {primary !== null && (
                     <button type="button" className={styles.refurbPreview} title={t('refurbPreviewOpen')}

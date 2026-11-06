@@ -45,13 +45,17 @@ interface CorridorEdge {
   readonly type: string
 }
 
-/** 房间色板：5 个语义色相（按 kind 分组）。导出供宿主面板的房间索引条共用同一色源。 */
-export const KIND_PALETTE: Readonly<Record<string, string>> = {
-  fact: '#5b8def',
-  preference: '#f0a85c',
-  decision: '#9b6bd9',
-  episode: '#3cb489',
-  skill: '#e26b86',
+/**
+ * 房间色板：只给 CSS 变量名，色值本身由 panel.module.css 的 --room-* 定义。
+ * 单一事实源：pills、房间索引、平面图、关系图、时间螺旋全都读同一份色值，
+ * 暗色模式换色时不必再改 JS 里的十六进制。
+ */
+export const KIND_COLOR: Readonly<Record<string, string>> = {
+  fact: 'var(--room-fact)',
+  preference: 'var(--room-preference)',
+  decision: 'var(--room-decision)',
+  episode: 'var(--room-episode)',
+  skill: 'var(--room-skill)',
 }
 
 /** 边视觉语义。dash 显式允许 undefined：exactOptionalPropertyTypes 下字面量表无需逐项删键。 */
@@ -191,7 +195,7 @@ export function FloorplanMap({ nodes, onOpenRoom, t }: {
   const boxes = useMemo(() => roomBoxes(nodes), [nodes])
 
   const renderRoom = (box: RoomBox): ReactElement => {
-    const color = KIND_PALETTE[box.kind] ?? '#7d8590'
+    const color = KIND_COLOR[box.kind] ?? 'var(--dsw-alias-label-tertiary)'
     const hovered = hoverKind === box.kind
     const filled = Math.min(box.count, ROOM_CAPACITY)
     const pipSize = 12
@@ -401,7 +405,7 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
         {hallStrip()}
         {/* 房间外壳 + 门牌（与平面图同款） */}
         {boxes.map(box => {
-          const color = KIND_PALETTE[box.kind] ?? '#7d8590'
+          const color = KIND_COLOR[box.kind] ?? 'var(--dsw-alias-label-tertiary)'
           const hovered = hoverRoom === box.kind
           return (
             <g key={box.kind} onMouseEnter={() => { setHoverRoom(box.kind) }}
@@ -444,7 +448,7 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
         {hallLabel(t)}
         {/* 房间里的记忆点 */}
         {positions.map((n, index) => {
-          const color = KIND_PALETTE[n.kind] ?? '#7d8590'
+          const color = KIND_COLOR[n.kind] ?? 'var(--dsw-alias-label-tertiary)'
           const isSelected = selectedId === n.id
           const isHovered = hoverId === n.id
           const faded = isFaded(n.id)

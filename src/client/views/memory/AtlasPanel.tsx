@@ -9,7 +9,7 @@ import styles from '../../panel.module.css'
 import spiralStyles from '../../spiral.module.css'
 import { api } from '../../rpc.ts'
 import { usePersistedState } from '../../UiStorage.ts'
-import { CorridorMap, EDGE_STYLE, FloorplanMap, KIND_PALETTE } from '../../CorridorMap.tsx'
+import { CorridorMap, EDGE_STYLE, FloorplanMap, KIND_COLOR } from '../../CorridorMap.tsx'
 import { SpiralMap, type SpiralRecord } from '../../SpiralMap.tsx'
 import { EmptyState, kindLabel, type T } from '../../ui/panel-kit.tsx'
 
@@ -123,12 +123,12 @@ function RoomIndexAside({ t, nodes, rooms, onOpenRoom, edges }: {
       {rooms.map(room => (
         <button key={room.kind} type="button" className={styles.roomIndexRow}
           onClick={() => onOpenRoom(room.kind)}>
-          <span className={styles.roomSwatch} style={{ background: KIND_PALETTE[room.kind] ?? '#7d8590' }} aria-hidden="true" />
+          <span className={styles.roomSwatch} style={{ background: KIND_COLOR[room.kind] ?? 'var(--dsw-alias-label-tertiary)' }} aria-hidden="true" />
           <span className={styles.roomIndexName}>{kindLabel(t, room.kind)}</span>
           <span className={styles.roomIndexMeta}>
             <span className={styles.roomBar} aria-hidden="true">
               <span className={styles.roomBarFill}
-                style={{ width: `${String(Math.min(100, Math.round((room.count / 9) * 100)))}%`, background: KIND_PALETTE[room.kind] ?? '#7d8590' }} />
+                style={{ width: `${String(Math.min(100, Math.round((room.count / 9) * 100)))}%`, background: KIND_COLOR[room.kind] ?? 'var(--dsw-alias-label-tertiary)' }} />
             </span>
             <span className={styles.roomIndexCount}>{String(room.count)} / 9</span>
           </span>

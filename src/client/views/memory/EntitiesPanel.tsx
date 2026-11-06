@@ -57,12 +57,13 @@ const ENTITY_KIND_KEY: Record<string, EngramKey> = {
   other: 'entityKindOther',
 }
 /** 实体类别 → 色点（人物蓝/项目橙/工具青/概念紫/其他灰）。 */
+/** 实体类别 → 色点（CSS 变量名；色值在 panel.module.css 的 --entity-*）。 */
 const ENTITY_DOT: Readonly<Record<string, string>> = {
-  person: '#5b8def',
-  project: '#e08a2e',
-  tool: '#3cb489',
-  concept: '#9b6bd9',
-  other: '#7d8590',
+  person: 'var(--entity-person)',
+  project: 'var(--entity-project)',
+  tool: 'var(--entity-tool)',
+  concept: 'var(--entity-concept)',
+  other: 'var(--entity-other)',
 }
 
 const ENTITY_KINDS = ['person', 'project', 'tool', 'concept', 'other'] as const
@@ -145,7 +146,7 @@ export function EntityView({ t, scope, project, reloadTick }: {
             className={kind === value ? `${styles.chip} ${styles.chipOn}` : styles.chip}
             onClick={() => { setKind(value); setDetail(null); setFacts(null) }}>
             {value !== 'all' && (
-              <span className={styles.chipDot} style={{ background: ENTITY_DOT[value] ?? '#7d8590' }} aria-hidden="true" />
+              <span className={styles.chipDot} style={{ background: ENTITY_DOT[value] ?? 'var(--entity-other)' }} aria-hidden="true" />
             )}
             {label}
           </button>
@@ -191,7 +192,7 @@ export function EntityView({ t, scope, project, reloadTick }: {
             <button key={item.entity?.id ?? `entity-${String(index)}`} type="button" className={styles.entityRow}
               title={item.entity?.id} disabled={detailBusy}
               onClick={() => { if (item.entity !== undefined) openDetail(item.entity.id) }}>
-              <span className={styles.entityDot} style={{ background: ENTITY_DOT[item.entity?.kind ?? ''] ?? '#7d8590' }} aria-hidden="true" />
+              <span className={styles.entityDot} style={{ background: ENTITY_DOT[item.entity?.kind ?? ''] ?? 'var(--entity-other)' }} aria-hidden="true" />
               <span className={styles.entityMain}>
                 <span className={styles.entityName}>{item.entity?.name ?? '—'}</span>
                 {(item.entity?.aliases.length ?? 0) > 0 && (
