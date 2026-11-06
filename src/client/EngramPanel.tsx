@@ -399,13 +399,19 @@ function ReviewBody({ t, recordId, scope, project }: {
   return (
     <div className={styles.reviewGrid}>
       <div>
+        {/* 身份与修订是元信息，排在正文上方一行；正文本身占满整幅。 */}
+        <div className={styles.identityStrip}>
+          <span className={styles.identityItem}>
+            <span className={styles.identityLabel}>{t('identityStable')}</span>
+            <code className={styles.identityCode} title={stableId}>{stableId}</code>
+          </span>
+          <span className={styles.identityItem}>
+            <span className={styles.identityLabel}>{t('identityRevision')}</span>
+            <code className={styles.identityCode} title={record.id}>{record.id}</code>
+          </span>
+        </div>
+        <p className={styles.reviewContent}>{record.content}</p>
         <dl className={styles.attrGrid}>
-          <dt>{t('identityStable')}</dt>
-          <dd><code className={styles.identityCode} title={stableId}>{stableId}</code></dd>
-          <dt>{t('identityRevision')}</dt>
-          <dd><code className={styles.identityCode} title={record.id}>{record.id}</code></dd>
-          <dt>{t('labelContent')}</dt>
-          <dd>{record.content}</dd>
           <dt>{t('labelKind')}</dt>
           <dd><span className={roomPillClass(record.kind)}>{kindLabel(t, record.kind)}</span></dd>
           <dt>{t('labelStatus')}</dt>
