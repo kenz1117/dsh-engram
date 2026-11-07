@@ -2105,6 +2105,7 @@ function RuntimeSection({ t, reloadTick }: {
   reloadTick: number
 }): ReactElement {
   const [version, setVersion] = useState<string | null>(null)
+  const [modes, setModes] = useState<{ readonly ingest?: string | undefined; readonly reflect?: string | undefined } | null>(null)
   const [jobs, setJobs] = useState<JobsView | null>(null)
   const [models, setModels] = useState<readonly { id: string; label: string | null; dtype: string; dimensions: number | null }[]>([])
   const [failed, setFailed] = useState<string | null>(null)
@@ -2113,13 +2114,14 @@ function RuntimeSection({ t, reloadTick }: {
   useEffect(() => {
     let cancelled = false
     Promise.all([
-      api<{ pluginVersion: string }>('version'),
+      api<{ pluginVersion: string; ingest?: string; reflect?: string }>('version'),
       api<JobsView>('jobs?limit=20'),
       api<RegistrySnapshot>('registry'),
     ])
       .then(([v, j, r]) => {
         if (cancelled) return
         setVersion(v.pluginVersion)
+        setModes({ ingest: v.ingest, reflect: v.reflect })
         setJobs(j)
         setModels(r.models)
         setFailed(null)
@@ -2148,6 +2150,12 @@ function RuntimeSection({ t, reloadTick }: {
         </dl>
         <p className={styles.sectionHint}>{mismatch ? t('systemVersionDiff') : t('systemVersionOk')}</p>
       </div>
+
+      {modes?.ingest !== undefined && modes.ingest !== 'off' && (modes.reflect ?? 'off') === 'off' && (
+        <div className={`${styles.panelCard} ${styles.degradedCard}`}>
+          <p className={styles.degradedNote}>{t('systemGuardIngestNoReflect')}</p>
+        </div>
+      )}
 
       <div className={styles.panelCard}>
         <div className={styles.cardHead}>

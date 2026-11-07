@@ -491,6 +491,7 @@ export const ru: Record<EngramKey, string> = {
   governanceConflicts: 'Противоречия',
   governanceBeliefs: 'Убеждения',
   systemRuntime: 'Время выполнения',
+  systemGuardIngestNoReflect: 'Ingest включён, но обобщение (reflect) выключено: воспоминания собираются, но не перегоняются — и читаются разрозненно. Задайте reflect: auto или suggest в конфигурации.',
   systemStorage: 'Хранилище',
   systemModels: 'Модели и язык',
   pageHeaderRuntimeSubtitle: 'Версии плагина и панели, очередь устойчивых заданий, состояние модели эмбеддинга.',

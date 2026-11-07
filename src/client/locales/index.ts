@@ -482,6 +482,7 @@ export type EngramKey =
   | 'governanceConflicts'
   | 'governanceBeliefs'
   | 'systemRuntime'
+  | 'systemGuardIngestNoReflect'
   | 'systemStorage'
   | 'systemModels'
   | 'pageHeaderRuntimeSubtitle'

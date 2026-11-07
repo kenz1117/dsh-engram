@@ -593,6 +593,10 @@ export interface RouteDeps {
   readonly dbDir: string
   /** 宿主数据根目录（`$DSH_HOME`）：面板据此说清数据目录在不在 home 之下（#51）。 */
   readonly dshHome: string
+  /** 摄取档位：面板用它提示「只摄取不整理」的组合（#50）。 */
+  readonly ingest: string
+  /** 巩固档位：同上。 */
+  readonly reflect: string
   /** 当前插件版本，写进备份 _meta.json 供恢复端校验。 */
   readonly pluginVersion: string
   /** 房间名的显示语言（服务器侧渲染的文本用它取词，如镜像 _index.md）。 */
@@ -1495,8 +1499,13 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             return
           }
           if (req.method === 'GET' && route === 'version') {
-            // 版本握手（审计 F8）：面板比对 client/server 版本，偏斜（客户端已热更、后端进程旧）时挂横幅提示重启。
-            json(res, 200, { pluginVersion: deps.pluginVersion })
+            // 版本握手（审计 F8）：面板比对 client/server 版本，偏斜（客户端已热增、后端进程旧）时挂横幅提示重启。
+            // ingest/reflect 供面板提示「只摄取不整理」的组合（#50）；旧客户端忽略未知字段。
+            json(res, 200, {
+              pluginVersion: deps.pluginVersion,
+              ingest: deps.ingest,
+              reflect: deps.reflect,
+            })
             return
           }
           if (req.method === 'GET' && route === 'registry') {

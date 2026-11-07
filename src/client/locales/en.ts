@@ -480,6 +480,7 @@ export const en: Record<EngramKey, string> = {
   governanceConflicts: 'Conflicts',
   governanceBeliefs: 'Beliefs',
   systemRuntime: 'Runtime',
+  systemGuardIngestNoReflect: 'Ingest is on but consolidation (reflect) is off: memories are collected but never distilled — they read scattered. Set reflect: auto or suggest in the config.',
   systemStorage: 'Storage',
   systemModels: 'Models & language',
   pageHeaderRuntimeSubtitle: 'Plugin and panel versions, the durable job queue, embedding model status.',
