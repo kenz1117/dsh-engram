@@ -1061,6 +1061,70 @@ describe('dsh-engram real Loader composition', () => {
     }
   })
 
+  it('suggest 档的待巩固提醒骑画像包注入，engram_reflect 消费后消失（#50）', { timeout: 60_000 }, async () => {
+    // 回归：reflect-pending 只登记不提醒，agent 不知道要调 engram_reflect——
+    // suggest 档的巩固循环从这里断掉，记忆「七零八落」。
+    const loaded = await loadComposition(["    reflect: 'suggest'"], undefined, async (dbDir) => {
+      const store = await openEngramStore(join(dbDir, 'user.db'))
+      await store.audit('reflect-pending', 'AUX', JSON.stringify({ scope: 'user', sessionId: 'sess-old' }))
+      await store.close()
+    })
+    const events: Array<{ type: string; data: unknown; seq: number; time: number }> = [
+      { type: 'request/header', data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4' } } }, seq: 1, time: Date.now() },
+    ]
+    const fakeAgent = {
+      id: 'sess-reflect',
+      session: {
+        id: 'sess-reflect',
+        header: { cwd: process.cwd() },
+        snapshotEvents: () => events,
+      },
+    }
+    const emitter = loaded as unknown as { waterfall: (name: string, ...args: unknown[]) => unknown }
+    const callPreStep = async (step: number): Promise<string> => {
+      const decision = await (emitter.waterfall('agent/pre-step', { agent: fakeAgent, step, turn: 1, signal: new AbortController().signal },
+        async () => ({ kind: 'enter', messages: [] })) as Promise<{ messages: unknown[] }>)
+      return JSON.stringify(decision?.messages ?? [])
+    }
+    const first = await callPreStep(1)
+    expect(first).toContain('巩固待处理')
+
+    // agent 调 engram_reflect 消费掉 pending → 计数归零 → 提醒行随 hash 变化消失。
+    const dbDir = join(root as string, 'engram')
+    const store = await openEngramStore(join(dbDir, 'user.db'))
+    const details = await store.listAuditDetails('reflect-pending')
+    for (const detail of details) await store.clearAudit('reflect-pending', detail)
+    await store.close()
+    const second = await callPreStep(2)
+    expect(second).not.toContain('巩固待处理')
+  })
+
+  it('reflectReminder: false 时不注入待巩固提醒（#50）', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition([
+      "    reflect: 'suggest'",
+      "    reflectReminder: false",
+    ], undefined, async (dbDir) => {
+      const store = await openEngramStore(join(dbDir, 'user.db'))
+      await store.audit('reflect-pending', 'AUX', JSON.stringify({ scope: 'user', sessionId: 'sess-old' }))
+      await store.close()
+    })
+    const events: Array<{ type: string; data: unknown; seq: number; time: number }> = [
+      { type: 'request/header', data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4' } } }, seq: 1, time: Date.now() },
+    ]
+    const fakeAgent = {
+      id: 'sess-reflect-off',
+      session: {
+        id: 'sess-reflect-off',
+        header: { cwd: process.cwd() },
+        snapshotEvents: () => events,
+      },
+    }
+    const emitter = loaded as unknown as { waterfall: (name: string, ...args: unknown[]) => unknown }
+    const decision = await (emitter.waterfall('agent/pre-step', { agent: fakeAgent, step: 1, turn: 1, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] })) as Promise<{ messages: unknown[] }>)
+    expect(JSON.stringify(decision?.messages ?? [])).not.toContain('巩固待处理')
+  })
+
   it('会话压缩后画像重新注入（#32）', { timeout: 60_000 }, async () => {
     // 回归：画像注入原先只在 step===1 执行，会话压缩把注入的快照摘要掉之后，
     // step 永远不再等于 1，常驻画像从此缺席——README 承诺的 always present 失效。
@@ -1190,6 +1254,11 @@ describe('dsh-engram real Loader composition', () => {
     expect(view.dir).toBe(join(root as string, 'engram'))
     expect(view.home.length).toBeGreaterThan(0)
     expect(typeof view.outsideHome).toBe('boolean')
+
+    // version 路由带出 ingest/reflect 档位：面板用它提示「只摄取不整理」的组合（#50）。
+    const version = await call(port, 'GET', '/api/engram/version')
+    expect(version.status).toBe(200)
+    expect(version.json).toMatchObject({ ingest: 'off', reflect: 'off' })
   })
 })
 

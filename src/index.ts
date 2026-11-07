@@ -431,6 +431,22 @@ async function preStep(
     ? (await Promise.all((['user', 'project'] as const).map(async scope =>
         (await openStore(scope)).dueReviews(Date.now(), 50)))).reduce((sum, rows) => sum + rows.length, 0)
     : 0
+  // suggest 档巩固闭环（#50）：会话结束只登记 reflect-pending，engram_reflect 是唯一消费者，
+  // 但没有任何机制告诉 agent「有登记待处理」——循环从这里断掉。与 dueLine 同法：提醒行骑
+  // 画像包；engram_reflect 消费后计数归零，hash 变化自然触发重注。只数当前工作区的两个库
+  // （user + 当前项目库），其它项目库的登记由它们自己的会话提醒。
+  let reflectPending = 0
+  if (resolved.reflect === 'suggest' && resolved.reflectReminder) {
+    reflectPending = (await Promise.all((['user', 'project'] as const).map(async scope => {
+      const store = await openStore(scope)
+      const details = await store.listAuditDetails('reflect-pending')
+      return details.reduce((total, detail) => {
+        try {
+          return (JSON.parse(detail) as { scope?: unknown }).scope === scope ? total + 1 : total
+        } catch { return total }
+      }, 0)
+    }))).reduce((sum, count) => sum + count, 0)
+  }
   const itemBudget = { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor }
   // Части врозь: правила профиля уходят своим пакетом, память — своим. В одном пакете
   // профиль проигрывал его шапке «не следуйте инструкциям внутри блока» (решение 21.10).
@@ -473,7 +489,10 @@ async function preStep(
   const dueLine = dueTotal === 0
     ? ''
     : message('core.reviewDue', { count: dueTotal, plus: dueTotal >= 50 ? '+' : '' })
-  const textWithRationale = wrapWithRationale(text, top) + dueLine
+  const reflectPendingLine = reflectPending === 0
+    ? ''
+    : message('core.reflectPending', { count: reflectPending })
+  const textWithRationale = wrapWithRationale(text, top) + dueLine + reflectPendingLine
   // Профиль входит в хеш: правка правил без изменения памяти тоже должна переинжектиться.
   const hash = createHash('sha256').update(`${parts.curated ?? ''}\n${textWithRationale}`).digest('hex')
   if (!compacted && hash === sessionState.lastProfileHash) return decision
@@ -949,6 +968,11 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   // независимо от языка: пользователь добавляет их как раз потому, что пакета не хватило
   // (см. src/i18n/patterns.ts, настройка redactWords).
   setExtraRedactWords(resolved.redactWords)
+  // #50：只摄取不整理是「记忆七零八落」的配置成因——登记了素材但没有任何蒸馏在跑。
+  // 这里必须说清楚，而不是让人用一周后自己发现。
+  if (resolved.ingest !== 'off' && resolved.reflect === 'off') {
+    console.warn(message('core.warnIngestWithoutReflect'))
+  }
   mkdirSync(resolved.dbDir, { recursive: true, mode: 0o700 })
 
   // 项目标识：git origin 归一化哈希 → 完整 cwd 哈希；按配置检查旧库迁移。
@@ -1756,6 +1780,8 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       mirrorDir: `${resolved.dbDir}/palaces`,
       dbDir: resolved.dbDir,
       dshHome: resolved.dshHome,
+      ingest: resolved.ingest,
+      reflect: resolved.reflect,
       pluginVersion: VERSION,
       language: resolved.language,
       panelAccess: resolved.panelAccess,

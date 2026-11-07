@@ -480,6 +480,7 @@ export const zh: Record<EngramKey, string> = {
   governanceConflicts: '矛盾',
   governanceBeliefs: '信念',
   systemRuntime: '运行时',
+  systemGuardIngestNoReflect: '摄取已开启但整理（reflect）为关闭：记忆只收集不蒸馏，读起来会是散的。建议在配置里设置 reflect: auto 或 suggest。',
   systemStorage: '存储',
   systemModels: '模型与词典',
   pageHeaderRuntimeSubtitle: '插件与面板版本、持久作业队列、嵌入模型状态。',

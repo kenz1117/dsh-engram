@@ -18,6 +18,7 @@ export const zh = {
   'core.observationsHeader': 'Consolidated beliefs (distilled from multiple stored memories; verify against sources before high-stakes use):',
   'core.observationItem': '- {belief} ({count} sources)',
   'core.reviewDue': '\nPalace review due today: {count}{plus} memories. Use engram_review_queue for active recall (recall beats re-reading).',
+  'core.reflectPending': '\n巩固待处理：有 {count} 组会话登记的记忆还没蒸馏。调用 engram_reflect 整理——只摄取不整理，记忆就是散的。',
   'core.compressSystem': '把记忆条目压缩为更短的一句话表述（每条不超过 40 个字符），保留可跨会话复用的关键信息（事实、偏好、决策、方法）。\n只输出一个 JSON 数组，每项形如 {"id": "原样返回的id", "content": "压缩后表述"}，条目数量与 id 必须与输入一一对应。\n不要输出 JSON 以外的任何内容。',
 
   // ---- Обоснование отбора (selection-rationale) ----
@@ -61,6 +62,7 @@ export const zh = {
   'core.warnDisposeFinalFailed': '[dsh-engram] 会话结束的收尾处理异常（不影响对话）：',
   'core.warnInjectionSnapshotFailed': '[dsh-engram] 注入快照落库失败（不影响对话）：',
   'core.warnReflectFailed': '[dsh-engram] 会话结束的信念巩固异常（{scope}，不影响对话）：',
+  'core.warnIngestWithoutReflect': '[dsh-engram] ingest 开启但 reflect 为 off：记忆只摄取不整理（读起来就是散的）。建议 reflect: auto（或 suggest，靠会话提醒驱动），或定期运行 engram_reflect。',
   'core.warnReflectBatchDropped': '[dsh-engram] 信念巩固丢弃 {count} 条候选（输出预算/解析失败；未被巩固、下次巩固继续取材）',
   'core.warnDecayStartupFailed': '[dsh-engram] 启动衰减调度失败（跳过）：',
   'core.warnDecayPeriodicFailed': '[dsh-engram] 周期衰减调度失败（跳过）：',
@@ -86,6 +88,8 @@ export const en = {
   'core.observationsHeader': 'Consolidated beliefs (distilled from multiple stored memories; verify against sources before high-stakes use):',
   'core.observationItem': '- {belief} ({count} sources)',
   'core.reviewDue': '\nPalace review due today: {count}{plus} memories. Use engram_review_queue for active recall (recall beats re-reading).',
+  'core.reflectPending': '\nConsolidation pending: {count} session registration(s) hold memories not yet distilled. Call engram_reflect to consolidate them — ingested memories stay scattered until reflected.',
+  'core.warnIngestWithoutReflect': '[dsh-engram] ingest is on but reflect is off — memories accumulate without consolidation (they read scattered). Set reflect: auto (or suggest), or run engram_reflect regularly.',
   'core.compressSystem': 'Compress each memory entry into a shorter single-sentence wording (at most 40 characters per entry), keeping the key information that can be reused across sessions (facts, preferences, decisions, methods).\nOutput only one JSON array, each item shaped like {"id": "the id returned verbatim", "content": "the compressed wording"}; the number of items and the ids must correspond one-to-one with the input.\nDo not output anything other than JSON.',
 
   // ---- Selection rationale (selection-rationale) ----

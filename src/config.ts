@@ -126,6 +126,8 @@ export interface EngramConfig {
   injectItemBudgetFloor?: number
   /** 证据门收尾提醒：会话存在未判定检索批次时在下一步开始前注入提醒；默认 true。 */
   assessReminder?: boolean
+  /** reflect: suggest 时，会话开始提醒 agent 调用 engram_reflect 整理待巩固的记忆；默认 true。 */
+  reflectReminder?: boolean
   /** 检索排序 recency 因子权重（0 关闭）；默认 0.2。 */
   rankRecencyWeight?: number
   /** 检索排序 proof 因子权重（0 关闭）；默认 0.1。 */
@@ -253,6 +255,7 @@ export interface ResolvedEngramConfig {
   readonly injectItemBudgetDecay: number
   readonly injectItemBudgetFloor: number
   readonly assessReminder: boolean
+  readonly reflectReminder: boolean
   readonly rankRecencyWeight: number
   readonly rankProofWeight: number
   readonly queryRewrite: boolean
@@ -289,7 +292,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'ingest', 'reflect', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
   'injectTokenBudget', 'injectItemBudgetStart', 'injectItemBudgetDecay', 'injectItemBudgetFloor',
   'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
-  'autoSlot', 'reviewScheduling', 'assessReminder', 'palaceChangeWindowSec', 'panelAccess',
+  'autoSlot', 'reviewScheduling', 'assessReminder', 'reflectReminder', 'palaceChangeWindowSec', 'panelAccess',
   'historyBackfillDays', 'historyBackfillMaxTurnsPerSession', 'historyBackfillMaxTotalTurns',
   'historyBackfillIncludeSubagents', 'historyBackfillIncludeSeeded', 'historyBackfillIncludeNoCwd',
   'jev', 'embedder', 'language', 'redactWords',
@@ -329,6 +332,7 @@ export const Config: z<EngramConfig> = z.object({
   panelAccess: z.string() as unknown as z<PanelAccessConfig>,
   palaceChangeWindowSec: z.number().step(1).min(5).max(600),
   assessReminder: z.boolean(),
+  reflectReminder: z.boolean(),
   historyBackfillDays: z.number().step(1).min(0).max(3650),
   historyBackfillMaxTurnsPerSession: z.number().step(1).min(1).max(500),
   historyBackfillMaxTotalTurns: z.number().step(1).min(1).max(5000),
@@ -569,6 +573,7 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     injectItemBudgetDecay: config.injectItemBudgetDecay ?? 0.9,
     injectItemBudgetFloor: config.injectItemBudgetFloor ?? 24,
     assessReminder: config.assessReminder ?? true,
+    reflectReminder: config.reflectReminder ?? true,
     rankRecencyWeight: config.rankRecencyWeight ?? 0.2,
     rankProofWeight: config.rankProofWeight ?? 0.1,
     queryRewrite: config.queryRewrite ?? true,

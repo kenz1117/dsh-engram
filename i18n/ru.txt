@@ -5,6 +5,8 @@
 // \/ → косая черта в начале левой части. Строка с // в начале — комментарий.
 
 // ==== core ====
+\nConsolidation pending: {count} session registration(s) hold memories not yet distilled. Call engram_reflect to consolidate them — ingested memories stay scattered until reflected.	Ожидает обобщения: {count} регистраций сессий с ещё не перегнанными воспоминаниями. Вызовите engram_reflect — без обобщения память остаётся разрозненной.
+[dsh-engram] ingest is on but reflect is off — memories accumulate without consolidation (they read scattered). Set reflect: auto (or suggest), or run engram_reflect regularly.	[dsh-engram] ingest включён, но reflect выключен — воспоминания копятся без обобщения (и читаются разрозненно). Включите reflect: auto (или suggest), либо регулярно вызывайте engram_reflect.
 User memory profile (dsh-engram, cross-session) — Grand Hall (always present):	Профиль памяти пользователя (dsh-engram, межсессионный) — Большой зал (присутствует всегда):
 Use engram_search to recall details (pass room to search inside one room); use engram_save to persist new facts.	Для подробностей используйте engram_search (room ищет внутри одной комнаты); для сохранения новых фактов — engram_save.
 Curated profile (user-maintained via engram_profile_edit; authoritative over derived facts):	Курируемый профиль (ведётся пользователем через engram_profile_edit; главнее выведенных фактов):

@@ -430,6 +430,7 @@ select.input { padding-right: 28px; appearance: none; }
 .benchBar .button { flex: none; }
 .benchMeta { display: flex; gap: var(--space-3); align-items: baseline; flex-wrap: wrap; margin-bottom: var(--space-2); color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); }
 .degradedNote { color: var(--dsw-alias-state-warn-primary); }
+.degradedCard { border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, var(--dsw-alias-border-l2)); }
 .benchEmpty { color: var(--dsw-alias-label-tertiary); font-size: var(--fs-body); padding: var(--space-2) 0; }
 /* 命中行：与陈展列表同一行式语言（分隔线 + hover 底纹），不再每条一张小卡。 */
 .benchList { display: flex; flex-direction: column; margin-top: var(--space-2); border-top: 1px solid var(--dsw-alias-border-l1); }
