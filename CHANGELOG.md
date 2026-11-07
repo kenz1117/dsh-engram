@@ -8,6 +8,12 @@
 
 > **v0.x 阶段的版本约定**：`0.MINOR.PATCH` 里的 `MINOR` 是**功能批次**而不是稳定性刻度——0.7.x 整批是「记忆宫殿信息架构」，0.8.x 整批是「面板重构」，0.9.x 整批是「稳定性与可审计」，0.10.x 整批是「多语言与数据驱动」。同一批次内的 `PATCH` 位通常是修复与加固。
 
+## [0.13.9] - 2026-11-07
+
+### Fixed
+
+- **弱网安装不再整体失败（#50 的根因面，保证用户先能安装）**：本地嵌入引擎（transformers.js + onnxruntime 原生件，解包约 307MB）从 `dependencies` 移到 `optionalDependencies`——pnpm/npm 对 optional 的失败是宽容的（对照实验：不存在的包直接跳过、install exit 0）。网络停摆时安装跳过重型引擎并照常完成，插件的记忆写入、关键词检索、面板与全部治理能力**不受影响**；只是语义检索暂缺，已有的降级路径全程显式：启动 `core.warnEmbedderUnavailable` 告警、`vectors-missing` 审计、面板「系统 · 运行时」模型列表为空。网络稳定时更新/重装插件补上引擎，存量记忆跑 `pnpm backfill` 补算向量。`backfill-embeddings.mjs` 对引擎缺位给出人话指引而非裸栈。
+
 ## [0.13.8] - 2026-11-07
 
 ### Added
