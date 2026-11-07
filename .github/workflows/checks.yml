@@ -48,6 +48,11 @@ jobs:
       # для CI. Шаг ловит «разметка берёт класс, которого нет в стилях».
       - name: css class coverage
         run: node scripts/check-css-classes.mjs
+      # Вёрстка не проверяется ни одним гейтом выше: 0.13.x выпустил семь патчей
+      # по скриншотам пользователя, пока не появился этот шаг. ubuntu-latest
+      # несёт Google Chrome предустановленным — headless-замер работает на CI.
+      - name: panel layout invariants
+        run: node scripts/verify-panel-layout.mjs
       # Packaging smoke (audit 2026-10-18 §7): 0.8.0–0.8.14 shipped a tarball a
       # clean profile could not install (peers not optional — PR #23). Two cheap
       # guards that run without the peers:
