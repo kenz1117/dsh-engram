@@ -692,7 +692,10 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlCountOps = db.prepare('SELECT op, COUNT(*) AS n FROM op_log WHERE at >= ? GROUP BY op')
   const sqlRevisionInsert = db.prepare('INSERT INTO nodes_revisions (node_id, memory_id, content, kind, importance, superseded_at) VALUES (?, ?, ?, ?, ?, ?)')
   const sqlRevisionsById = db.prepare('SELECT content, kind, importance, superseded_at FROM nodes_revisions WHERE memory_id = ? ORDER BY superseded_at DESC, rowid DESC')
-  const sqlTopActive = db.prepare("SELECT * FROM nodes WHERE scope = ? AND status = 'active' ORDER BY importance DESC, confidence DESC LIMIT ?")
+  // #53：第二排序键不能是 confidence——0.12.0 起写入端只剩 write（缺省 0.5）与 distill（簇均值，
+  // 实测落 0.3~0.35）两条缺省路径，confidence 的取值分布近似「谁写的」而不是质量判据。
+  // created_at DESC 给同 importance 的并列一个 recency 次序，id ASC 让 LIMIT 截断点落在并列区时结果确定。
+  const sqlTopActive = db.prepare("SELECT * FROM nodes WHERE scope = ? AND status = 'active' ORDER BY importance DESC, created_at DESC, id ASC LIMIT ?")
   const sqlEdgeUpsert = db.prepare('INSERT OR IGNORE INTO edges (from_id, to_id, type, created_at) VALUES (?, ?, ?, ?)')
   const sqlNeighbors = db.prepare(`SELECT * FROM edges WHERE from_id IN (SELECT value FROM json_each(?))
     AND type IN ('supports','refines','related') LIMIT ?`)

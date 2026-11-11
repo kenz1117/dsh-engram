@@ -8,6 +8,12 @@
 
 > **v0.x 阶段的版本约定**：`0.MINOR.PATCH` 里的 `MINOR` 是**功能批次**而不是稳定性刻度——0.7.x 整批是「记忆宫殿信息架构」，0.8.x 整批是「面板重构」，0.9.x 整批是「稳定性与可审计」，0.10.x 整批是「多语言与数据驱动」。同一批次内的 `PATCH` 位通常是修复与加固。
 
+## [0.13.10] - 2026-11-11
+
+### Fixed
+
+- **`topActive` 第二排序键从 `confidence` 换成 `created_at DESC, id ASC`（#53）**：蒸馏候选池（30 条）、反思池（300 条）、巩固合并与**会话画像注入**共用的候选查询此前按 `importance DESC, confidence DESC` 排序，但 0.12.0 把「检索曝光 → confidence 增量」拆掉之后，confidence 的写入端只剩两条缺省路径——`engram_save` 缺省 0.5、蒸馏产物继承簇均值（实测落 0.3~0.35）；会真实改它的 `reinforce`/`reportOutcome` 只由主动反馈触发，无任何流程自动调用。同一个 importance 档位里，手写条目恒排在摄取/蒸馏产物前面，候选池与画像注入的实际次序等于「按谁写的排」。换成 `created_at DESC` 给同分并列一个 recency 次序，`id ASC` 让 LIMIT 截断点落在并列区时结果确定（SQLite 不保证无 tiebreak 的返回顺序稳定）。报告人 zhongcrazyx 完成静态分析、SQL 对拍与运行时验证（注入快照与新排序吻合）；测试钉住三件事：旧排序霸榜的高 confidence 旧条目被截掉、同刻并列由 id ASC 决出且与 confidence 无关、重复调用结果一致。
+
 ## [0.13.9] - 2026-11-07
 
 ### Fixed

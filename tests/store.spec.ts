@@ -240,6 +240,46 @@ describe('EngramStore (sqlite)', () => {
     expect(top[0]!.content).toBe('高重要性')
   })
 
+  it('topActive 同 importance 并列时按 created_at DESC, id ASC 决出次序，confidence 不再参与排序（#53）', async () => {
+    vi.useFakeTimers()
+    try {
+      // 同 importance（缺省 0.5），按时间先后写入：r1 最旧且 confidence 最高（模拟手写缺省），
+      // r2/r3 较新且 confidence 低（模拟摄取/蒸馏侧缺省）。旧排序下 r1 会凭 confidence 霸榜。
+      vi.setSystemTime(Date.parse('2026-11-01T10:00:00Z'))
+      const r1 = await store.write({ scope: 'user', kind: 'fact', content: '旧·高confidence', confidence: 0.9 })
+      vi.setSystemTime(Date.parse('2026-11-02T10:00:00Z'))
+      const r2 = await store.write({ scope: 'user', kind: 'fact', content: '中·低conf', confidence: 0.2 })
+      vi.setSystemTime(Date.parse('2026-11-03T10:00:00Z'))
+      const r3 = await store.write({ scope: 'user', kind: 'fact', content: '新·低conf', confidence: 0.2 })
+      // 同秒（但不同毫秒戳）写入两条同 importance 条目：created_at 并列，只剩 id ASC 可决出次序。
+      vi.setSystemTime(Date.parse('2026-11-03T10:00:01Z'))
+      const tieA = await store.write({ scope: 'user', kind: 'fact', content: '并列A', confidence: 0.2 })
+      const tieB = await store.write({ scope: 'user', kind: 'fact', content: '并列B', confidence: 0.9 })
+      // 新排序（importance DESC, created_at DESC, id ASC）下第 3 位起是 r3/r2，r1 最旧被截掉；
+      // 旧排序（confidence DESC）会让 r1（conf 0.9）与并列B（0.9）霸榜——此断言可区分新旧。
+      // id ASC 决出并列胜者（tieB conf 0.9 更高，旧排序下必胜——新排序只看 id）
+      const tieWinner = String(tieA.id) < String(tieB.id) ? tieA : tieB
+      const first = await store.topActive('user', 3)
+      // r1 最旧被截掉；并列对两条都入池（同 created_at 整组都在截断点之前）。
+      // 旧排序（confidence DESC）会让 r1（conf 0.9）与并列B（0.9）霸榜——此断言可区分新旧。
+      expect(first.some(r => r.id === r1.id)).toBe(false)
+      expect(new Set(first.map(r => r.id))).toEqual(new Set([tieA.id, tieB.id, r3.id]))
+      // limit=4 才轮到 r2（第 4 位）；r1 最旧，limit=4 也进不来——新近序整体成立
+      const wider = await store.topActive('user', 4)
+      expect(new Set(wider.map(r => r.id))).toEqual(new Set([tieA.id, tieB.id, r3.id, r2.id]))
+      // 并列胜者由 id ASC 决出——与 confidence 无关（tieB conf 0.9 更高，旧排序下必胜）
+      expect(first[0]!.id).toBe(tieWinner.id)
+      // LIMIT 截断正落并列区（limit=1）：只取 id 较小者，与 confidence 无关。
+      const head = await store.topActive('user', 1)
+      expect(head.map(r => r.id)).toEqual([tieWinner.id])
+      // 重复调用结果一致（SQLite 无 tiebreak 不保证并列顺序稳定）
+      const again = await store.topActive('user', 3)
+      expect(again.map(r => r.id)).toEqual(first.map(r => r.id))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('importance/confidence 落库前收口到 [0,1]（NaN 取备用值）——审计 P2-14', async () => {
     // 工具层不检查（engram_save 直收模型给的数），库层是最后一道闸：越界值霸榜 topActive。
     const over = await store.write({ scope: 'user', kind: 'fact', content: '越界重要性', importance: 42, confidence: 7 })
