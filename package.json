@@ -54,7 +54,9 @@
   },
   "scripts": {
     "prepare": "node scripts/link-peers.mjs && node scripts/ensure-build.mjs",
-    "bundle": "tsdown",
+    "bundle": "node scripts/copy-engine.mjs && tsdown",
+    "copy-engine": "node scripts/copy-engine.mjs",
+    "prepack": "node scripts/copy-engine.mjs",
     "watch": "tsdown --watch",
     "test": "vitest run",
     "lint": "biome check src tests",
@@ -123,16 +125,15 @@
       "optional": true
     }
   },
-  "optionalDependencies": {
-    "@huggingface/transformers": "^4.3.2"
-  },
   "devDependencies": {
     "@biomejs/biome": "^2.6.5",
+    "@huggingface/transformers": "4.3.2",
     "@types/node": "^26.6.6",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitest/coverage-v8": "^5.1.0",
     "lightningcss": "^1.32.0",
+    "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
     "tsdown": "^0.23.5",
     "typescript": "^7.0.2",
     "vite": "^8.3.6",

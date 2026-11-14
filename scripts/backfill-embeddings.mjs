@@ -177,29 +177,27 @@ function findDatabases(dbDir) {
 }
 
 /**
- * 建本地嵌入器：transformers.js + q8 量化权重，与插件默认路径一致。
+ * 建本地嵌入器：随包 WASM 引擎 + q8 量化权重，与插件默认路径一致。
  * @param {{model: string, pooling: 'mean' | 'cls', cacheDir: string}} options 嵌入参数。
  * @returns {Promise<(texts: string[]) => Promise<Float32Array[]>>} 批量取向量。
  */
 async function createEmbedder(options) {
-  // 动态 import：--help 与参数错误不加载模型运行时。
-  // 引擎是 optionalDependencies：弱网安装可能被跳过。这里必须说清发生了什么、
-  // 怎么补，而不是抛一段裸栈。
-  let transformers
+  // 动态 import：--help 与参数错误不加载引擎运行时。
+  // 0.13.11 引擎出树：装载器随包在 lib/local.js（插件入口的导出面是宿主契约，
+  // 嵌入器不在其上）。引擎目录缺失/不完整时 createLocalEmbedder 抛
+  // EMBEDDER_DOWNLOAD_FAILED（人话文案指引用户重装插件）；这里只补构建产物
+  // 缺失（源码安装没跑 pnpm bundle）的情形。
+  let embedder
   try {
-    transformers = await import('@huggingface/transformers')
+    ({ createLocalEmbedder } = await import(new URL('../lib/local.js', import.meta.url)))
   } catch {
-    throw new Error(`本地嵌入引擎未随插件安装（弱网安装可能跳过 optionalDependencies）。请网络稳定时更新/重装插件，或手动执行：pnpm add @huggingface/transformers --filter "@kenz1117/dsh-engram"`)
+    throw new Error('嵌入器装载器 lib/local.js 缺失——从源码安装请先运行 pnpm bundle，或直接重装插件')
   }
-  const { env, pipeline } = transformers
-  env.cacheDir = options.cacheDir
-  // 下载端点可经 HF_ENDPOINT 覆盖（镜像）；模型已在缓存时不会访问网络。
-  if (process.env.HF_ENDPOINT) env.remoteHost = process.env.HF_ENDPOINT
-  const extractor = await pipeline('feature-extraction', options.model, { dtype: 'q8' })
-  return async texts => {
-    const output = await extractor([...texts], { pooling: options.pooling, normalize: true })
-    return output.tolist().map(list => new Float32Array(list))
-  }
+  return await createLocalEmbedder(options.cacheDir, process.env.HF_ENDPOINT, {
+    id: options.model,
+    pooling: options.pooling,
+    dtype: 'q8',
+  })
 }
 
 /**

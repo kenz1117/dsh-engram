@@ -1,0 +1,60 @@
+name: engine-smoke
+
+# 引擎出树（0.13.11）的发布面冒烟：真实走 build → npm pack → 临时目录安装 →
+# 从安装形态的 lib/local.js 驱动随包 WASM 引擎，embed 两条中文文本并断言
+# 512 维、模长≈1。源码形态的单元测试覆盖不了「打包后的路径推导」，这道门专门补它。
+#
+# windows-latest 是主战场（弱网机器与桌面宿主多在 Windows），ubuntu 作行为对照。
+# huggingface.co 可达性存疑：scripts/engine-smoke.mjs 优先 https://hf-mirror.com/，
+# 10s 探测失败自动回退默认端点。模型冷下载（~24MB）+ 首次装载是烟测的主体，
+# 15 分钟 job 上限给足了余量。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/embedder/**'
+      - 'scripts/copy-engine.mjs'
+      - 'scripts/engine-smoke.mjs'
+      - 'scripts/clientBundle.ts'
+      - 'tsdown.config.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/engine-smoke.yml'
+  pull_request:
+    paths:
+      - 'src/embedder/**'
+      - 'scripts/copy-engine.mjs'
+      - 'scripts/engine-smoke.mjs'
+      - 'scripts/clientBundle.ts'
+      - 'tsdown.config.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/engine-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      # pnpm 版本单一来源 = package.json 的 packageManager 字段（见 checks.yml 同款注释）。
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      # --ignore-scripts：跳过 prepare（ensure-build 会在缺 peers 的机器上触发构建，
+      # 这里显式分步）。hosted runner 没有 @deepseek-ai/* peers（checks.yml 头注），
+      # 但 tsdown 对 peerDependencies 自动 external、不落盘解析也能打出 lib/——
+      # 0.13.11 实测：无 peers 的 pnpm run bundle 正常产出 lib/index.js 与 lib/local.js。
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm bundle
+      # 打包与安装都在脚本里（npm pack → npm install <tarball> → 真实 embed）。
+      - run: node scripts/engine-smoke.mjs

@@ -8,6 +8,23 @@
 
 > **v0.x 阶段的版本约定**：`0.MINOR.PATCH` 里的 `MINOR` 是**功能批次**而不是稳定性刻度——0.7.x 整批是「记忆宫殿信息架构」，0.8.x 整批是「面板重构」，0.9.x 整批是「稳定性与可审计」，0.10.x 整批是「多语言与数据驱动」。同一批次内的 `PATCH` 位通常是修复与加固。
 
+## [Unreleased]
+
+### Changed
+
+- **引擎出树（#50/#54 的根治）：嵌入引擎从安装树整体移除，改用随包分发的纯 WASM 引擎**。此前本地语义检索依赖 `optionalDependencies` 里的 `@huggingface/transformers`（内部精确钉死 `onnxruntime-node` 1.30.0 原生件，解包约 300MB），桌面宿主的市场更新是「先删后装 + 限时」——弱网机器的 pnpm store 永远填不满这个百 MB 包，每次更新都被限时杀掉。现在：
+  - **安装树里没有任何引擎依赖**：`optionalDependencies` 清空（连带 onnxruntime-node/sharp 等原生件与「允许构建脚本」的诉求一起消失）；发布包从 775KB 变为约 7.5MB（解包约 33MB，其中 28MB 是 ONNX Runtime 的 wasm 二进制），npm/pnpm 安装量级回到秒级，弱网更新不再有可被限时杀掉的大件。
+  - **技术路线**：transformers.js 的 **web 构建** + 预注入的 onnxruntime-web 纯 wasm 后端（`globalThis[Symbol.for('onnxruntime')]` 四步注入、wasm 二进制经 `wasmBinary` 本地注入不走红网络加载、模型缓存经自实现的 Web Cache API fs shim 落盘），全部经 spike 在 Node 下实跑验证后落进 `src/embedder/engine.ts` + `src/embedder/engine-cache.ts`。引擎文件由 `scripts/copy-engine.mjs` 从 devDependencies 拷进 `lib/engine/` 随包分发（`pnpm bundle` 与 `prepack` 都会执行，publish 不可能带不出引擎）。
+  - **性能代价（如实告知）**：WASM 单线程推理约 **90ms/条**（原生 onnxruntime-node 约 10-20ms/条）；全量回填 3000 条记忆约 **7 分钟**。检索路径单条嵌入占比小，日常使用体感差异有限；批量回填建议挂后台跑。
+  - **存量向量完全有效**：模型、量化（q8）、池化（mean）与此前一致，向量逐位相同——**不需要 backfill**，升级后语义检索直接可用（模型文件缓存也沿用原目录）。
+  - **弱网行为变化**：引擎不再可能「装不上」（它就在包里）；失败面只剩模型下载——首次使用需联网下载模型文件（q8 约 24MB，端点可配镜像），失败仍走既定的纯关键词降级链。引擎文件若真缺失（安装被安全软件截断等），报错从裸栈改为指明「引擎未随包，请重装插件」的人话（zh/en/ru 三语齐备）。
+- **`lib/local.js` 新构建入口**：嵌入器装载器单独成包（`tsdown.config.ts` 的 companions 构建）——插件入口 `lib/index.js` 的导出面是宿主契约（name/apply/inject），嵌入器不能挂上去；`scripts/backfill-embeddings.mjs` 改经它装载引擎（原先直接 `import('@huggingface/transformers')` 的路径随出树一并移除）。
+- **devDependencies 变化**：新增 `@huggingface/transformers@4.3.2` 与 `onnxruntime-web@1.31.0-dev.20260914-8d85527a0`（精确版本，后者与 transformers 4.3.2 内部钉死完全一致——工厂 mjs 与 wasm 二进制必须配套），`pnpm-lock.yaml` 已同步刷新。二者只在构建机存在，用户安装树无感。
+
+### Added
+
+- **引擎烟测门（`scripts/engine-smoke.mjs` + `.github/workflows/engine-smoke.yml`）**：真实走 build → npm pack → 临时目录安装 → 从安装形态的 `lib/local.js` 驱动随包引擎 embed 两条中文文本（断言 512 维、模长≈1）；windows-latest（主）+ ubuntu-latest（对照），模型端点优先 hf-mirror.com、10s 探测失败回退默认端点，15 分钟 job 上限。paths 过滤只在嵌入器/引擎/构建配置变动时触发。本地复现：`pnpm bundle && node scripts/engine-smoke.mjs`（本地反复重跑可加 `--keep-cache` 复用模型缓存，不吃模型端点的网络抖动；CI 保持冷路径）。
+
 ## [0.13.10] - 2026-11-11
 
 ### Fixed

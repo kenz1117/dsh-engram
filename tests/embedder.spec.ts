@@ -6,6 +6,8 @@ import { createLocalEmbedder } from '../src/embedder/local.ts'
 
 // 需要下载真实模型（q8 约 50MB）：ENGRAM_E2E=1 且模型端点可达时执行。
 // 端点经 HF_ENDPOINT 覆盖（网络受限环境配镜像，如 https://hf-mirror.com）。
+// 0.13.11 起引擎随包在 lib/engine/：跑之前先 `pnpm bundle`（或把
+// DSH_ENGRAM_ENGINE_DIR 指到已有引擎目录），否则报引擎缺位。
 const endpoint = process.env.HF_ENDPOINT ?? 'https://huggingface.co'
 const shouldRun = process.env.ENGRAM_E2E === '1'
 const reachable = shouldRun
