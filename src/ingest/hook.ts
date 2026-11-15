@@ -661,8 +661,9 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
       // 四态处置（嵌入可用时）：复述并入强化既有条目（MERGE，不新建）；
       // 疑似矛盾/修正落库并建 contradicts 边待裁决（DEFER）；其余 ACCEPT。
       const vector = embedder === undefined ? undefined : (await embedder.embed([content]))[0]
-      // judge + content 成对提供时，DEFER 模糊带（0.88-0.92 之外按阈值）交 Jev 三路裁决；失败静默降级回 defer。
-      const decision = await decideWrite(target, kind, vector, judge === undefined ? {} : { judge, content })
+      // judge 在场时 DEFER 模糊带（0.88-0.92 之外按阈值）交 Jev 三路裁决，失败静默降级；
+      // judge 缺席时 content 仍要带上——带内免 LLM 兜底（#55）靠它与既有条目比字面重叠。
+      const decision = await decideWrite(target, kind, vector, { ...(judge === undefined ? {} : { judge }), content })
       if (decision.disposition === 'merge') {
         await applyMerge(target, decision, content)
         await linkEntities(decision.into.id)

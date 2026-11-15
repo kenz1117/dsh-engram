@@ -447,9 +447,11 @@ describe('след сорванного решения Jev в журнале', (
   const embedding = new Float32Array(4).fill(0.5)
 
   it('молчание Jev в模糊带 оставляет строку с причиной и вопросом', async () => {
+    // Содержимое непересекающееся: формулировки с высокой лексической близостью (#55)
+    // после отказа Jev уходят в безмашинное слияние, здесь же проверяется именно defer.
     const decision = await decideWrite(
       auditStore(makeRecord('память A')), 'fact', embedding,
-      { judge: fakeJudge(new Error('network down')), content: 'память B' },
+      { judge: fakeJudge(new Error('network down')), content: 'целиком иная запись' },
     )
     // Запись не сломалась: решение как раньше — defer.
     expect(decision).toEqual({ disposition: 'defer', neighbor: makeRecord('память A'), similarity: 0.9 })

@@ -186,6 +186,12 @@ export interface EngramStore {
    */
   attachEmbeddings(entries: readonly { readonly id: MemoryId; readonly embedding: Float32Array }[]): Promise<number>
   /**
+   * 按 id 批量读存储向量（注入端折叠用，#55）；id 取稳定逻辑身份（memoryId），缺向量
+   * 或条目缺位时静默缺位（不进结果 Map）。读取保持读取：不影响 confidence/accessCount/
+   * lastAccessedAt，也不记操作日志。
+   */
+  vectorsFor(ids: readonly MemoryId[]): Promise<ReadonlyMap<MemoryId, Float32Array>>
+  /**
    * Переписать векторы в таблицах объявления схемы (`registry/schema.json`): перевод
    * базы на другую модель и ремонт записей без вектора — одна и та же операция, потому
    * что обе меняют ровно поле вектора у названных строк.

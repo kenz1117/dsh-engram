@@ -381,8 +381,9 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     judge: MemoryJudge | undefined,
   ): Promise<WriteOutcome> {
     const { embedding } = item
-    // judge + content 成对提供时，DEFER 模糊带交 Jev 三路裁决；未注入 judge 时行为与纯规则四态一致。
-    const decision = await decideWrite(store, item.kind, embedding, judge === undefined ? {} : { judge, content: item.content })
+    // judge 在场时 DEFER 模糊带交 Jev 三路裁决；judge 缺席时 content 仍要带上——
+    // 带内免 LLM 兜底（#55）靠它与既有条目比字面重叠，纯规则也能并掉改写复述。
+    const decision = await decideWrite(store, item.kind, embedding, { ...(judge === undefined ? {} : { judge }), content: item.content })
     if (decision.disposition === 'merge') {
       const record = await applyMerge(store, decision, item.content)
       return { disposition: 'merge', record, relatedId: decision.into.id, similarity: decision.similarity, candidates: [] }
@@ -1731,11 +1732,11 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         })().catch(() => { /* журнал не влияет на дистилляцию */ })
       }
       const done = message('tool.distillDone', { input: outcome.input, distilled: outcome.distilled, superseded: outcome.superseded })
-      return {
-        text: outcome.vectorsWithout === 0
-          ? done
-          : `${done}\n${message('tool.distillNoVectors', { count: outcome.vectorsWithout })}`,
-      }
+      // 失败可见性：没写向量的产物与被输出预算挡下的取材（#55）都要明说，不能只剩一句「完成」。
+      const lines = [done]
+      if (outcome.vectorsWithout > 0) lines.push(message('tool.distillNoVectors', { count: outcome.vectorsWithout }))
+      if (outcome.failed > 0) lines.push(message('tool.distillFailedLine', { count: outcome.failed }))
+      return { text: lines.join('\n') }
     },
   })
 

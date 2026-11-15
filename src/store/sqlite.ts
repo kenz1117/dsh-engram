@@ -1948,6 +1948,20 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       return attached
     },
 
+    async vectorsFor(ids: readonly MemoryId[]): Promise<ReadonlyMap<MemoryId, Float32Array>> {
+      const vectors = new Map<MemoryId, Float32Array>()
+      for (const id of ids) {
+        if (vectors.has(id)) continue
+        // id 取稳定逻辑身份：优先按 memory_id 定位（active 修订优先），退回按 revision id 直查；
+        // 条目缺位或无向量时静默缺位——调用方把「没向量」当「不可比较」处理。
+        const row = (sqlGetMemory.get(id) ?? sqlGet.get(id)) as unknown as NodeRow | undefined
+        if (row?.embedding != null && row.embedding.byteLength >= Float32Array.BYTES_PER_ELEMENT) {
+          vectors.set(id, blobToVec(row.embedding))
+        }
+      }
+      return vectors
+    },
+
     async rewriteVectors(targets: readonly VectorTarget[]): Promise<number> {
       let written = 0
       withTransaction(() => {
