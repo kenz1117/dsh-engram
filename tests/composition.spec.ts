@@ -1217,6 +1217,73 @@ describe('dsh-engram real Loader composition', () => {
     await store.close()
   })
 
+  it('治理写操作按 body.project 落到选中工作区（#56）', { timeout: 60_000 }, async () => {
+    // 对照组先种进 user 库：不带项目选择器的治理写操作必须照常落进程默认库。
+    const loaded = await loadComposition([], undefined, async (dbDir) => {
+      const store = await openEngramStore(join(dbDir, 'user.db'))
+      const userFirst = await store.write({ scope: 'user', kind: 'fact', content: '治理事实：用户库端口是 3000' })
+      const userSecond = await store.write({ scope: 'user', kind: 'fact', content: '治理事实：用户库端口是 4000' })
+      await store.linkEdge(userFirst.id, userSecond.id, 'contradicts')
+      await store.close()
+    })
+    const port = loaded.webServer.port
+
+    // 造一个真实存在的「工作区」目录（无 git → cwd 全量哈希命名）。
+    const workspacePath = await mkdtemp(join(tmpdir(), 'engram-ws-'))
+    loaded.provide('workspaceRegistry' as never, {
+      list: () => [{ id: 'ws-56', path: workspacePath, title: '治理工作区' }],
+    } as never)
+    const dbName = resolveProjectIdentity(workspacePath).dbName
+    // 项目宫殿里种一对矛盾记忆（先写后关，避免与插件连接并存）。
+    const seeded = await openEngramStore(join(root!, 'engram', dbName))
+    const first = await seeded.write({ scope: 'project', kind: 'fact', content: '治理事实：项目端口是 3000' })
+    const second = await seeded.write({ scope: 'project', kind: 'fact', content: '治理事实：项目端口是 4000' })
+    await seeded.linkEdge(first.id, second.id, 'contradicts')
+    await seeded.close()
+
+    // #56 回归：项目选择器只放 body、不放 query。漏接 adoptBodySelector 时这条
+    // 写操作会 100% 落到进程默认库，并报「条目 xxx 不存在」。
+    const dismissed = await call(port, 'POST', '/api/engram/governance', {
+      action: 'dismiss',
+      firstId: first.id,
+      secondId: second.id,
+      scope: 'project',
+      project: dbName,
+    })
+    expect(dismissed.status).toBe(200)
+    expect((dismissed.json as { ok: boolean }).ok).toBe(true)
+
+    // 改判落在项目库：contradicts 出队、两条记忆都还在、边已换成 related。
+    const queue = await call(port, 'GET', `/api/engram/governance?scope=project&project=${dbName}`)
+    expect(queue.status).toBe(200)
+    expect((queue.json as { items: unknown[] }).items).toHaveLength(0)
+    const list = await call(port, 'GET', `/api/engram/list?scope=project&project=${dbName}&limit=10`)
+    expect(list.status).toBe(200)
+    expect((list.json as { records: { id: string }[] }).records.map(record => record.id))
+      .toEqual(expect.arrayContaining([first.id, second.id]))
+    const verify = await openEngramStore(join(root!, 'engram', dbName))
+    const view = await verify.review(first.id)
+    expect(view?.related.map(id => String(id))).toContain(second.id)
+    await verify.close()
+
+    // 对照：user scope、不带 project 选择器的治理写操作照常落 user 库。
+    const userQueue = await call(port, 'GET', '/api/engram/governance?scope=user')
+    const userPair = (userQueue.json as { items: Array<{ first: { id: string }; second: { id: string } }> }).items[0]
+    expect(userPair).toBeDefined()
+    const userDismissed = await call(port, 'POST', '/api/engram/governance', {
+      action: 'dismiss',
+      firstId: userPair!.first.id,
+      secondId: userPair!.second.id,
+      scope: 'user',
+    })
+    expect(userDismissed.status).toBe(200)
+    expect((userDismissed.json as { ok: boolean }).ok).toBe(true)
+    const userAfter = await call(port, 'GET', '/api/engram/governance?scope=user')
+    expect((userAfter.json as { items: unknown[] }).items).toHaveLength(0)
+
+    await rm(workspacePath, { recursive: true, force: true })
+  })
+
   it('jobs 只读 API 与 review-by-memoryId HTTP 链路', { timeout: 60_000 }, async () => {
     let stableId = ''
     const loaded = await loadComposition(["    reflect: 'auto'"], undefined, async (dbDir) => {

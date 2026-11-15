@@ -124,3 +124,84 @@ describe('distillMemories', () => {
     expect(await store.topActive('user', 10)).toHaveLength(2)
   })
 })
+
+/** 与 finishError 的 max-tokens 同形：isMaxTokensError 按 code 识别。 */
+const MAX_TOKENS_ERROR = Object.assign(new Error('辅助调用输出达到 maxTokens 上限'), { code: 'LLM_MAX_TOKENS' })
+
+describe('distillMemories 分批与输出预算自愈（#55）', () => {
+  const distill = (call: (userText: string) => Promise<string>, logRequests: string[] = []) => distillMemories({
+    store,
+    embedder: undefined,
+    scope: 'user',
+    call: params => call(params.userText),
+    logRequest: data => { logRequests.push(data.userText) },
+    route: ROUTE,
+    signal: new AbortController().signal,
+  })
+  const writeMany = async (count: number) => {
+    for (let i = 0; i < count; i += 1) await store.write({ scope: 'user', kind: 'fact', content: `条目${i}` })
+  }
+
+  it('取材超过单批上限时分批调用：每批一次辅助调用、日志逐批记录', async () => {
+    await writeMany(12) // 10 + 2 → 两批（topActive 新到在前：第一批 条目11..条目2，第二批 条目1、条目0）
+    const logRequests: string[] = []
+    const outcome = await distill(async () => '[]', logRequests)
+    expect(logRequests).toHaveLength(2)
+    // 每批的取材列表只含本批条目（LLM 只见过本批 id）。
+    const sizes = logRequests.map(text => (text.match(/^\[/gm) ?? []).length)
+    expect(sizes).toEqual([10, 2])
+    expect(logRequests[0]).not.toContain('条目0')
+    expect(logRequests[1]).toContain('条目0')
+    // 空数组是合法回答（无可合并簇）：不失败、不计 failed。
+    expect(outcome).toMatchObject({ input: 12, distilled: 0, superseded: 0, failed: 0 })
+    expect(await store.topActive('user', 20)).toHaveLength(12)
+  })
+
+  it('整批输出超预算对半递归重试：两半各自独立调用并照常蒸馏', async () => {
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '甲条目' })
+    const b = await store.write({ scope: 'user', kind: 'fact', content: '乙条目' })
+    let calls = 0
+    const outcome = await distill(async userText => {
+      calls += 1
+      if (calls === 1) throw MAX_TOKENS_ERROR // 整批（2 条）第一次调用超预算
+      // 每半只引用自己批内的 id（LLM 只见过本批）。
+      const ids = [...userText.matchAll(/\[([0-9a-f-]+)\]/g)].map(match => match[1])
+      if (ids.length === 0) return '[]'
+      return JSON.stringify([{ content: '合并产物', kind: 'skill', importance: 0.8, supersedes: ids }])
+    })
+    expect(calls).toBe(3) // 整批 + 两半
+    expect(outcome).toMatchObject({ input: 2, distilled: 2, superseded: 2, failed: 0 })
+    expect((await store.get(a.id))?.status).toBe('archived')
+    expect((await store.get(b.id))?.status).toBe('archived')
+  })
+
+  it('对半到单片仍超输出预算：该条计入 failed 并保持 active，不再空烧', async () => {
+    await writeMany(2)
+    let calls = 0
+    const outcome = await distill(async () => {
+      calls += 1
+      throw MAX_TOKENS_ERROR
+    })
+    expect(calls).toBe(3) // 整批 + 两个单片
+    expect(outcome).toMatchObject({ input: 2, distilled: 0, superseded: 0, failed: 2 })
+    expect(await store.topActive('user', 10)).toHaveLength(2)
+  })
+
+  it('解析失败只丢该批（整批计入 failed），其余批次照常蒸馏', async () => {
+    await writeMany(12) // 第一批 10 条乱输出；第二批 2 条按本批 id 正常合并
+    const outcome = await distill(async userText => {
+      const ids = [...userText.matchAll(/\[([0-9a-f-]+)\]/g)].map(match => match[1])
+      if (ids.length >= 10) return '乱输出'
+      return JSON.stringify([{ content: '尾部合并', kind: 'skill', importance: 0.8, supersedes: ids }])
+    })
+    expect(outcome).toMatchObject({ input: 12, distilled: 1, superseded: 2, failed: 10 })
+    expect(await store.topActive('user', 20)).toHaveLength(11)
+  })
+
+  it('非输出预算错误原样上抛：整次失败由工具层报给模型', async () => {
+    await writeMany(2)
+    await expect(distill(async () => { throw new Error('network down') })).rejects.toThrow('network down')
+    // 失败的取材未被归档。
+    expect(await store.topActive('user', 10)).toHaveLength(2)
+  })
+})

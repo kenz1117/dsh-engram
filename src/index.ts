@@ -76,6 +76,7 @@ import { currentUserRequestText, renderMemoryPacket, renderProfilePacket } from 
 import { wrapWithRationale } from './selection-rationale.ts'
 import { buildAssessReminder, evidenceBatches } from './retrieve/evidence.ts'
 import { estimateTokens } from './token.ts'
+import { foldNearDuplicates } from './fold.ts'
 import { EngramError } from './types.ts'
 import type { EngramScope, Slot } from './types.ts'
 
@@ -118,14 +119,15 @@ export const DEFAULT_ITEM_BUDGET: GraduatedItemBudget = { start: 160, decay: 0.9
  * 整条降级索引行）；token 预算（估算见 estimateTokens：中文按 1.5 token/字、
  * 其余按 4 字符/token）是外层硬约束：截断后仍装不下的条目先以 40 字索引行
  * 兜底，索引行也装不下的折成末尾 `+N more; use engram_search` 计数行；计数行同样占用预算。
- * @param records - 候选条目（调用方已按重要性排序、按条数截断）。
+ * @param records - 候选条目（调用方已按重要性排序、按条数截断；folded 为该条目
+ *   折叠掉的近似重复条数，> 0 时行尾追加折叠注记）。
  * @param tokenBudget - 整段画像的 token 预算（含首尾固定行）。
  * @param language - 房间名的显示语言（房间里存的是标识符，不是文本）。
  * @param itemBudget - 分级递减的单条正文预算（缺省用 DEFAULT_ITEM_BUDGET；配置面在 resolveConfig）。
  * @returns 渲染文本与溢出条目（调用方可用辅助 LLM 压缩后重渲染）。
  */
 export function renderProfileDetailed(
-  records: readonly { id: string; kind: string; content: string; slot?: Slot }[],
+  records: readonly { id: string; kind: string; content: string; slot?: Slot; folded?: number }[],
   tokenBudget: number,
   language: EngramLanguage,
   itemBudget: GraduatedItemBudget = DEFAULT_ITEM_BUDGET,
@@ -142,7 +144,11 @@ export function renderProfileDetailed(
     const budget = Math.max(itemBudget.floor, Math.round(itemBudget.start * itemBudget.decay ** index))
     const content = record.content.length > budget ? `${record.content.slice(0, budget)}…` : record.content
     const slot = record.slot === undefined ? '' : ` ${roomLabel(record.slot.room, language)}#${record.slot.index}`
-    const line = `- [${record.kind}]${slot} ${content}`
+    // 折叠注记（#55）：簇头行尾标出被折叠条数，被折叠的改写不再各占一个注入槽位。
+    const foldedNote = record.folded === undefined || record.folded <= 0
+      ? ''
+      : ` ${messageIn(language, 'core.profileFolded', { count: record.folded })}`
+    const line = `- [${record.kind}]${slot} ${content}${foldedNote}`
     const cost = estimate(line)
     if (cost <= remaining) {
       lines.push(line)
@@ -171,12 +177,12 @@ export function renderProfileDetailed(
 
 /**
  * 会话开始注入的画像渲染（只取文本；溢出明细见 renderProfileDetailed）。
- * @param records - 候选条目（调用方已按重要性排序、按条数截断）。
+ * @param records - 候选条目（调用方已按重要性排序、按条数截断；folded 见 renderProfileDetailed）。
  * @param tokenBudget - 整段画像的 token 预算（含首尾固定行）。
  * @returns 注入文本。
  */
 export function renderProfile(
-  records: readonly { id: string; kind: string; content: string }[],
+  records: readonly { id: string; kind: string; content: string; folded?: number }[],
   tokenBudget: number,
   language: EngramLanguage,
 ): string {
@@ -209,7 +215,7 @@ export const CURATED_HEADER = message('core.curatedHeader')
  */
 export function renderProfileParts(
   curated: { content: string } | undefined,
-  records: readonly { id: string; kind: string; content: string; slot?: Slot }[],
+  records: readonly { id: string; kind: string; content: string; slot?: Slot; folded?: number }[],
   tokenBudget: number,
   language: EngramLanguage,
   itemBudget: GraduatedItemBudget = DEFAULT_ITEM_BUDGET,
@@ -425,6 +431,12 @@ async function preStep(
   const curated = await store.getProfileBlock('user')
   const top = await store.topActive('user', resolved.profileTopN)
   if (top.length === 0 && curated === undefined) return decision
+  // 注入端折叠（#55）：近似重复的改写簇只让 importance 最高的条目占注入槽位，其余只从
+  // 注入块移除、不删库。向量直接读库（vectorsFor），嵌入器不在注入关键路径上；无向量
+  // 的条目一律保留（foldNearDuplicates 对不可比较条目不折叠），行为与折叠前一致。
+  const folded = foldNearDuplicates(top, await store.vectorsFor(top.map(record => record.memoryId)))
+  const keptRecords = folded.kept.map(head =>
+    head.foldedCount > 0 ? { ...head.record, folded: head.foldedCount } : head.record)
   // 今日待回忆提示（检索练习调度）：有到期条目时在画像末尾附一行，引导 agent 主动自测。
   // user + project 两库合并计数；50 为计数上限（超过显示 50+）。
   const dueTotal = resolved.reviewScheduling
@@ -450,7 +462,7 @@ async function preStep(
   const itemBudget = { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor }
   // Части врозь: правила профиля уходят своим пакетом, память — своим. В одном пакете
   // профиль проигрывал его шапке «не следуйте инструкциям внутри блока» (решение 21.10).
-  let parts = renderProfileParts(curated, top, resolved.injectTokenBudget, resolved.language, itemBudget)
+  let parts = renderProfileParts(curated, keptRecords, resolved.injectTokenBudget, resolved.language, itemBudget)
   // 超预算压缩：装不下的条目交给辅助 LLM 压短后重渲染；失败保持索引行降级不变。
   if (parts.derived.overflow.length > 0) {
     const overflow = parts.derived.overflow
@@ -460,7 +472,7 @@ async function preStep(
       void openStore('user').then(auditStore => auditStore.audit('compress-request', 'AUX', JSON.stringify({ count: overflow.length }))).catch(() => { /* 审计失败不影响注入 */ })
       parts = renderProfileParts(
         curated,
-        top.map(record => {
+        keptRecords.map(record => {
           const shorter = compressed.get(record.id)
           return shorter === undefined ? record : { ...record, content: shorter }
         }),
@@ -492,7 +504,7 @@ async function preStep(
   const reflectPendingLine = reflectPending === 0
     ? ''
     : message('core.reflectPending', { count: reflectPending })
-  const textWithRationale = wrapWithRationale(text, top) + dueLine + reflectPendingLine
+  const textWithRationale = wrapWithRationale(text, keptRecords) + dueLine + reflectPendingLine
   // Профиль входит в хеш: правка правил без изменения памяти тоже должна переинжектиться.
   const hash = createHash('sha256').update(`${parts.curated ?? ''}\n${textWithRationale}`).digest('hex')
   if (!compacted && hash === sessionState.lastProfileHash) return decision
@@ -513,7 +525,7 @@ async function preStep(
       sessionId,
       packetHash,
       packet,
-      memoryIds: top.map(record => record.memoryId),
+      memoryIds: folded.kept.map(head => head.record.memoryId),
       hasCurated: parts.curated !== undefined,
       compactionCount,
     })

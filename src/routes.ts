@@ -913,6 +913,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
+            // 治理写操作同样按 body.project 落到选中工作区（#56：漏接导致 100% 落到进程默认库）。
+            adoptBodySelector(body)
             const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')
             const action = body.action
             if (action !== 'dismiss' && action !== 'forget-loser') {

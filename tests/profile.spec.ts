@@ -133,6 +133,32 @@ describe('renderProfileDetailed 溢出明细', () => {
   })
 })
 
+describe('折叠注记（#55）', () => {
+  it('folded > 0 的簇头行尾追加折叠注记（中英两语言）；无折叠不追加', () => {
+    const head = { ...record('id-1', 'fact', '短条目'), folded: 2 }
+    const zh = renderProfileDetailed([head], 1024, 'zh')
+    expect(zh.text).toContain('- [fact] 短条目')
+    expect(zh.text).toContain('（另含 2 条相似条目）')
+    const en = renderProfileDetailed([head], 1024, 'en')
+    expect(en.text).toContain('(+2 folded)')
+    // 无折叠的普通条目不出现注记。
+    const plain = renderProfileDetailed([record('id-2', 'fact', '短条目')], 1024, 'en')
+    expect(plain.text).not.toContain('folded')
+    expect(plain.text).not.toContain('另含')
+  })
+
+  it('折叠注记计入行成本：预算紧张时带注记的整行照常降级为索引行', () => {
+    const head = { ...record('id-1', 'fact', '这是一条比较长的中文记忆条目内容'), folded: 3 }
+    const line = '- [fact] 这是一条比较长的中文记忆条目内容 (+3 folded)'
+    const fits = renderProfileDetailed([head], OVERHEAD + est(line), 'en')
+    expect(fits.text).toContain(line)
+    expect(fits.overflow).toEqual([])
+    // 差 1 token：整行（含注记）装不下，降级为索引行。
+    const tight = renderProfileDetailed([head], OVERHEAD + est(line) - 1, 'en')
+    expect(tight.overflow.map(item => item.id)).toEqual(['id-1'])
+  })
+})
+
 describe('renderProfileParts（профиль и память врозь）', () => {
   it('профиль уходит своей частью, а не внутрь памяти', () => {
     const curatedText = '用户偏好简体中文；拒绝 Emoji。'
