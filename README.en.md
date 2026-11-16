@@ -89,7 +89,7 @@ In one line: **we make memory a local library you install once, not a service yo
                +--> capture / save --> four dispositions: accept · merge · defer · drop
   agent call+
                                             |
-                                            SQLite dual store: user.db (follows you) + project-<hash>.db (follows the repo)
+                                            SQLite three stores: user.db (follows you) + project-<hash>.db (follows the repo) + shared.db (lending shelf)
                                             |
       +----------------------+----------------------+----------------------+
       v                          v                        v
@@ -150,7 +150,8 @@ Sensory and emotional dimensions (smell, temperature, emotional weight) are deli
 ## Features
 
 - **Cross-session memory**: a user memory profile is injected at session start (entry cap plus token budget, both configurable; a curated profile maintained via `engram_profile_edit` takes precedence over derived facts), so the agent naturally knows who you are and what you are building; tools recall facts across sessions.
-- **Dual-scope stores**: `user.db` shared globally; `project-<hash>.db` isolated per git origin identity (falls back to a working-directory encoding without git; legacy stores migrate automatically) — personal preferences follow the person, project conventions follow the repo.
+- **Three-scope stores**: `user.db` is the private palace, global across projects (unrelated to the shared scope); `project-<hash>.db` isolated per git origin identity (falls back to a working-directory encoding without git; legacy stores migrate automatically) — personal preferences follow the person, project conventions follow the repo.
+- **Shared scope (`shared.db`)**: a staging area for memories you hand-pick to lend out — by design "explicit in, explicit out": automatic capture only routes project/user (the preference-follows-person / convention-follows-repo dichotomy has no slot for shared), and profile injection and review scheduling never touch it; explicit channels only: `engram_save` / `engram_import` to write, `engram_search scope=shared` to retrieve, and `engram_mirror` export appends the `share-manifest.json` loan manifest (`firstLentAt` / `lastAccessedAt` / `accessCount`) recording responsibility and access traces of what went public.
 - **Hybrid retrieval**: FTS5 (unicode61 + Chinese 2-gram pre-tokenization) fused with local vectors (by default `Xenova/paraphrase-multilingual-MiniLM-L12-v2`, 384-dim, q8; model and pooling are configurable — see below) via RRF, plus one-hop expansion over relation edges and a multiplicative recency/proof ranking boost; the embedding model runs offline, and a failed download degrades to keyword-only retrieval with an explicit marker.
 - **Memory-palace information architecture** (v0.7.2+): all four principles live on the core path, not in display-layer paint — **location as index** (writes sort by kind into rooms and pin a `room#slot` coordinate; room capacity 9, overflow opens a new room, slots are never recycled); **fixed route as order** (`tour_routes` is append-only; `engram_tour mode=fixed` walks the whole palace in slot order); **skeleton reused long-term** (a topic always lands in the same room and the same index, so recall is sequential extraction rather than fresh search); **every marker unique** (placard rule scored 0-1: globally unique +0.4 / date anchor +0.3 / no 6-char prefix clash within the room +0.3; low scores enter the refurb list; a palace with fewer than 8 active memories is left unscanned to avoid small-store noise).
 - **Corridor-routed retrieval**: the profile carries a room directory, and `engram_search` accepts a `room` parameter — decide the room first, then search inside it, instead of always running whole-store RRF. The top 5 hits carry neighbouring slot ids from the same room as encoding-specificity cues.
@@ -197,6 +198,8 @@ Sensory and emotional dimensions (smell, temperature, emotional weight) are deli
 | `engram_reflect` | Belief consolidation: abstract unconsolidated raw memories into proof-backed higher-level beliefs (four actions form/refine/still/refute; automatic vector-near-neighbor merging; raw memories stay active). Also drains the pending-consolidation queue created by reflect=suggest |
 | `engram_profile_edit` | Edit the curated profile block: `view` shows the current content and version history; `edit` writes a new version (optimistic lock via `expectedVersion`, conflicts fail loud); `rollback` restores a historical version (appended as a new version; history is never rewritten). The curated profile is injected ahead of the derived profile; every edit lands in the operation log, and the profile card on the panel's Today view shows version diffs |
 | `engram_language_guide` | Output the plugin language guide (the body of `<package-root>/docs/agent-language-guide.ru.md`). The first-run window promises a human whose language is not built in that the agent will print an instruction; this tool keeps that promise. The source text is written in Russian as a draft — the agent translates it into the asker's language itself |
+
+> Scope enum: `user` = private palace (global, follows the person); `project` = the current repo's project palace; `shared` = the shared staging area (memories hand-picked to lend out, see "Shared scope" in the feature list); `all` = retrieval tools merge all three stores.
 
 ## Configuration
 
@@ -270,7 +273,7 @@ The plugin has a host half (Node) and a browser half (React):
 Session agent                              Host half (Node)
   │                                          │
   ├─ every turn, first step ◀─────────────── ├─ user memory profile injection (plugin-source user snapshot)
-  ├─ engram_save / search / review … ──────▶ ├─ SQLite dual stores (user.db / project-<origin hash>.db)
+  ├─ engram_save / search / review … ──────▶ ├─ SQLite three stores (user.db / project-<origin hash>.db / shared.db)
   │                                          ├─ FTS5 keyword track + local vector track, RRF fusion + ranking boost
   ├─ engram_distill ───────────────────────▶ ├─ aux-LLM distillation (cluster merge → supersedes chain)
   ├─ session end (reflect enabled) ────────▶ ├─ belief consolidation (unconsolidated evidence → observations: near-neighbor merge / stale review)
@@ -278,7 +281,7 @@ Session agent                              Host half (Node)
   └─ Settings "Memory Library" tab ◀──────── ─── loopback API /api/engram/* (writes verify loopback Origin)
 ```
 
-- **Dual-scope stores**: `user.db` shared globally; `project-<hash>.db` named by the normalized git origin URL hash (`git@github.com:a/b.git` and `https://github.com/a/b` share one store; worktrees resolve through the pointer to the main repo's origin); without git or an origin it falls back to a working-directory encoding, and legacy cwd-named stores are renamed in place at startup (if both exist, nothing moves and a warning is logged).
+- **Three-scope stores**: `user.db` shared globally; `project-<hash>.db` named by the normalized git origin URL hash (`git@github.com:a/b.git` and `https://github.com/a/b` share one store; worktrees resolve through the pointer to the main repo's origin); without git or an origin it falls back to a working-directory encoding, and legacy cwd-named stores are renamed in place at startup (if both exist, nothing moves and a warning is logged). The third store `shared.db` is the shared staging area (see "Shared scope" in the feature list).
 - **Palace structure (the directory is the room, the path is the route)**: the **grand hall** is the standing core profile injected every turn (few and stable, always present); the **corridor** is the room directory in the profile plus the `engram_search room` parameter (pick the room, then search); **rooms** sort by kind (Fact Hall / Preference Pavilion / Decision Chamber / Episode Gallery / Skill Workshop) with capacity 9, overflowing into `<name>-2`; **placards** are each memory's `placard` marker, scored on the unique · distinctive · dated rule. Existing stores are slotted on first open (idempotent; opening a new room logs a warning so a human can name it).
 - **Automatic capture** (when `ingest` is on): each new turn's first step extracts candidate facts from the previous turn out of the session log; session end (`session/disposed`) captures the final turn with a 5-second timeout, and on failure/timeout a pending key lands in the operation log for the next session's first step to replay; captured (session, turn) pairs are idempotent. The read source is the session log; aux-call request auditing goes to the plugin's own operation log — unknown events are never appended to the session log. Candidates are written with low confidence and deduplicated by embedding.
 - **Provenance chain**: every memory records its source session, turn, and event seq, fully traceable via `engram_review`; the operation log table records every write/edit/forget/distill/decay.

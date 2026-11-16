@@ -281,7 +281,7 @@ export const zh = {
   'tool.reviewOperations': '\n最近操作:\n{entries}',
 
   // ---- Схема и результат engram_stats ----
-  'tool.statsDescription': '记忆库统计：各状态与种类数量、关系边数、信噪比、操作日志量，以及房间目录（房名/桩位数/最新门牌——检索前先看目录决定进哪个房间，配 engram_search 的 room 参数）。scope=all 时合并两库。',
+  'tool.statsDescription': '记忆库统计：各状态与种类数量、关系边数、信噪比、操作日志量，以及房间目录（房名/桩位数/最新门牌——检索前先看目录决定进哪个房间，配 engram_search 的 room 参数）。scope=all 时合并三库。',
   'tool.statsRoomLine': '  {room}（{label}）: {count}/{maxIndex} 桩{placard}',
   'tool.statsRoomPlacard': ' · 最新门牌「{placard}」',
   'tool.statsTotal': '[{scope}] 总数 {total}（active {active} / archived {archived} / forgotten {forgotten}）',
@@ -668,7 +668,7 @@ export const en = {
   'tool.reviewOperations': '\nRecent operations:\n{entries}',
 
   // ---- engram_stats schema and result ----
-  'tool.statsDescription': 'Memory store statistics: counts by status and kind, number of relation edges, signal-to-noise ratio, operation-log volume, and the room guide (room name / slot count / latest placard — check the guide before retrieval to decide which room to enter, together with the room parameter of engram_search). With scope=all the two stores are merged.',
+  'tool.statsDescription': 'Memory store statistics: counts by status and kind, number of relation edges, signal-to-noise ratio, operation-log volume, and the room guide (room name / slot count / latest placard — check the guide before retrieval to decide which room to enter, together with the room parameter of engram_search). With scope=all all three stores are merged.',
   'tool.statsRoomLine': '  {room} ({label}): {count}/{maxIndex} slots{placard}',
   'tool.statsRoomPlacard': ' · latest placard “{placard}”',
   'tool.statsTotal': '[{scope}] total {total} (active {active} / archived {archived} / forgotten {forgotten})',

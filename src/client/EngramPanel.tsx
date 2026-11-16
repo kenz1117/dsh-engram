@@ -798,7 +798,7 @@ class ViewErrorBoundary extends Component<{
 }
 
 /**
- * 管家日志整页视图：顶部近 7 天三个计数，下面是两库合并的完整 op_log
+ * 管家日志整页视图：顶部近 7 天三个计数，下面是三库合并的完整 op_log
  * （时间 · 操作 · 宫殿 · 摘要），可按操作类别筛选；不再限高裁切，供逐条审计。
  * user 侧照旧合并，project 侧跟随项目宫殿选择器（api 的 forceProject）。
  */

@@ -229,7 +229,7 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
 }
 
-/** activity API 的行结构（两库 op_log 合并）。 */
+/** activity API 的行结构（三库 op_log 合并）。 */
 export interface ActivityRow {
   readonly at: number
   readonly op: string
