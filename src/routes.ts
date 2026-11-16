@@ -864,8 +864,9 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const q = url.searchParams.get('q')
             if (q === null || q.trim() === '') { json(res, 400, { error: 'q required' }); return }
             const scopeParam = url.searchParams.get('scope')
+            // all = 三库，与工具侧 scopesOf(undefined) 同口径（#58）。
             const scopes: EngramScope[] = scopeParam === 'all' || scopeParam === null || scopeParam === ''
-              ? ['user', 'project']
+              ? ['user', 'project', 'shared']
               : [scopeOf(scopeParam, 'user')]
             const kind = url.searchParams.get('kind')
             const limit = Math.min(20, Math.max(1, Number(url.searchParams.get('limit') ?? 10) || 10))
@@ -1170,9 +1171,9 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             return
           }
           if (req.method === 'GET' && route === 'activity') {
-            // 最近活动：合并两库 op_log 倒序（摄取/检索改写/压缩/蒸馏/条目操作全貌）。
+            // 最近活动：合并三库 op_log 倒序（摄取/检索改写/压缩/蒸馏/条目操作全貌）。
             const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
-            const scopes: EngramScope[] = ['user', 'project']
+            const scopes: EngramScope[] = ['user', 'project', 'shared']
             const merged = (await Promise.all(scopes.map(async scope => {
               const ops = await (await storeFor(scope)).recentOps(limit)
               return ops.map(op => ({ ...op, scope }))
@@ -1351,14 +1352,16 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             //   - 涂改率惩罚 (0-10)：redacted 占比反向
             //   - 衰减覆盖 (0-10)：archived / total 落入区间给满分（user/project=[0.15, 0.45]；
             //     shared=[0.25, 0.5]，更严因为公开过期的风险更高）
-            // scope 查询参数：限定只看某一库（不传 = 现 user+project 合并，向后兼容）。
+            // scope 查询参数：限定只看某一库（不传 = 三库合并；shared 有内容才计入——
+            // 空的 shared 在平均分里只能贡献 ~0 分，会把没用 shared 的用户健康分无故拖低）。
             const rawScope = url.searchParams.get('scope')
             const scopes: EngramScope[] = rawScope === 'user' || rawScope === 'project' || rawScope === 'shared'
               ? [rawScope]
-              : ['user', 'project']
-            const parts = await Promise.all(scopes.map(async scope => {
+              : ['user', 'project', 'shared']
+            const parts = (await Promise.all(scopes.map(async scope => {
               const store = await storeFor(scope)
               const s = await store.stats()
+              if (scope === 'shared' && s.total === 0) return null
               const edgeCount = (await store.exportAll()).edges.length
               const total = Math.max(s.total, 1)
               const signal = s.signalRatio
@@ -1384,9 +1387,10 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 + decayCoverage * 10,
               )
               return { scope, score: Math.min(100, Math.max(0, score)), signal, activeRatio, edgeCount, redacted: s.redacted, archivedRatio }
-            }))
-            const overall = Math.round(parts.reduce((sum, part) => sum + part.score, 0) / parts.length)
-            json(res, 200, { overall, parts, evaluatedAt: Date.now() })
+            })))
+            const scored = parts.filter((part): part is Exclude<typeof part, null> => part !== null)
+            const overall = Math.round(scored.reduce((sum, part) => sum + part.score, 0) / scored.length)
+            json(res, 200, { overall, parts: scored, evaluatedAt: Date.now() })
             return
           }
           if (req.method === 'GET' && route === 'corridor') {
