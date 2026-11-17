@@ -9,6 +9,7 @@
  * @module @kenz1117/dsh-engram/embedder/remote
  */
 
+import { recordEmbedAttempt } from './stats.ts'
 import { message } from '../i18n/messages.ts'
 import { EngramError } from '../types.ts'
 import type { EngramEmbedder } from './interface.ts'
@@ -150,11 +151,19 @@ export async function createRemoteEmbedder(options: RemoteEmbedderOptions): Prom
 
   const embed = async (texts: readonly string[]): Promise<Float32Array[]> => {
     if (texts.length === 0) return []
-    const vectors: Float32Array[] = []
-    for (let start = 0; start < texts.length; start += batchSize) {
-      vectors.push(...await request(texts.slice(start, start + batchSize)))
+    // 失败可见性（issue #60）：与本地实现同一套进程级计数；加载期试探请求
+    // 也走这里，算一次真实尝试。
+    recordEmbedAttempt(false)
+    try {
+      const vectors: Float32Array[] = []
+      for (let start = 0; start < texts.length; start += batchSize) {
+        vectors.push(...await request(texts.slice(start, start + batchSize)))
+      }
+      return vectors
+    } catch (error) {
+      recordEmbedAttempt(true, error)
+      throw error
     }
-    return vectors
   }
 
   // 试探请求走的是与工作调用完全相同的路径：这里不另设「连接检查」，

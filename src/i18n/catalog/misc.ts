@@ -67,6 +67,7 @@ export const zh = {
   'misc.jevEndpointMustBeHttp': 'invalid: jev.endpoint 必须是 http(s) URL',
   'misc.jevEndpointOriginMismatch': 'Jev：endpoint 必须与提供商「{provider}」的 baseURL 同源；拒绝把宿主凭据发往其他服务',
   'misc.jevModelMustNotBeEmpty': 'invalid: jev.model 不能为空',
+  'misc.jevProtocolMustBeKnown': 'invalid: jev.protocol 必须是 systemone|chat',
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒',
   // tools/create.ts — инструкция по языку (В.08)
   'tool.languageGuideDescription': '如何把新语言引入记忆宫殿：返回说明文本（文件 docs/agent-language-guide.ru.md，目前只有俄文草稿）。用户的语言不在 zh/en 之内时使用：先读说明，再与用户一起完成登记语言、词典和切换。',
@@ -131,6 +132,7 @@ export const en = {
   'misc.jevEndpointMustBeHttp': 'invalid: jev.endpoint must be an http(s) URL',
   'misc.jevEndpointOriginMismatch': 'Jev: endpoint must share the origin of provider "{provider}" baseURL; refusing to send host credentials to another service',
   'misc.jevModelMustNotBeEmpty': 'invalid: jev.model must not be empty',
+  'misc.jevProtocolMustBeKnown': 'invalid: jev.protocol must be one of systemone|chat',
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs must be an integer number of milliseconds between 1000 and 60000',
   // i18n/dictionary-file.ts
   'misc.warnDictionaryProblems': '[dsh-engram] The translation dictionary skipped {count} problem line(s); those texts stay English: {sample}',

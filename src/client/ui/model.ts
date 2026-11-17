@@ -26,6 +26,16 @@ export interface TelemetrySnapshot {
   }
   /** v0.8.1+ 每日写入序列（活动热力日历用）。 */
   readonly dailyWrites?: ReadonlyArray<{ readonly dayMs: number; readonly count: number }>
+  /**
+   * 嵌入调用计数（issue #60 失败可见性）：服务端进程的「本次运行」计数。
+   * 可选字段容忍版本偏差——旧服务端不下发，UI 按 0 兜底。
+   */
+  readonly embeds?: {
+    readonly attempts: number
+    readonly failures: number
+    readonly lastError?: string
+    readonly lastFailureAtMs?: number
+  }
 }
 
 /** 列表/详情用的记忆视图（宿主 /api/engram/list 的行结构）。 */

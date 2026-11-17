@@ -8,6 +8,11 @@
  * 性能换特点是这条路线的代价：WASM 单线程推理约 90ms/条（原生 onnxruntime-node
  * 约 10-20ms/条），批量回填相应变慢；换来的是零原生依赖、零构建脚本许可。
  *
+ * 并发语义（issue #60）：transformers.js 底层 onnxruntime 的 wasm session 不允许
+ * 重入 run()，两个重叠的推理会报 "Session already started"。因此每个 embedder
+ * 实例带一条串行队列（runSerial），embed 调用逐个执行——检索与摄取即使撞在
+ * 同一个单例上也只是排队，不再互相炸掉；对外接口与延迟特性不变。
+ *
  * Ни модель, ни способ сведения токенов, ни вид весов здесь не задаются: все три
  * приходят строкой каталога моделей (`registry/models.json`). В коде вшитых
  * параметров моделей нет — иначе выбор модели снова стал бы свойством кода, а не
@@ -19,6 +24,7 @@ import { mkdir } from 'node:fs/promises'
 import { loadEngineModule, resolveEngine } from './engine.ts'
 import type { EngineEnv } from './engine.ts'
 import { createFsModelCache } from './engine-cache.ts'
+import { recordEmbedAttempt } from './stats.ts'
 import { message } from '../i18n/messages.ts'
 import { EngramError } from '../types.ts'
 import type { EngramEmbedder } from './interface.ts'
@@ -61,6 +67,32 @@ function sameSpec(left: LocalModelSpec, right: LocalModelSpec): boolean {
 /** 进程内单例：重复调用 createLocalEmbedder 共享同一模型实例，避免重复加载权重。 */
 let cached: { dir: string; spec: LocalModelSpec; embedder: EngramEmbedder } | undefined
 
+/** 串行队列句柄：tail 是链尾 promise（异常已吞掉），新调用排到它后面。 */
+export interface SerialChain {
+  /** 链尾；永远处于 fulfilled 状态（见 runSerial 的队尾吞异常）。 */
+  tail: Promise<unknown>
+}
+
+/** 建一条空串行队列。每个 embedder 实例一条，与它独占的 extractor/session 对齐。 */
+export function createSerialChain(): SerialChain {
+  return { tail: Promise.resolve() }
+}
+
+/**
+ * 把 fn 追加到链尾串行执行（issue #60）：wasm 的 ORT session 不允许重入，
+ * 重叠调用会报 "Session already started"，这里保证同一链上的任务一个跑完
+ * 才轮到下一个。返回值与异常原样透传给调用方；链上挂的是吞掉异常的镜像
+ * （`then(() => undefined, () => undefined)`）——一次失败不断链，后续调用照常执行。
+ * 提成独立导出是为了离线单测队列行为（tests/embedder-stats.spec.ts）。
+ */
+export function runSerial<T>(chain: SerialChain, fn: () => Promise<T>): Promise<T> {
+  // then(fn, fn)：前序 reject 也直接开跑 fn，不把前序的失败传染给本次。
+  const run = chain.tail.then(fn, fn)
+  // 队尾吞异常：链本身永远可用，只有调用方自己的 promise 会 reject。
+  chain.tail = run.then(() => undefined, () => undefined)
+  return run
+}
+
 /**
  * 创建本地嵌入器。
  * @param cacheDir - 模型缓存目录；不存在会自动创建（0o700）。web 构建的
@@ -97,18 +129,31 @@ export async function createLocalEmbedder(
       const warm = await extractor(['模型热身'], { pooling: spec.pooling, normalize: true })
       warm.dispose?.()
     }
+    // 本实例独占一个 extractor（即一个 ORT session），串行队列粒度与之对齐。
+    const chain = createSerialChain()
     const embedder: EngramEmbedder = {
       model: spec.id,
       async embed(texts) {
         if (texts.length === 0) return []
-        const output = await extractor([...texts], { pooling: spec.pooling, normalize: true })
-        try {
-          const lists = output.tolist()
-          return lists.map(list => new Float32Array(list))
-        } finally {
-          // wasm 内存不会自动回收：输出必须显式 dispose，长跑回填才不会一路涨。
-          output.dispose?.()
-        }
+        // 计数与推理收在同一个队列任务里：排队中的调用还没发生，不算尝试。
+        return runSerial(chain, async () => {
+          recordEmbedAttempt(false)
+          try {
+            const output = await extractor([...texts], { pooling: spec.pooling, normalize: true })
+            try {
+              const lists = output.tolist()
+              return lists.map(list => new Float32Array(list))
+            } finally {
+              // wasm 内存不会自动回收：输出必须显式 dispose，长跑回填才不会一路涨。
+              output.dispose?.()
+            }
+          } catch (error) {
+            // 失败可见性（issue #60）：队列吞掉的是链上的异常镜像，这里先把
+            // 真实错误记进计数器，再原样抛给调用方。
+            recordEmbedAttempt(true, error)
+            throw error
+          }
+        })
       },
       // 管线由模块级 cached 持有；close 仅解除本实例引用，不销毁共享权重。
       close: async () => {

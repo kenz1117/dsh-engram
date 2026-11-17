@@ -1,7 +1,7 @@
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { aggregateTelemetry } from '../src/telemetry/aggregate.ts'
 import { openEngramStore } from '../src/store/sqlite.ts'
 import type { EngramStore } from '../src/store/interface.ts'
@@ -65,5 +65,20 @@ describe('本地遥测 aggregateTelemetry', () => {
     expect(snapshot.scopes[0]!.active).toBe(1)
     expect(snapshot.scopes[0]!.total).toBe(1)
     expect(snapshot.scopes[0]!.signalRatio).toBeCloseTo(1.0, 1) // 1 active / 1 total
+  })
+
+  it('embeds 块合并进程级嵌入计数（issue #60，本次运行语义）', async () => {
+    // 嵌入计数是进程级单例：重置模块注册表拿全新计数器，断言才不受同一
+    // worker 里其他文件的调用影响。
+    vi.resetModules()
+    const { recordEmbedAttempt } = await import('../src/embedder/stats.ts')
+    const { aggregateTelemetry: freshAggregate } = await import('../src/telemetry/aggregate.ts')
+    recordEmbedAttempt(false)
+    recordEmbedAttempt(true, new Error('Session already started'))
+    const snapshot = await freshAggregate(async scope => scope === 'user' ? user : user)
+    expect(snapshot.embeds?.attempts).toBe(2)
+    expect(snapshot.embeds?.failures).toBe(1)
+    expect(snapshot.embeds?.lastError).toBe('Session already started')
+    expect(snapshot.embeds?.lastFailureAtMs).toBeGreaterThan(0)
   })
 })

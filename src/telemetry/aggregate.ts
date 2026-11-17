@@ -4,6 +4,8 @@
  * @module @kenz1117/dsh-engram/telemetry/aggregate
  */
 
+import type { EmbedderStatsSnapshot } from '../embedder/stats.ts'
+import { embedderStatsSnapshot } from '../embedder/stats.ts'
 import type { EngramStore } from '../store/interface.ts'
 
 /** 聚合窗口（默认 7 天，可由路由 query 覆盖）。 */
@@ -44,6 +46,12 @@ export interface TelemetrySnapshot {
    * 取不到时不返回（undefined），UI 端走降级（不画 / 画灰格子）。
    */
   readonly dailyWrites?: ReadonlyArray<{ readonly dayMs: number; readonly count: number }>
+  /**
+   * 嵌入调用计数（issue #60 失败可见性）：进程级「本次运行」计数，与 op_log
+   * 窗口聚合不同源——重启即清零。可选字段：客户端要容忍旧服务端不下发
+   * （版本偏差），缺省按 0 兜底。
+   */
+  readonly embeds?: EmbedderStatsSnapshot
 }
 
 /** 从单库 op_log 统计各 op 的计数（窗口内）——SQL GROUP BY，不物化明细行（审计 N1）。 */
@@ -138,5 +146,7 @@ export async function aggregateTelemetry(
     counts: countsAgg,
     scopes: scopeViews,
     dailyWrites,
+    // 嵌入计数是进程级的，不随 scopeFilter 分库：任何一次聚合都带上同一份。
+    embeds: embedderStatsSnapshot(),
   }
 }

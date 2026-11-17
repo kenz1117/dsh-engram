@@ -644,16 +644,18 @@ describe('dsh-engram real Loader composition', () => {
     const loaded = await loadComposition()
     const port = loaded.webServer.port
 
-    // Провайдер, его адрес и модели приходят от хоста; ключа в ответе нет и быть не должно.
+    // Провайдер, его адрес и модели приходят от хоста; ключа в ответе нет и не должно быть.
+    // chatEndpoint = chat 协议的端点模板，随目录一并下发（#59 chat 通道）。
     const providerEntry = {
       id: 'aitunnel',
       displayName: 'AITunnel',
       baseUrl: 'https://api.aitunnel.ru/v1',
       endpoint: 'https://api.aitunnel.ru/v1/systemone',
+      chatEndpoint: 'https://api.aitunnel.ru/v1/chat/completions',
       models: [{ id: 'jev-1.13', name: 'Jev 1.13' }],
     }
 
-    // 初态：无 yml jev 块、无覆盖文件 → 关闭且未选择提供商。
+    // 初态：无 yml jev 块、无覆盖文件 → 关闭且未选择提供商，协议落默认 systemone。
     const initial = await call(port, 'GET', '/api/engram/jev-config')
     expect(initial.status).toBe(200)
     expect(initial.json).toEqual({
@@ -661,6 +663,7 @@ describe('dsh-engram real Loader composition', () => {
       provider: undefined,
       model: undefined,
       endpoint: undefined,
+      protocol: 'systemone',
       timeoutMs: 3000,
       deferMergeAbove: 0.85,
       deferAcceptBelow: 0.15,
@@ -683,6 +686,7 @@ describe('dsh-engram real Loader composition', () => {
         provider: 'aitunnel',
         model: 'jev-1.13',
         endpoint: undefined,
+        protocol: 'systemone',
         timeoutMs: 5000,
         deferMergeAbove: 0.85,
         deferAcceptBelow: 0.15,

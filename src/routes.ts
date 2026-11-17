@@ -24,7 +24,7 @@ import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, History
 import type { ProjectPalaceKind } from './project/registry.ts'
 import type { BaseActionId, BaseStateId } from './registry/base-state.ts'
 import type { PalaceGuard } from './registry/palace-guard.ts'
-import type { PanelAccessConfig, ResolvedHistoryRules, ResolvedJevConfig } from './config.ts'
+import type { JevProtocol, PanelAccessConfig, ResolvedHistoryRules, ResolvedJevConfig } from './config.ts'
 import { effectiveJevConfig, jevConfigView, loadJevOverride, parseJevPatch, saveJevOverride } from './jev/runtime.ts'
 import { testJevConnection } from './jev/client.ts'
 import type { JevCatalog, JevConnection, JevModelList } from './jev/host.ts'
@@ -744,13 +744,14 @@ export interface RouteDeps {
     readonly host: {
       readonly catalog: () => Promise<JevCatalog>
       /** Живой список моделей провайдера (обращение к нему же, его ключом). */
-      readonly models: (provider: string) => Promise<JevModelList>
+      readonly models: (provider: string, protocol?: JevProtocol) => Promise<JevModelList>
       /** Соединение: адрес из настроек Jev либо шаблоном от провайдера, ключ — у хоста. */
       readonly connection: (
         provider: string,
         model: string,
         timeoutMs: number,
         endpoint?: string,
+        protocol?: JevProtocol,
       ) => Promise<JevConnection | string>
     }
   }
@@ -1800,6 +1801,10 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const endpoint = typeof body.endpoint === 'string' && body.endpoint.trim() !== ''
               ? body.endpoint.trim()
               : base.endpoint
+            // Протокол из поля панели; не назван или незнаком — действующая конфигурация.
+            const protocol: JevProtocol = body.protocol === 'chat' || body.protocol === 'systemone'
+              ? body.protocol
+              : base.protocol
             if (provider === undefined || model === undefined) {
               json(res, 200, {
                 ok: false,
@@ -1809,7 +1814,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               })
               return
             }
-            const connection = await deps.jev.host.connection(provider, model, base.timeoutMs, endpoint)
+            const connection = await deps.jev.host.connection(provider, model, base.timeoutMs, endpoint, protocol)
             if (typeof connection === 'string') {
               json(res, 200, { ok: false, elapsedMs: 0, probability: undefined, error: connection })
               return
@@ -1827,8 +1832,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           }
           if (req.method === 'POST' && route === 'jev-models') {
             // Живой список моделей провайдера (`GET {baseURL}/models` его ключом):
-            // панель берёт его как подсказки к полю модели, сужая до Jev-моделей,
-            // когда такие в списке есть.
+            // панель берёт его как подсказки к полю модели; для systemone список
+            // сужается до Jev-моделей, для chat отдаётся целиком.
             if (!guardWrite(req, res, deps.panelAccess === 'lan')) return
             const body = await readBody(req, res, deps.language)
             if (body === null) return
@@ -1841,7 +1846,10 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               })
               return
             }
-            json(res, 200, await deps.jev.host.models(provider))
+            const protocol: JevProtocol = body.protocol === 'chat' || body.protocol === 'systemone'
+              ? body.protocol
+              : effectiveJevConfig(deps.jev.base, loadJevOverride(deps.jev.dbDir)).protocol
+            json(res, 200, await deps.jev.host.models(provider, protocol))
             return
           }
           if (req.method === 'GET' && route === 'jev-observations') {

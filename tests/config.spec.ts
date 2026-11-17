@@ -193,6 +193,20 @@ describe('jev config', () => {
     // 各自合法（端点 0.5）但组合无效：accept 阈值不得高于 merge 阈值。
     expect(() => resolveConfig({ jev: { deferAcceptBelow: 0.5, deferMergeAbove: 0.5 } })).toThrow(/less than/)
   })
+
+  // #59：协议档位。默认 systemone（行为不变）；chat = OpenAI 兼容 chat completions。
+  it('protocol 默认 systemone,显式 systemone|chat 原样落地', () => {
+    expect(resolveConfig({}).jev.protocol).toBe('systemone')
+    expect(resolveConfig({ jev: { protocol: 'systemone' } }).jev.protocol).toBe('systemone')
+    expect(resolveConfig({ jev: { protocol: 'chat' } }).jev.protocol).toBe('chat')
+  })
+
+  it('protocol 非法档位 loud 失败', () => {
+    expect(() => resolveConfig({ jev: { protocol: 'grpc' as never } })).toThrow(/jev\.protocol must be one of systemone\|chat/)
+    expect(() => resolveConfig({ jev: { protocol: 'SYSTEMONE' as never } })).toThrow(/jev\.protocol/)
+    expect(() => resolveConfig({ jev: { protocol: '' as never } })).toThrow(/jev\.protocol/)
+    expect(() => resolveConfig({ jev: { protocol: 42 as never } })).toThrow(/jev\.protocol/)
+  })
 })
 
 describe('legacyMigration config', () => {

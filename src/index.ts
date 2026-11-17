@@ -1829,9 +1829,9 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
         dbDir: resolved.dbDir,
         host: {
           catalog: () => readJevCatalog(ctx),
-          models: provider => readProviderModels(ctx, provider),
-          connection: (provider, model, timeoutMs, endpoint) =>
-            resolveJevConnection(ctx, provider, model, timeoutMs, endpoint),
+          models: (provider, protocol) => readProviderModels(ctx, provider, protocol),
+          connection: (provider, model, timeoutMs, endpoint, protocol) =>
+            resolveJevConnection(ctx, provider, model, timeoutMs, endpoint, protocol),
         },
       },
       history: {

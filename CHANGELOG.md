@@ -8,6 +8,18 @@
 
 > **v0.x 阶段的版本约定**：`0.MINOR.PATCH` 里的 `MINOR` 是**功能批次**而不是稳定性刻度——0.7.x 整批是「记忆宫殿信息架构」，0.8.x 整批是「面板重构」，0.9.x 整批是「稳定性与可审计」，0.10.x 整批是「多语言与数据驱动」。同一批次内的 `PATCH` 位通常是修复与加固。
 
+## [0.13.13] - 2026-11-17
+
+### Fixed
+
+- **本地嵌入并发调用不再崩（#60）**：`embed()` 直接 `await extractor(...)`，而 onnxruntime-web 的 wasm session 不允许重入 `run()`——检索改写一次并发 3 个查询嵌入（`engram_search`），与自动摄取/回填落在同一单例上，只要检索和摄取撞上就抛 "Session already started" / "Session mismatch"，语义检索整条链路瘫掉且静默降级。现在每个 embedder 实例带一条串行队列（`runSerial`，队尾吞异常不断链），重叠调用排队执行，对外接口与延迟特性不变。报告人给出了精确根因与最小复现，修复采纳其建议的方案，并按其验证路线做了反证：临时摘掉队列跑同一并发测试，立刻复现 "Session already started"。
+- **Jev 提供商定位不再误报「未在 DSH 中配置」（#59 问题一）**：`readProviderProfile` 把 `settingsPath: []`（配置在文档根上，DSH 自带的两个 DeepSeek 提供商都是平铺配置）错误回退到嵌套路径 `['providers', providerId]`——取到 undefined，面板对 43 个内置提供商全部误报未配置。现在区分「未声明」（回退旧嵌套约定）与「声明为空数组」（`readPath(value, [])` 读根）。报告人切 pi-ai 提供商后下拉恢复正常，反向实证了这个定位。
+
+### Added
+
+- **Jev 裁决新增 OpenAI 兼容 chat completions 通道（#59 问题二）**：此前 `askNoul` 只讲私有 System One 协议（`{baseURL}/systemone` + state/questions 命令契约），任何标准 chat 提供商必然 404，报告人问「是否只能对接 System One 端点」——现在答案是「否」。新增 `jev.protocol: 'systemone' | 'chat'`（默认 systemone，存量配置零迁移）：`chat` 走 `{baseURL}/chat/completions`，裁决问题作为普通 prompt 发出（temperature 0、要求只回 JSON 的裁判说明 + 输出契约 `{"answers":{"qid":{"p"}}}`），客户端做容错解析（剥 ```json 围栏与 prose、兼容 `{p|noul|probability}` 对象/直接数值/扁平契约三种形状、[0,1] 越界即 shape 拒绝），**任意普通聊天模型都能当裁决者，模型无需 jev 前缀**。yml 与面板覆盖层（`jev-config.json`，旧覆盖文件无 protocol 键时跟随 yml）、端点推导与同源守卫、模型列表（chat 下不筛 /jev/i）、测试连接（chat ping 的说明直接内嵌 JSON 契约，不懂契约的模型在这一步现形）、面板协议下拉与协议感知文案（zh/en/ru 齐备）全链路打通。System One 仍是 systemone 协议的既定后端，#46 的 opencode 会话头规则对两协议一致适用。**如实说明**：开发机无可达的带 baseURL 提供商，chat 通道的实弹调用未在本机验证；请求形状/解析容错/分派逻辑由 17 条离线测试覆盖，面板链路经真机浏览器验收（协议切换、端点模板联动、提供商下拉）。
+- **嵌入调用失败可见性（#60 附带建议）**：新增进程级嵌入计数（`src/embedder/stats.ts`，local/remote 两条路径都计，只计真实 throw、降级不计），经遥测快照透出（`TelemetrySnapshot.embeds`，可选字段容忍版本 skew），面板「系统 → 运行时」的嵌入模型卡显示「嵌入调用 / 嵌入失败」两块瓦片（失败非零标红、悬停看最近错误），标注「本次运行」语义（重启清零，不冒充历史累计）。嵌入器自检按钮记入评估，暂不随本版。
+
 ## [0.13.12] - 2026-11-16
 
 ### Added
