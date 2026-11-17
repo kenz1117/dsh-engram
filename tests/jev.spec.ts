@@ -18,6 +18,7 @@ const connection: JevConnection = {
   apiKey: 'test-key',
   model: 'jev-test',
   timeoutMs: 3000,
+  protocol: 'systemone',
 }
 
 /** Тестовая конфигурация Jev: выбран провайдер и модель, три порога стандартные. */
@@ -26,6 +27,7 @@ const jevConfig: ResolvedJevConfig = {
   provider: 'aitunnel',
   model: 'jev-test',
   endpoint: 'https://jev.test/v1/systemone',
+  protocol: 'systemone',
   timeoutMs: 3000,
   deferMergeAbove: 0.85,
   deferAcceptBelow: 0.15,
@@ -220,6 +222,7 @@ describe('Jev 凭据 origin 边界', () => {
       apiKey: 'host-provider-key',
       model: 'jev-1.13',
       timeoutMs: 3000,
+      protocol: 'systemone',
     })
 
     const hostile = await resolveJevConnection(

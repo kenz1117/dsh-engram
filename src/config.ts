@@ -45,6 +45,22 @@ export type PanelAccessConfig = 'loopback' | 'lan'
  */
 export type EmbedderKind = 'local' | 'remote'
 
+/**
+ * Jev 裁决通道协议。
+ *
+ * `systemone` — 私有 System One 端点：POST `{baseURL}/systemone`，请求体
+ * state/questions（问题以 `type: 'noul'` 提问），响应 `{answers:{qid:{noul}}}`。
+ * 仅 Jev 系模型懂这套协议，模型筛选带 /jev/i 前缀。
+ *
+ * `chat` — 任何 OpenAI 兼容 chat completions 端点：POST `{baseURL}/chat/completions`，
+ * 裁决问题作为普通 prompt 发出（要求只回 JSON 的裁判说明 + 输出契约
+ * `{"answers":{"<qid>":{"p":<0-1>}}}`），客户端做容错解析。普通聊天模型即可充当
+ * 裁决者，模型无需 jev 前缀。
+ *
+ * 两协议的 endpoint 覆写与同源守卫（宿主凭据只发往提供商 baseURL 同源）一致。
+ */
+export type JevProtocol = 'systemone' | 'chat'
+
 /** 把 token 归并成单个向量的方式。bge-m3 与同族模型需要 cls。 */
 export type EmbedderPooling = 'mean' | 'cls'
 
@@ -80,6 +96,12 @@ export interface JevConfig {
   model?: string
   /** Полный адрес эндпоинта System One; пусто = вывести шаблоном из baseURL провайдера. */
   endpoint?: string
+  /**
+   * 裁决通道协议；默认 systemone（行为不变）。chat = 标准 OpenAI 兼容
+   * chat completions：端点按提供商推导为 `{baseURL}/chat/completions`，裁决问题
+   * 作为普通 prompt 发出、解析 JSON 概率，模型无需 jev 前缀。
+   */
+  protocol?: JevProtocol
   /** 单次裁决请求的超时毫秒数；默认 3000。 */
   timeoutMs?: number
   /** 模糊带裁决：Noul 概率高于该值判「同一条」并自动 merge；默认 0.85。 */
@@ -206,6 +228,8 @@ export interface ResolvedJevConfig {
   readonly model: string | undefined
   /** Адрес эндпоинта из настроек; undefined = вывести шаблоном из провайдера. */
   readonly endpoint: string | undefined
+  /** 通道协议（默认 systemone；chat = OpenAI 兼容 chat completions）。 */
+  readonly protocol: JevProtocol
   readonly timeoutMs: number
   readonly deferMergeAbove: number
   readonly deferAcceptBelow: number
@@ -344,6 +368,7 @@ export const Config: z<EngramConfig> = z.object({
     provider: z.string(),
     model: z.string(),
     endpoint: z.string(),
+    protocol: z.string(),
     timeoutMs: z.number().step(1).min(1000).max(60000),
     deferMergeAbove: z.number().min(0.5).max(1),
     deferAcceptBelow: z.number().min(0).max(0.5),
@@ -489,6 +514,9 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
         throw new Error('dsh-engram: jev.endpoint must be an http(s) URL')
       }
     }
+    if (jev.protocol !== undefined && jev.protocol !== 'systemone' && jev.protocol !== 'chat') {
+      throw new Error('dsh-engram: jev.protocol must be one of systemone|chat')
+    }
     if (jev.timeoutMs !== undefined && (!Number.isInteger(jev.timeoutMs) || jev.timeoutMs < 1000 || jev.timeoutMs > 60000)) {
       throw new Error('dsh-engram: jev.timeoutMs must be an integer in [1000, 60000]')
     }
@@ -594,6 +622,7 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
       provider: config.jev?.provider,
       model: config.jev?.model,
       endpoint: config.jev?.endpoint,
+      protocol: config.jev?.protocol ?? 'systemone',
       timeoutMs: config.jev?.timeoutMs ?? 3000,
       deferMergeAbove: config.jev?.deferMergeAbove ?? 0.85,
       deferAcceptBelow: config.jev?.deferAcceptBelow ?? 0.15,

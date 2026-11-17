@@ -4,21 +4,25 @@
  * Jev не хранит ни токен, ни адрес. Панель выбирает провайдера из числа
  * **настроенных** в DSH (`ctx.llm.listConfigurableProviders()`, отбор по признаку
  * `declared`), а реквизиты собираются в момент вызова:
- *   адрес  — шаблон от `baseURL` провайдера (можно переопределить в настройках Jev);
+ *   адрес  — шаблон от `baseURL` провайдера по выбранному протоколу (можно
+ *            переопределить в настройках Jev);
  *   ключ   — из хранилища секретов по ссылке `apiKeyEnv` (`ctx.credentials.resolve`).
  *
- * Шаблон адреса: `{baseURL}/systemone`. Проверено на живом провайдере: при
- * `baseURL = https://api.aitunnel.ru/v1` эндпоинт `…/v1/systemone` отвечает
- * корректным Noul-ответом, а прежняя настройка Jev (`https://api.aitunnel.ru`)
- * давала тот же адрес через свой зашитый путь `/v1/systemone`.
+ * Шаблон адреса зависит от протокола: `systemone` → `{baseURL}/systemone`
+ * (проверено на живом провайдере: при `baseURL = https://api.aitunnel.ru/v1`
+ * эндпоинт `…/v1/systemone` отвечает корректным Noul-ответом), `chat` →
+ * `{baseURL}/chat/completions` (любой OpenAI-совместимый эндпоинт, см. ./client.ts).
+ * Переопределённый адрес в обоих случаях проходит одну и ту же проверку
+ * происхождения (`isTrustedJevEndpoint`): ключ хоста уезжает только тому же origin.
  *
- * Почему не через `ctx.llm.stream`: у Jev собственный протокол (state/questions →
- * вероятности), он не OpenAI-chat-совместим, поэтому HTTP-клиент остаётся свой,
+ * Почему не через `ctx.llm.stream`: у Jev собственный контракт ответа (вероятности
+ * по вопросам) и ленивая сборка реквизитов, поэтому HTTP-клиент остаётся свой,
  * а у хоста берутся только реквизиты — тогда токен вводится ровно в одном месте.
  *
  * @module @kenz1117/dsh-engram/jev/host
  */
 
+import type { JevProtocol } from '../config.ts'
 import { message } from '../i18n/messages.ts'
 
 /** Минимальный вид сервиса `llm` хоста; лишние поля не читаем. */
@@ -61,7 +65,7 @@ export interface HostContext {
   get: (name: string) => unknown
 }
 
-/** Провайдер для панели: идентификатор, подпись, шаблон адреса и модели из настроек. */
+/** Провайдер для панели: идентификатор, подпись, шаблоны адресов и модели из настроек. */
 export interface JevProviderEntry {
   readonly id: string
   readonly displayName: string
@@ -69,6 +73,8 @@ export interface JevProviderEntry {
   readonly baseUrl: string | undefined
   /** Шаблон адреса System One, который панель подставляет в поле; undefined = не вывести. */
   readonly endpoint: string | undefined
+  /** chat 协议的端点模板（{baseURL}/chat/completions）；undefined = 不输出。 */
+  readonly chatEndpoint: string | undefined
   /** Модели из настроек провайдера (без обращения к сети); может быть пустым. */
   readonly models: readonly { readonly id: string; readonly name: string }[]
 }
@@ -80,11 +86,13 @@ export interface JevCatalog {
 
 /** Собранное соединение: всё, что нужно HTTP-клиенту Jev для одного запроса. */
 export interface JevConnection {
-  /** Полный адрес эндпоинта System One (из настроек Jev либо шаблоном от провайдера). */
+  /** Полный адрес эндпоинта (из настроек Jev либо шаблоном от провайдера по протоколу). */
   readonly endpoint: string
   readonly apiKey: string
   readonly model: string
   readonly timeoutMs: number
+  /** 请求协议：systemone（私有 System One）或 chat（OpenAI 兼容 chat completions）。 */
+  readonly protocol: JevProtocol
 }
 
 /** Живой список моделей провайдера (ответ `GET {baseURL}/models`). */
@@ -155,6 +163,15 @@ export function systemOneEndpoint(baseUrl: string): string | undefined {
 }
 
 /**
+ * chat 协议的端点模板：由提供商 API 根推导（#59 chat 通道）。
+ * `https://api.aitunnel.ru/v1` → `https://api.aitunnel.ru/v1/chat/completions`
+ * （OpenAI 兼容服务器的标准路径，与 `/systemone` 同根相邻）。
+ */
+export function chatCompletionsEndpoint(baseUrl: string): string | undefined {
+  return joinUrl(baseUrl, 'chat/completions')
+}
+
+/**
  * 宿主凭据只能发往 provider 配置中已信任的 origin。面板可以覆盖同源路径，
  * 但不能把存储在 DSH 凭据库里的 Bearer key 指向另一个服务。
  */
@@ -197,12 +214,16 @@ async function readProviderProfile(
   if (entry === undefined) return undefined
   const ns = typeof entry.settingsNs === 'string' ? entry.settingsNs : undefined
   if (ns === undefined) return undefined
+  // #59：区分「settingsPath 未声明」与「声明为空数组」。后者 = 配置就在文档根上
+  //（DSH 自带的两个 DeepSeek 提供商都是平铺配置），空路径 readPath 天然返回根本身；
+  // 只有前者才回退旧的嵌套约定 ['providers', providerId]。此前空数组也被回退成嵌套
+  // 取值，取到 undefined，面板对这类提供商一律误报「未在 DSH 中配置」。
   const path = Array.isArray(entry.settingsPath)
     ? entry.settingsPath.filter((segment): segment is string => typeof segment === 'string')
-    : []
+    : undefined
   const value = await readSettingsValue(ctx, ns)
   if (value === undefined) return undefined
-  const profile = readPath(value, path.length > 0 ? path : ['providers', providerId])
+  const profile = readPath(value, path ?? ['providers', providerId])
   return asRecord(profile)
 }
 
@@ -275,6 +296,7 @@ export async function readJevCatalog(ctx: HostContext): Promise<JevCatalog> {
       displayName: readString(asRecord(entry), 'displayName') ?? readString(profile, 'displayName') ?? id,
       baseUrl,
       endpoint: baseUrl === undefined ? undefined : systemOneEndpoint(baseUrl),
+      chatEndpoint: baseUrl === undefined ? undefined : chatCompletionsEndpoint(baseUrl),
       models: readModels(profile),
     }
     every.push(item)
@@ -297,6 +319,7 @@ export async function readJevCatalog(ctx: HostContext): Promise<JevCatalog> {
       displayName: readString(route as Record<string, unknown>, 'name') ?? id,
       baseUrl: undefined,
       endpoint: undefined,
+      chatEndpoint: undefined,
       models: [],
     })
   }
@@ -304,18 +327,22 @@ export async function readJevCatalog(ctx: HostContext): Promise<JevCatalog> {
 }
 
 /**
- * Живой список моделей провайдера: `GET {baseURL}/models` тем же ключом, что и
- * судейство. Список сужается до Jev-моделей — панель предлагает только то, что
- * может отвечать протоколом System One.
+ * 提供商的活体模型列表：`GET {baseURL}/models`，与裁决同一把密钥。
+ * systemone 协议把列表收窄到 Jev 模型——面板只提议真能以 System One 协议应答的模型；
+ * chat 协议任何模型都能按 JSON 契约应答，因此整表下发、不做收窄。
  *
- * Если Jev-моделей у провайдера не нашлось, не предлагается ничего: остальные его
- * модели этого протокола не понимают, и подсказка из них была бы подсказкой сломать
- * судью. Имя в таком случае вписывают руками — поле принимает любое.
- * Ничего не бросает: причина отказа возвращается полем error.
- * @param ctx - контекст плагина.
- * @param providerId - выбранный провайдер DSH.
+ * systemone 下若提供商没有 Jev 模型，则一个也不提议：其余模型不懂该协议，
+ * 从它们里提示等于提示把裁决配坏。此时模型名手填——字段接受任意值。
+ * 本函数不抛错：拒绝原因经 error 字段返回。
+ * @param ctx - 插件上下文。
+ * @param providerId - 所选 DSH 提供商。
+ * @param protocol - 裁决协议；决定是否把列表收窄到 Jev 模型。
  */
-export async function readProviderModels(ctx: HostContext, providerId: string): Promise<JevModelList> {
+export async function readProviderModels(
+  ctx: HostContext,
+  providerId: string,
+  protocol: JevProtocol = 'systemone',
+): Promise<JevModelList> {
   const rekvisites = await readProviderRekvisites(ctx, providerId)
   if (typeof rekvisites === 'string') return { models: [], filtered: false, error: rekvisites }
   if (rekvisites.baseUrl === undefined) {
@@ -355,9 +382,11 @@ export async function readProviderModels(ctx: HostContext, providerId: string): 
       }
     }
     ids.sort((left, right) => left.localeCompare(right))
+    // chat：任何模型都能按 JSON 契约应答（见 ./client.ts），无需收窄；
+    // systemone：只留 Jev 模型。宁可空列表也不把不懂 System One 协议的模型端上来
+    //（见上方说明）。
+    if (protocol === 'chat') return { models: ids, filtered: false, error: undefined }
     const jevModels = ids.filter(id => /jev/i.test(id))
-    // Пустой список вместо всех моделей провайдера: сузить до нуля честнее, чем
-    // предложить модель, которая протоколом System One не отвечает (см. пояснение выше).
     return { models: jevModels, filtered: true, error: undefined }
   } catch (error) {
     return {
@@ -369,15 +398,15 @@ export async function readProviderModels(ctx: HostContext, providerId: string): 
 }
 
 /**
- * Собрать соединение Jev: адрес — из настроек Jev либо шаблоном от провайдера,
- * ключ — из хранилища секретов по ссылке `apiKeyEnv`, модель — из настроек Jev
- * либо первая Jev-модель провайдера.
- * @param ctx - контекст плагина.
- * @param providerId - выбранный провайдер DSH; пусто = провайдера не назвал никто.
- * @param model - выбранная модель; пусто = взять Jev-модель провайдера.
- * @param timeoutMs - тайм-аут одного запроса.
- * @param endpointOverride - адрес из настроек Jev; пусто = взять шаблон от провайдера.
- * @returns соединение либо текст ошибки (как в `parseJevPatch`).
+ * 组装 Jev 连接：地址取 Jev 设置或按所选协议从提供商推导，密钥取宿主密钥库的
+ * `apiKeyEnv` 引用，模型取 Jev 设置或提供商的第一台合适模型。
+ * @param ctx - 插件上下文。
+ * @param providerId - 所选 DSH 提供商；空 = 没有任何一方指定提供商。
+ * @param model - 所选模型；空 = 用提供商的模型（见 `pickJevModel`）。
+ * @param timeoutMs - 单次请求超时毫秒。
+ * @param endpointOverride - Jev 设置里的地址；空 = 按提供商推导模板。
+ * @param protocol - 裁决协议：systemone（默认）或 chat。
+ * @returns 连接或错误文案（与 `parseJevPatch` 同一口径）。
  */
 export async function resolveJevConnection(
   ctx: HostContext,
@@ -385,39 +414,46 @@ export async function resolveJevConnection(
   model: string,
   timeoutMs: number,
   endpointOverride?: string,
+  protocol: JevProtocol = 'systemone',
 ): Promise<JevConnection | string> {
-  // Провайдера мог не назвать никто: ни панель, ни cordis.yml, ни маршрут сессии.
+  // 提供商可能谁都没指定：面板、cordis.yml、会话路由都没有。
   if (providerId.trim() === '') return message('misc.jevProviderUnresolved')
   const rekvisites = await readProviderRekvisites(ctx, providerId)
   if (typeof rekvisites === 'string') return rekvisites
-  // Пустое поле модели означает «взять Jev-модель этого провайдера», а не «любую его
-  // модель»: чат-модель не отвечает протоколом System One, и подстановка ломала бы
-  // судью молча — вместо этого Jev уходит в чистые правила с видимой причиной.
-  const chosenModel = model.trim() !== '' ? model.trim() : pickJevModel(rekvisites.modelIds)
+  // 模型字段留空 = 「用该提供商的模型」：systemone 下聊天模型答不了 System One
+  // 协议，静默代换会把裁决悄悄配坏——不如让 Jev 带着可见原因回落纯规则；
+  // chat 下任何模型都行，取其设置里的第一台。
+  const chosenModel = model.trim() !== '' ? model.trim() : pickJevModel(rekvisites.modelIds, protocol)
   if (chosenModel === undefined) return message('misc.jevModelNotPicked', { provider: providerId })
   const chosen = endpointOverride !== undefined && endpointOverride.trim() !== ''
     ? endpointOverride.trim()
     : undefined
+  // 两协议共用同一守卫：宿主密钥只发往提供商 baseURL 同源，面板不得转投他处。
   if (chosen !== undefined && (rekvisites.baseUrl === undefined || !isTrustedJevEndpoint(rekvisites.baseUrl, chosen))) {
     return message('misc.jevEndpointOriginMismatch', { provider: providerId })
   }
-  const endpoint = chosen ?? (rekvisites.baseUrl === undefined ? undefined : systemOneEndpoint(rekvisites.baseUrl))
+  const endpoint = chosen ?? (rekvisites.baseUrl === undefined
+    ? undefined
+    : protocol === 'chat'
+      ? chatCompletionsEndpoint(rekvisites.baseUrl)
+      : systemOneEndpoint(rekvisites.baseUrl))
   if (endpoint === undefined) {
     return message('misc.jevProviderHasNoBaseUrl', { provider: providerId })
   }
   if (rekvisites.apiKey === '') {
     return message('misc.jevProviderKeyMissing', { provider: providerId, ref: rekvisites.apiKeyEnv ?? '' })
   }
-  return { endpoint, apiKey: rekvisites.apiKey, model: chosenModel, timeoutMs }
+  return { endpoint, apiKey: rekvisites.apiKey, model: chosenModel, timeoutMs, protocol }
 }
 
 /**
- * Первая Jev-модель из настроек провайдера — замена пустому полю модели.
- * Порядок не пересортировываем: он задан пользователем в настройках DSH, и выбранной
- * должна стать та модель, которую он поставил выше.
- * @param modelIds - модели провайдера из его настроек в DSH.
- * @returns имя модели либо `undefined`, если Jev-моделей у провайдера нет.
+ * 提供商设置里第一台合适模型——模型字段留空时的代换值。
+ * 顺序不重排：那是用户在 DSH 设置里亲自排的，选中的就该是他放在前面的那台。
+ * @param modelIds - 提供商在 DSH 设置里的模型。
+ * @param protocol - 裁决协议；systemone 找 Jev 模型，chat 取第一台。
+ * @returns 模型名，或提供商没有合适模型时的 `undefined`。
  */
-function pickJevModel(modelIds: readonly string[]): string | undefined {
-  return modelIds.find(id => /jev/i.test(id))
+function pickJevModel(modelIds: readonly string[], protocol: JevProtocol): string | undefined {
+  // chat：无需 jev 前缀——JSON 契约由客户端自己把守（见 ./client.ts）。
+  return protocol === 'chat' ? modelIds[0] : modelIds.find(id => /jev/i.test(id))
 }

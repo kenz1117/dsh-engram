@@ -15,7 +15,7 @@
  */
 
 import { readFileSync, writeFileSync } from 'node:fs'
-import type { ResolvedJevConfig } from '../config.ts'
+import type { JevProtocol, ResolvedJevConfig } from '../config.ts'
 import type { JudgeProvider } from '../write-disposition.ts'
 import { message } from '../i18n/messages.ts'
 import { createMemoryJudge } from './client.ts'
@@ -30,8 +30,10 @@ export interface JevOverride {
   readonly provider?: string
   /** Модель провайдера (id из его списка моделей). */
   readonly model?: string
-  /** Полный адрес эндпоинта System One; пусто = вывести шаблоном из baseURL провайдера. */
+  /** Полный адрес эндпоинта; пусто = вывести шаблоном из baseURL провайдера по протоколу. */
   readonly endpoint?: string
+  /** Протокол судьи: systemone (приватный Noul) либо chat (OpenAI-совместимый). */
+  readonly protocol?: JevProtocol
   /** Тайм-аут одного запроса в миллисекундах (целое, 1000-60000). */
   readonly timeoutMs?: number
 }
@@ -43,6 +45,7 @@ export interface JevConfigView {
   readonly model: string | undefined
   /** Адрес эндпоинта из настроек; undefined = подставить шаблон от провайдера. */
   readonly endpoint: string | undefined
+  readonly protocol: JevProtocol
   readonly timeoutMs: number
   readonly deferMergeAbove: number
   readonly deferAcceptBelow: number
@@ -72,9 +75,9 @@ export function loadJevOverride(dbDir: string): JevOverride {
 }
 
 /**
- * Свести произвольный JSON к перекрытию: известны четыре поля, остальное отбрасывается.
- * Поля прежнего формата (`apiKey`, `baseUrl`) намеренно не читаются: ключ и адрес
- * больше не хранятся у Jev, их место занял выбор провайдера у хоста.
+ * Свести произвольный JSON к перекрытию: известные поля по одному, остальное
+ * отбрасывается. Поля прежнего формата (`apiKey`, `baseUrl`) намеренно не читаются:
+ * ключ и адрес больше не хранятся у Jev, их место занял выбор провайдера у хоста.
  */
 function collectOverride(value: unknown): JevOverride {
   if (value === null || typeof value !== 'object') return {}
@@ -88,6 +91,8 @@ function collectOverride(value: unknown): JevOverride {
     ...(typeof raw.provider === 'string' && raw.provider !== '' ? { provider: raw.provider } : {}),
     ...(typeof raw.model === 'string' && raw.model !== '' ? { model: raw.model } : {}),
     ...(typeof raw.endpoint === 'string' && raw.endpoint !== '' ? { endpoint: raw.endpoint } : {}),
+    // Файл старой версии ключа protocol не знает: отсутствие = следовать cordis.yml.
+    ...(raw.protocol === 'systemone' || raw.protocol === 'chat' ? { protocol: raw.protocol } : {}),
     ...(typeof raw.timeoutMs === 'number' && Number.isInteger(raw.timeoutMs)
       ? { timeoutMs: raw.timeoutMs }
       : {}),
@@ -113,6 +118,7 @@ export function parseJevPatch(current: JevOverride, patch: Readonly<Record<strin
     provider?: string
     model?: string
     endpoint?: string
+    protocol?: JevProtocol
     timeoutMs?: number
   } = { ...current }
   if (patch.enabled !== undefined) {
@@ -149,6 +155,15 @@ export function parseJevPatch(current: JevOverride, patch: Readonly<Record<strin
       merged.endpoint = trimmed
     }
   }
+  if (patch.protocol !== undefined) {
+    if (typeof patch.protocol !== 'string') return message('misc.jevProtocolMustBeKnown')
+    // Пустая строка = снять выбор протокола (следовать cordis.yml); другое имя —
+    // отказ всей правки целиком, как у прочих негодных полей.
+    const trimmed = patch.protocol.trim()
+    if (trimmed === '') delete merged.protocol
+    else if (trimmed !== 'systemone' && trimmed !== 'chat') return message('misc.jevProtocolMustBeKnown')
+    else merged.protocol = trimmed
+  }
   if (patch.timeoutMs !== undefined) {
     const value = patch.timeoutMs
     if (typeof value !== 'number' || !Number.isInteger(value) || value < 1000 || value > 60000) {
@@ -183,6 +198,9 @@ export function effectiveJevConfig(base: ResolvedJevConfig, override: JevOverrid
     model: named(override.model) ?? named(base.model),
     // Адрес хранится отдельно: пусто означает «подставить шаблон от провайдера».
     endpoint: override.endpoint ?? base.endpoint,
+    // Протокол правит панелью; у базы из yml он уже разрешён (по умолчанию systemone),
+    // поэтому перекрытие без ключа protocol просто наследует его.
+    protocol: override.protocol ?? base.protocol,
     timeoutMs: override.timeoutMs ?? base.timeoutMs,
     deferMergeAbove: base.deferMergeAbove,
     deferAcceptBelow: base.deferAcceptBelow,
@@ -198,6 +216,7 @@ export function jevConfigView(base: ResolvedJevConfig, override: JevOverride): J
     provider: config.provider,
     model: config.model,
     endpoint: config.endpoint,
+    protocol: config.protocol,
     timeoutMs: config.timeoutMs,
     deferMergeAbove: config.deferMergeAbove,
     deferAcceptBelow: config.deferAcceptBelow,
@@ -235,12 +254,13 @@ export function resolveJevField(
       const configured = config.provider
       const model = config.model ?? ''
       const endpoint = config.endpoint
+      const protocol = config.protocol
       const timeoutMs = config.timeoutMs
       return createMemoryJudge(config, () => {
         const provider = configured !== undefined && configured !== ''
           ? configured
           : (routeProvider?.() ?? '')
-        return resolveJevConnection(ctx, provider, model, timeoutMs, endpoint)
+        return resolveJevConnection(ctx, provider, model, timeoutMs, endpoint, protocol)
       })
     },
   }

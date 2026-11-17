@@ -28,6 +28,7 @@ const baseConfig: ResolvedJevConfig = {
   provider: 'aitunnel',
   model: 'jev-1',
   endpoint: undefined,
+  protocol: 'systemone',
   timeoutMs: 3000,
   deferMergeAbove: 0.85,
   deferAcceptBelow: 0.15,
@@ -85,6 +86,8 @@ describe('readJevCatalog', () => {
     expect(catalog.providers.map(provider => provider.id)).toEqual(['aitunnel'])
     expect(catalog.providers[0]?.baseUrl).toBe('https://api.aitunnel.ru/v1')
     expect(catalog.providers[0]?.endpoint).toBe('https://api.aitunnel.ru/v1/systemone')
+    // chat 协议的端点模板随目录一并下发，面板按当前协议取用（#59 chat 通道）。
+    expect(catalog.providers[0]?.chatEndpoint).toBe('https://api.aitunnel.ru/v1/chat/completions')
     expect(catalog.providers[0]?.models).toEqual([{ id: 'jev-1.13', name: 'Jev 1.13' }])
   })
 
@@ -98,6 +101,92 @@ describe('readJevCatalog', () => {
     const catalog = await readJevCatalog(hostWithCatalog({ configurable: [] }))
     expect(catalog.providers.map(provider => provider.id)).toEqual(['deepseek'])
     expect(catalog.providers[0]?.displayName).toBe('DeepSeek')
+  })
+
+  // #59 回归：DSH 自带的 DeepSeek 提供商是平铺配置——settingsPath 声明为空数组、
+  // baseURL 就在 ns 文档根上。修复前空数组被回退成 ['providers', providerId] 嵌套取值，
+  // 取到 undefined，面板对这类提供商一律误报「未在 DSH 中配置」。
+  it('#59 回归:settingsPath 空数组 = 配置在文档根上,照常读出 baseURL 与密钥', async () => {
+    const host: HostContext = {
+      get: (name: string) => {
+        if (name === 'llm') {
+          return {
+            listConfigurableProviders: () => [{
+              provider: 'deepseek',
+              displayName: 'DeepSeek',
+              settingsNs: 'llm-deepseek',
+              settingsPath: [],
+              declared: true,
+            }],
+          }
+        }
+        if (name === 'settings') {
+          return {
+            describe: async () => [{
+              ns: 'llm-deepseek',
+              value: {
+                baseURL: 'https://api.deepseek.com/v1',
+                apiKeyEnv: 'DEEPSEEK_KEY',
+                models: [{ id: 'jev-1.13', name: 'Jev 1.13' }],
+              },
+            }],
+          }
+        }
+        if (name === 'credentials') return { resolve: async () => ({ value: 'ds-key' }) }
+        return undefined
+      },
+    }
+    const catalog = await readJevCatalog(host)
+    expect(catalog.providers.map(provider => provider.id)).toEqual(['deepseek'])
+    expect(catalog.providers[0]?.baseUrl).toBe('https://api.deepseek.com/v1')
+    expect(catalog.providers[0]?.endpoint).toBe('https://api.deepseek.com/v1/systemone')
+    expect(catalog.providers[0]?.chatEndpoint).toBe('https://api.deepseek.com/v1/chat/completions')
+    const connection = await resolveJevConnection(host, 'deepseek', '', 3000)
+    expect(connection).toEqual({
+      endpoint: 'https://api.deepseek.com/v1/systemone',
+      apiKey: 'ds-key',
+      model: 'jev-1.13',
+      timeoutMs: 3000,
+      protocol: 'systemone',
+    })
+  })
+
+  it('#59 回归:settingsPath 未声明才回退旧嵌套约定 [providers, providerId]', async () => {
+    // 与 hostWithCatalog 同构，但 settingsPath 键整个缺失（旧版宿主）。
+    const host: HostContext = {
+      get: (name: string) => {
+        if (name === 'llm') {
+          return {
+            listConfigurableProviders: () => [{
+              provider: 'legacy',
+              displayName: 'Legacy',
+              settingsNs: 'llm-pi-ai',
+              declared: true,
+            }],
+          }
+        }
+        if (name === 'settings') {
+          return {
+            describe: async () => [{
+              ns: 'llm-pi-ai',
+              value: {
+                providers: {
+                  legacy: {
+                    baseURL: 'https://legacy.test/v1',
+                    apiKeyEnv: 'LEGACY_KEY',
+                    models: [{ id: 'jev-1', name: 'Jev 1' }],
+                  },
+                },
+              },
+            }],
+          }
+        }
+        if (name === 'credentials') return { resolve: async () => ({ value: 'legacy-key' }) }
+        return undefined
+      },
+    }
+    const catalog = await readJevCatalog(host)
+    expect(catalog.providers[0]?.baseUrl).toBe('https://legacy.test/v1')
   })
 })
 
@@ -253,6 +342,22 @@ describe('parseJevPatch', () => {
     const result = parseJevPatch(current, { model: 'good', timeoutMs: 1 })
     expect(result).toBe('invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒')
   })
+
+  // #59 chat 通道：协议是面板可覆盖字段，非法值同样整条 patch 拒绝（all-or-nothing）。
+  it('protocol 非法值(非字符串或未知名字):整条 patch 拒绝', () => {
+    expect(parseJevPatch(current, { protocol: 'grpc' })).toBe('invalid: jev.protocol 必须是 systemone|chat')
+    expect(parseJevPatch(current, { protocol: 'SYSTEMONE' })).toBe('invalid: jev.protocol 必须是 systemone|chat')
+    expect(parseJevPatch(current, { protocol: 42 })).toBe('invalid: jev.protocol 必须是 systemone|chat')
+    // 连带 годные 字段一并拒绝，保持 all-or-nothing。
+    expect(parseJevPatch(current, { protocol: 'grpc', model: 'good' })).toBe('invalid: jev.protocol 必须是 systemone|chat')
+  })
+
+  it('protocol 合法值写入;空串清除选择(跟随 yml)', () => {
+    expect(parseJevPatch(current, { protocol: 'chat' })).toEqual({ ...current, protocol: 'chat' })
+    expect(parseJevPatch(current, { protocol: ' systemone ' })).toEqual({ ...current, protocol: 'systemone' })
+    const withProtocol = { ...current, protocol: 'chat' as const }
+    expect(parseJevPatch(withProtocol, { protocol: '' })).toEqual(current)
+  })
 })
 
 describe('effectiveJevConfig', () => {
@@ -297,6 +402,15 @@ describe('effectiveJevConfig', () => {
     const merged = effectiveJevConfig(baseConfig, { enabled: false })
     expect(merged.enabled).toBe(false)
   })
+
+  // #59 chat 通道：protocol 是第六个面板可覆盖字段；覆盖文件（旧版）没有该键时
+  // 合并语义 = 跟随 yml（base 的 protocol 在 resolveConfig 已落默认值 systemone）。
+  it('protocol:面板覆盖优先,缺省继承 yml', () => {
+    expect(effectiveJevConfig(baseConfig, { protocol: 'chat' }).protocol).toBe('chat')
+    expect(effectiveJevConfig(baseConfig, {}).protocol).toBe('systemone')
+    const chatBase = { ...baseConfig, protocol: 'chat' as const }
+    expect(effectiveJevConfig(chatBase, {}).protocol).toBe('chat')
+  })
 })
 
 describe('jevConfigView', () => {
@@ -306,6 +420,7 @@ describe('jevConfigView', () => {
     expect(view.provider).toBe('aitunnel')
     expect(view.model).toBe('jev-1')
     expect(view.endpoint).toBeUndefined()
+    expect(view.protocol).toBe('systemone')
     expect(view.timeoutMs).toBe(3000)
     expect(view.deferMergeAbove).toBe(0.85)
     expect(view.deferAcceptBelow).toBe(0.15)
@@ -316,6 +431,10 @@ describe('jevConfigView', () => {
     const view = jevConfigView({ ...baseConfig, provider: undefined }, {})
     expect(view.enabled).toBe(true)
     expect(view.provider).toBeUndefined()
+  })
+
+  it('панель выбрала chat: вид показывает его, чтобы селектор не прыгал при перезагрузке', () => {
+    expect(jevConfigView(baseConfig, { protocol: 'chat' }).protocol).toBe('chat')
   })
 })
 
@@ -380,6 +499,7 @@ describe('resolveJevConnection: провайдер и модель доопре�
       apiKey: 'host-key',
       model: 'jev-1.13',
       timeoutMs: 3000,
+      protocol: 'systemone',
     })
   })
 
@@ -400,6 +520,33 @@ describe('resolveJevConnection: провайдер и модель доопре�
     expect(typeof result).toBe('string')
     expect(result).toContain('Jev')
     expect(result).not.toContain('aitunnel')
+  })
+
+  // #59 chat 通道：端点推导为 {baseURL}/chat/completions，模型兜底不再要求 jev 前缀。
+  it('chat 协议:端点推导 chat/completions,模型兜底取第一台(无 jev 前缀要求)', async () => {
+    const host = hostWithCatalog({ models: [{ id: 'gpt-4o', name: 'GPT-4o' }, { id: 'claude-3', name: 'Claude' }] })
+    const connection = await resolveJevConnection(host, 'aitunnel', '', 3000, undefined, 'chat')
+    expect(connection).toEqual({
+      endpoint: 'https://api.aitunnel.ru/v1/chat/completions',
+      apiKey: 'host-key',
+      // 顺序不重排：用户排在设置前面的那台优先。
+      model: 'gpt-4o',
+      timeoutMs: 3000,
+      protocol: 'chat',
+    })
+  })
+
+  it('chat 协议:同源守卫不变,跨 origin 的覆写仍被拒绝', async () => {
+    const result = await resolveJevConnection(
+      hostWithCatalog(),
+      'aitunnel',
+      'gpt-4o',
+      3000,
+      'https://attacker.invalid/v1/chat/completions',
+      'chat',
+    )
+    expect(typeof result).toBe('string')
+    expect(result).toContain('同源')
   })
 })
 
@@ -425,5 +572,12 @@ describe('readProviderModels: в подсказки идут только Jev-м
     respond(['gpt-4o', 'claude-3'])
     const list = await readProviderModels(hostWithCatalog(), 'aitunnel')
     expect(list).toEqual({ models: [], filtered: true, error: undefined })
+  })
+
+  // #59 chat 通道：chat 下任何模型都能按 JSON 契约应答，列表整表下发、不收窄。
+  it('chat 协议:整表下发,不按 jev 前缀收窄', async () => {
+    respond(['gpt-4o', 'jev-1.13', 'claude-3'])
+    const list = await readProviderModels(hostWithCatalog(), 'aitunnel', 'chat')
+    expect(list).toEqual({ models: ['claude-3', 'gpt-4o', 'jev-1.13'], filtered: false, error: undefined })
   })
 })

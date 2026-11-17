@@ -33,6 +33,7 @@ import {
 import { en, ru, zh, type EngramKey } from '../../locales/index.ts'
 import { needsTranslation, splitDictionaryPatch, splitFillBatch } from '../../../i18n/dictionary-limits.ts'
 import { windowLeft } from '../../../registry/palace-change.ts'
+import type { JevProtocol } from '../../../config.ts'
 import type { PanelLang } from '../../translate.ts'
 import pluginPackageJson from '../../../../package.json' with { type: 'json' }
 
@@ -784,6 +785,8 @@ interface JevProviderOption {
   readonly displayName: string
   readonly baseUrl: string | undefined
   readonly endpoint: string | undefined
+  /** chat 协议的端点模板（{baseURL}/chat/completions）；旧服务端不下发，缺省 undefined。 */
+  readonly chatEndpoint?: string | undefined
   readonly models: readonly JevModelOption[]
 }
 
@@ -792,6 +795,8 @@ interface JevPanelView {
   readonly provider: string | undefined
   readonly model: string | undefined
   readonly endpoint: string | undefined
+  /** 裁决协议；旧服务端不下发该字段（面板 newer than server），缺省按 systemone 显示。 */
+  readonly protocol?: JevProtocol
   readonly timeoutMs: number
   readonly deferMergeAbove: number
   readonly deferAcceptBelow: number
@@ -853,6 +858,7 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
   const [view, setView] = useState<JevPanelView | null>(null)
   const [enabled, setEnabled] = useState(false)
   const [provider, setProvider] = useState('')
+  const [protocol, setProtocol] = useState<JevProtocol>('systemone')
   const [endpoint, setEndpoint] = useState('')
   const [model, setModel] = useState('')
   const [timeoutMs, setTimeoutMs] = useState('3000')
@@ -878,6 +884,7 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
         setView(data)
         setEnabled(data.enabled)
         setProvider(data.provider ?? '')
+        setProtocol(data.protocol ?? 'systemone')
         setEndpoint(data.endpoint ?? '')
         setModel(data.model ?? '')
         setTimeoutMs(String(data.timeoutMs))
@@ -888,11 +895,30 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
     // toast → 父组件重渲染 → toast 对象换新 → effect 重触发 → 再弹（审计 N19）。
   }, [t, toast.push])
 
+  /** 所选提供商的端点模板：按当前协议取 System One 或 chat/completions 推导值。 */
+  const templateOf = (id: string, forProtocol: JevProtocol): string => {
+    const chosen = (view?.providers ?? []).find(item => item.id === id)
+    if (chosen === undefined) return ''
+    return forProtocol === 'chat' ? (chosen.chatEndpoint ?? '') : (chosen.endpoint ?? '')
+  }
+
   /** Choose a provider and pre-fill the endpoint from its template (the field stays editable). */
   const chooseProvider = (id: string): void => {
     setProvider(id)
-    const chosen = (view?.providers ?? []).find(item => item.id === id)
-    setEndpoint(chosen?.endpoint ?? '')
+    setEndpoint(templateOf(id, protocol))
+    setLiveModels([])
+    setLiveFiltered(false)
+  }
+
+  /** 切协议：端点若还是旧协议的模板（或为空）就换新推导值，用户自定义路径不动。 */
+  const chooseProtocol = (value: string): void => {
+    const next: JevProtocol = value === 'chat' ? 'chat' : 'systemone'
+    setProtocol(next)
+    const current = endpoint.trim()
+    if (current === '' || current === templateOf(provider, 'systemone') || current === templateOf(provider, 'chat')) {
+      setEndpoint(templateOf(provider, next))
+    }
+    // 模型建议的收窄口径随协议变化，旧列表作废重取。
     setLiveModels([])
     setLiveFiltered(false)
   }
@@ -906,6 +932,7 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
       body: JSON.stringify({
         enabled,
         provider,
+        protocol,
         endpoint: endpoint.trim(),
         model: model.trim(),
         timeoutMs: Number(timeoutMs),
@@ -926,7 +953,7 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
     api<{ models: readonly string[]; filtered: boolean; error: string | undefined }>('jev-models', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ provider }),
+      body: JSON.stringify({ provider, protocol }),
     })
       .then((result) => {
         if (result.error !== undefined) {
@@ -964,7 +991,7 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
     }>('jev-test', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ provider, model: model.trim(), endpoint: endpoint.trim() }),
+      body: JSON.stringify({ provider, model: model.trim(), endpoint: endpoint.trim(), protocol }),
     })
       .then((result) => {
         setLastRaw(JSON.stringify({
@@ -995,8 +1022,8 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
     ? liveModels
     : (selected?.models ?? []).map(item => item.id)
 
-  /** Адрес, который уйдёт на сервер: поле панели, а пустое поле — шаблон выбранного провайдера. */
-  const endpointShown = endpoint.trim() !== '' ? endpoint.trim() : (selected?.endpoint ?? '')
+  /** Адрес, который уйдёт на сервер: поле панели, а пустое поле — шаблон выбранного провайдера (по протоколу). */
+  const endpointShown = endpoint.trim() !== '' ? endpoint.trim() : templateOf(provider, protocol)
   /** Слово отказа: по нему видно, что чинить — сеть, тайм-аут или протокол. */
   const kindWord = (kind: JevCheckView['kind']): string => kind === 'http'
     ? t('jevKindHttp')
@@ -1051,9 +1078,20 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
           </select>
           <span className={styles.jevMuted}>{t('jevHostHint')}</span>
         </label>
+        {/* 协议选择（#59 chat 通道）：决定端点推导模板与模型筛选口径，两协议共用同源守卫。 */}
+        <label className={styles.jevField}>
+          <span>{t('jevProtocolLabel')}</span>
+          <select className={styles.input} value={protocol} onChange={event => chooseProtocol(event.target.value)}>
+            <option value="systemone">{t('jevProtocolSystemone')}</option>
+            <option value="chat">{t('jevProtocolChat')}</option>
+          </select>
+          <span className={styles.jevMuted}>{t('jevProtocolHint')}</span>
+        </label>
         <label className={styles.jevField}>
           <span>{t('jevEndpointField')}</span>
-          <input className={styles.input} value={endpoint} placeholder={t('jevEndpointTemplate')}
+          <input className={styles.input} value={endpoint} placeholder={t('jevEndpointTemplate', {
+            path: protocol === 'chat' ? '{base}/chat/completions' : '{base}/systemone',
+          })}
             onChange={event => setEndpoint(event.target.value)} />
         </label>
         <label className={styles.jevField}>
@@ -2099,10 +2137,12 @@ interface StoreStatsView {
   }
 }
 
-/** 运行时：插件/面板版本、持久作业队列、嵌入模型。 */
-function RuntimeSection({ t, reloadTick }: {
+/** 运行时：插件/面板版本、持久作业队列、嵌入模型与嵌入调用计数（本次运行）。 */
+function RuntimeSection({ t, reloadTick, telemetry }: {
   t: T
   reloadTick: number
+  /** 总览遥测：embeds 块来自服务端进程级计数；旧服务端可能不下发，全部可选。 */
+  telemetry: TelemetrySnapshot | null
 }): ReactElement {
   const [version, setVersion] = useState<string | null>(null)
   const [modes, setModes] = useState<{ readonly ingest?: string | undefined; readonly reflect?: string | undefined } | null>(null)
@@ -2131,6 +2171,7 @@ function RuntimeSection({ t, reloadTick }: {
   }, [reloadTick])
 
   const mismatch = version !== null && version !== CLIENT_VERSION
+  const embedFailures = telemetry?.embeds?.failures ?? 0
   return (
     <div>
       <div className={styles.sectionHead}>
@@ -2209,6 +2250,21 @@ function RuntimeSection({ t, reloadTick }: {
         <div className={styles.cardHead}>
           <h3 className={styles.cardTitle}>{t('systemModelStatus')}</h3>
         </div>
+        {/* 嵌入失败可见性（issue #60）：服务端进程「本次运行」的调用/失败计数。
+            embeds 块可选（旧服务端不下发），可选链 + ?? 0 兜底；失败 > 0 时
+            数值复用 metricValueError 的醒目色，错误文本悬停在数值上可看。 */}
+        <div className={styles.logTiles}>
+          <div className={styles.logTile}>
+            <span className={styles.logTileTop}>{t('systemEmbedCalls')}</span>
+            <b className={styles.logTileValue}>{telemetry?.embeds?.attempts ?? 0}</b>
+          </div>
+          <div className={styles.logTile}>
+            <span className={styles.logTileTop}>{t('systemEmbedFailures')}</span>
+            <b className={embedFailures > 0 ? `${styles.logTileValue} ${styles.metricValueError}` : styles.logTileValue}
+              title={telemetry?.embeds?.lastError}>{embedFailures}</b>
+          </div>
+        </div>
+        <p className={styles.sectionHint}>{t('systemEmbedRunScope')}</p>
         {models.length === 0
           ? <p className={styles.sectionHint}>{t('systemModelNone')}</p>
           : (
@@ -2335,7 +2391,7 @@ export function SystemView({
 
   const tt = (key: EngramKey, params?: Record<string, string | number>): string => t(key, params)
 
-  if (section === 'runtime') return <RuntimeSection t={t} reloadTick={reloadTick} />
+  if (section === 'runtime') return <RuntimeSection t={t} reloadTick={reloadTick} telemetry={telemetry} />
   if (section === 'storage') return <StorageSection t={t} reloadTick={reloadTick} />
   if (section === 'logs') {
     return (
