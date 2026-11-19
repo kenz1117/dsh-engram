@@ -635,12 +635,15 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
       <details className={styles.opsDetails}>
         <summary>{t('opsMoreInfo')}</summary>
         <p className={styles.backfillIntro}>{t('backfillIntro')}</p>
+        <p className={styles.backfillMuted}>{t('hintBackfillConfig')}</p>
       </details>
 
-      {/* 导入规则：全部由用户选择（持久化，下次进来沿用）。 */}
+      {/* 导入规则：全部由用户选择（持久化，下次进来沿用）。
+          每个字段标出对应的 cordis.yml 配置键：面板叫「时间窗」，配置叫
+          historyBackfillDays，名字对不上号是 #61 里最常见的困惑。 */}
       <div className={styles.backfillRules}>
         <label className={styles.backfillRule}>
-          <span>{t('backfillDays')}</span>
+          <span>{t('backfillDays')} <span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'historyBackfillDays' })}</span></span>
           <SelectField selectClassName={styles.input} value={days} onChange={event => { setDays(event.target.value) }}>
             <option value="7">{t('backfillDaysUnit', { n: 7 })}</option>
             <option value="30">{t('backfillDaysUnit', { n: 30 })}</option>
@@ -649,18 +652,18 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
           </SelectField>
         </label>
         <label className={styles.backfillRule}>
-          <span>{t('backfillMaxTurns')}</span>
+          <span>{t('backfillMaxTurns')} <span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'historyBackfillMaxTurnsPerSession' })}</span></span>
           <input className={styles.input} type="number" min={1} max={500} value={maxTurns}
             onChange={event => { setMaxTurns(event.target.value) }} />
         </label>
         <label className={styles.backfillRule}>
-          <span>{t('backfillMaxTotal')}</span>
+          <span>{t('backfillMaxTotal')} <span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'historyBackfillMaxTotalTurns' })}</span></span>
           <input className={styles.input} type="number" min={1} max={5000} value={maxTotal}
             onChange={event => { setMaxTotal(event.target.value) }} />
         </label>
         {/* 辅助模型：默认「自动」= 回填时用你当前在用的模型（历史日志里的旧模型可能已不可用）。 */}
         <label className={styles.backfillRule}>
-          <span>{t('backfillModel')}</span>
+          <span>{t('backfillModel')} <span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'provider / model' })}</span></span>
             <SelectField selectClassName={styles.input} value={modelChoice}
               onChange={event => { setModelChoice(event.target.value) }}>
               <option value="">{t('backfillModelAuto')}</option>
@@ -679,16 +682,19 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
           <input type="checkbox" checked={subagents === 'true'}
             onChange={event => { setSubagents(event.target.checked ? 'true' : 'false') }} />
           {t('backfillIncludeSubagents')}
+          {' '}<span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'historyBackfillIncludeSubagents' })}</span>
         </label>
         <label className={styles.backfillToggle}>
           <input type="checkbox" checked={seeded === 'true'}
             onChange={event => { setSeeded(event.target.checked ? 'true' : 'false') }} />
           {t('backfillIncludeSeeded')}
+          {' '}<span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'historyBackfillIncludeSeeded' })}</span>
         </label>
         <label className={styles.backfillToggle}>
           <input type="checkbox" checked={noCwd === 'true'}
             onChange={event => { setNoCwd(event.target.checked ? 'true' : 'false') }} />
           {t('backfillIncludeNoCwd')}
+          {' '}<span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'historyBackfillIncludeNoCwd' })}</span>
         </label>
       </div>
 
@@ -1047,6 +1053,7 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
       <details className={styles.opsDetails}>
         <summary>{t('opsMoreInfo')}</summary>
         <p className={styles.jevIntro}>{t('jevIntro')}</p>
+        <p className={styles.jevMuted}>{t('hintJevConfig')}</p>
       </details>
       <div className={styles.jevToggleRow}>
         <label className={styles.jevToggle}>
@@ -1069,7 +1076,7 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
       </div>
       <div className={styles.jevForm}>
         <label className={styles.jevField}>
-          <span>{t('jevProvider')}</span>
+          <span>{t('jevProvider')} <span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'jev.provider' })}</span></span>
           <select className={styles.input} value={provider} onChange={event => chooseProvider(event.target.value)}>
             <option value="">{t('jevProviderUnset')}</option>
             {(view.providers ?? []).map(item => (
@@ -1080,7 +1087,7 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
         </label>
         {/* 协议选择（#59 chat 通道）：决定端点推导模板与模型筛选口径，两协议共用同源守卫。 */}
         <label className={styles.jevField}>
-          <span>{t('jevProtocolLabel')}</span>
+          <span>{t('jevProtocolLabel')} <span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'jev.protocol' })}</span></span>
           <select className={styles.input} value={protocol} onChange={event => chooseProtocol(event.target.value)}>
             <option value="systemone">{t('jevProtocolSystemone')}</option>
             <option value="chat">{t('jevProtocolChat')}</option>
@@ -1088,14 +1095,14 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
           <span className={styles.jevMuted}>{t('jevProtocolHint')}</span>
         </label>
         <label className={styles.jevField}>
-          <span>{t('jevEndpointField')}</span>
+          <span>{t('jevEndpointField')} <span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'jev.endpoint' })}</span></span>
           <input className={styles.input} value={endpoint} placeholder={t('jevEndpointTemplate', {
             path: protocol === 'chat' ? '{base}/chat/completions' : '{base}/systemone',
           })}
             onChange={event => setEndpoint(event.target.value)} />
         </label>
         <label className={styles.jevField}>
-          <span>{t('jevModel')}</span>
+          <span>{t('jevModel')} <span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'jev.model' })}</span></span>
           <input className={styles.input} value={model} list="jev-model-suggestions"
             onChange={event => setModel(event.target.value)} />
           <datalist id="jev-model-suggestions">
@@ -1108,7 +1115,7 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
             : t('jevModelHint')}</span>
         </label>
         <label className={styles.jevField}>
-          <span>{t('jevTimeoutMs')}</span>
+          <span>{t('jevTimeoutMs')} <span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'jev.timeoutMs' })}</span></span>
           <input className={styles.input} type="number" min={1000} max={60000} value={timeoutMs}
             onChange={event => setTimeoutMs(event.target.value)} />
         </label>
@@ -1119,6 +1126,14 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
         accept: view.deferAcceptBelow,
         contradict: view.contradictMinProbability,
       })}</div>
+      {/* 三个阈值各自对应的配置键：面板把它们并成一行，配置文件里是三个独立键（#61）。 */}
+      <div className={styles.jevMuted}>
+        <span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'jev.deferMergeAbove' })}</span>
+        {' · '}
+        <span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'jev.deferAcceptBelow' })}</span>
+        {' · '}
+        <span className={styles.cfgKey}>{t('cfgKeyLabel', { key: 'jev.contradictMinProbability' })}</span>
+      </div>
       <div className={styles.jevActions}>
         <button type="button" className={`${styles.button} ${styles.primary}`} disabled={busy} onClick={save}>
           {t('jevSave')}

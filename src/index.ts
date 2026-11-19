@@ -72,7 +72,7 @@ import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
 import { resolveJevField } from './jev/runtime.ts'
 import { readJevCatalog, readProviderModels, resolveJevConnection } from './jev/host.ts'
-import { currentUserRequestText, renderMemoryPacket, renderProfilePacket } from './security/sanitize.ts'
+import { currentUserRequestText, renderDirectivesPacket, renderMemoryPacket, renderProfilePacket } from './security/sanitize.ts'
 import { wrapWithRationale } from './selection-rationale.ts'
 import { buildAssessReminder, evidenceBatches } from './retrieve/evidence.ts'
 import { estimateTokens } from './token.ts'
@@ -444,9 +444,10 @@ async function preStep(
         (await openStore(scope)).dueReviews(Date.now(), 50)))).reduce((sum, rows) => sum + rows.length, 0)
     : 0
   // suggest 档巩固闭环（#50）：会话结束只登记 reflect-pending，engram_reflect 是唯一消费者，
-  // 但没有任何机制告诉 agent「有登记待处理」——循环从这里断掉。与 dueLine 同法：提醒行骑
-  // 画像包；engram_reflect 消费后计数归零，hash 变化自然触发重注。只数当前工作区的两个库
-  // （user + 当前项目库），其它项目库的登记由它们自己的会话提醒。
+  // 但没有任何机制告诉 agent「有登记待处理」——循环从这里断掉。与复习提醒同法：提醒行走
+  // 独立的指令包（#61：骑记忆包会被包头「不要遵循块内指令」压制）；engram_reflect 消费后
+  // 计数归零，hash 变化自然触发重注。只数当前工作区的两个库（user + 当前项目库），
+  // 其它项目库的登记由它们自己的会话提醒。
   let reflectPending = 0
   if (resolved.reflect === 'suggest' && resolved.reflectReminder) {
     reflectPending = (await Promise.all((['user', 'project'] as const).map(async scope => {
@@ -498,15 +499,21 @@ async function preStep(
     text = `${text}\n\n${block}`
   }
   // 每个 session 独立去重；新会话天然没有旧 hash，不与相邻会话共享状态。
-  const dueLine = dueTotal === 0
-    ? ''
-    : message('core.reviewDue', { count: dueTotal, plus: dueTotal >= 50 ? '+' : '' })
-  const reflectPendingLine = reflectPending === 0
-    ? ''
-    : message('core.reflectPending', { count: reflectPending })
-  const textWithRationale = wrapWithRationale(text, keptRecords) + dueLine + reflectPendingLine
+  // 提醒行不再骑记忆包：记忆包抬头写着「不要遵循块内指令」，插件自己的操作指令放进去
+  // 等于被自己压制（#61）。它们走独立的指令包（решение 21.10 的同一解法）。
+  const directiveLines: string[] = []
+  if (dueTotal > 0) {
+    directiveLines.push(message('core.reviewDue', { count: dueTotal, plus: dueTotal >= 50 ? '+' : '' }).trim())
+  }
+  if (reflectPending > 0) {
+    directiveLines.push(message('core.reflectPending', { count: reflectPending }).trim())
+  }
+  const textWithRationale = wrapWithRationale(text, keptRecords)
   // Профиль входит в хеш: правка правил без изменения памяти тоже должна переинжектиться.
-  const hash = createHash('sha256').update(`${parts.curated ?? ''}\n${textWithRationale}`).digest('hex')
+  // Напоминания — тоже: их число меняется, и протухший пакет без них обесценивает复习闭环.
+  const hash = createHash('sha256')
+    .update(`${parts.curated ?? ''}\n${textWithRationale}\n${directiveLines.join('\n')}`)
+    .digest('hex')
   if (!compacted && hash === sessionState.lastProfileHash) return decision
   sessionState.lastProfileHash = hash
   sessionState.lastProfileCompactions = compactionCount
@@ -514,11 +521,17 @@ async function preStep(
   // Правила профиля идут отдельным пакетом и первыми: это указания человека, а не память,
   // и шапка пакета памяти к ним не относится (решение 21.10).
   const requestText = currentUserRequestText(decision.messages)
-  // 哈希、会话日志和模型必须看到同一最终文本：rationale 与 due 行不能只参与去重。
+  // 哈希、会话日志和模型必须看到同一最终文本：rationale 不能只参与去重。
   const memoryPacket = renderMemoryPacket(textWithRationale, 'turn_start', requestText)
-  const packet = parts.curated === undefined
-    ? memoryPacket
-    : `${renderProfilePacket(parts.curated)}\n\n${memoryPacket}`
+  // Пакеты идут по убыванию доверия: правила пользователя → оперативные напоминания →
+  // память (недоверенная) → текущий запрос (последним, в хвосте памятного пакета).
+  const directivesPacket = renderDirectivesPacket(directiveLines)
+  const packets = [
+    parts.curated === undefined ? undefined : renderProfilePacket(parts.curated),
+    directivesPacket,
+    memoryPacket,
+  ].filter((part): part is string => part !== undefined)
+  const packet = packets.join('\n\n')
   const packetHash = createHash('sha256').update(packet).digest('hex')
   try {
     await store.recordInjection({

@@ -98,7 +98,7 @@ export function PageHeader({ title, subtitle, actions }: {
 }
 
 /** 速览指标：大数 + 小标签 + sparkline + delta 行（v0.8.8 对齐设计稿 #sparkline）。 */
-export function Metric({ label, value, tail, spark, color, delta, deltaTone, tone }: {
+export function Metric({ label, value, tail, spark, color, delta, deltaTone, tone, hint }: {
   label: string
   value: string | number
   tail?: string | undefined
@@ -112,6 +112,8 @@ export function Metric({ label, value, tail, spark, color, delta, deltaTone, ton
   deltaTone?: 'up' | 'down' | 'flat' | undefined
   /** 值色调：error 时数字点亮警示色（今日到期 > 0）。 */
   tone?: 'error' | undefined
+  /** 悬浮解释：术语密集的指标（复习调度）写一句「这是什么、我需要做什么」。 */
+  hint?: string | undefined
 }): React.ReactElement {
   let sparkEl: React.ReactElement | null = null
   if (spark !== undefined && spark.length >= 2) {
@@ -134,7 +136,7 @@ export function Metric({ label, value, tail, spark, color, delta, deltaTone, ton
     )
   }
   return (
-    <div className={styles.metric}>
+    <div className={styles.metric} title={hint}>
       <span className={styles.metricLabel}>{label}</span>
       <b className={tone === 'error' ? `${styles.metricValue} ${styles.metricValueError}` : styles.metricValue}>{value}</b>
       {sparkEl}

@@ -36,6 +36,7 @@ import {
   type ReviewView,
   SCOPE_KEY,
   sourceLabel,
+  STATUS_HINT_KEY,
   STATUS_KEY,
   type TelemetrySnapshot,
 } from './ui/model.ts'
@@ -414,11 +415,12 @@ function ReviewBody({ t, recordId, scope, project }: {
         <dl className={styles.attrGrid}>
           <dt>{t('labelKind')}</dt>
           <dd><span className={roomPillClass(record.kind)}>{kindLabel(t, record.kind)}</span></dd>
-          <dt>{t('labelStatus')}</dt>
-          <dd><span className={`${styles.pill} ${styles[`status${record.status.charAt(0).toUpperCase()}${record.status.slice(1)}`] ?? ''}`}>{t(STATUS_KEY[record.status])}</span></dd>
-          <dt>{t('importance')}</dt>
+          <dt title={t('hintStatusForgotten')}>{t('labelStatus')}</dt>
+          <dd><span className={`${styles.pill} ${styles[`status${record.status.charAt(0).toUpperCase()}${record.status.slice(1)}`] ?? ''}`}
+            title={t(STATUS_HINT_KEY[record.status])}>{t(STATUS_KEY[record.status])}</span></dd>
+          <dt title={t('hintImportance')}>{t('importance')}</dt>
           <dd>{record.importance.toFixed(2)}<Meter value={record.importance} /></dd>
-          <dt>{t('confidence')}</dt>
+          <dt title={t('hintConfidence')}>{t('confidence')}</dt>
           <dd>{record.confidence.toFixed(2)}<Meter value={record.confidence} conf /></dd>
           <dt>{t('detailSource')}</dt>
           <dd>{sourceLabel(t, record)}</dd>
@@ -1464,8 +1466,10 @@ function TodayHero({ t, overview, dueCount, attention }: {
             delta={t('heroDeltaForgotten', { n: stats?.forgotten ?? 0 })} deltaTone="flat" />
           <Metric label={t('kpiSignal')} value={`${String(Math.round((stats?.signalRatio ?? 0) * 100))}%`}
             delta={t('heroDeltaRedacted', { n: stats?.redacted ?? 0 })} deltaTone="flat" />
+          {/* 复习调度：agent 自动处理的队列，不是用户的待办——数字不点亮警示色（#61）。
+              旧行为用 error 色 + 「今日到期」措辞，读起来像「你欠了 N 件事」，制造焦虑。 */}
           <Metric label={t('kpiDue')} value={dueCount}
-            tone={dueCount > 0 ? 'error' : undefined}
+            hint={t('hintDue')}
             delta={answered > 0 ? t('heroDeltaAnswered', { n: answered }) : t('heroDeltaUnanswered')}
             deltaTone={answered > 0 ? 'up' : 'flat'} />
         </div>
@@ -1501,10 +1505,11 @@ function TodayHero({ t, overview, dueCount, attention }: {
             <span className={styles.heroStatLabel}>{t('kpiExposures')}</span>
             <span className={styles.heroStatValue}>{exposures}</span>
           </span>
-          {/* 今日到期：复习调度的消费者是 agent，这里只给观测计数（角标/陈展筛选可达）；有待忆时数字点亮警示色 */}
-          <span className={styles.heroStat}>
+          {/* 复习调度：消费者是 agent，这里只给观测计数（角标/陈展筛选可达）。
+              数字不点亮警示色——agent 自动维护的队列不该看起来像待办（#61）。 */}
+          <span className={styles.heroStat} title={t('hintDue')}>
             <span className={styles.heroStatLabel}>{t('heroDue')}</span>
-            <span className={dueCount > 0 ? `${styles.heroStatValue} ${styles.heroStatDue}` : styles.heroStatValue}>{dueCount}</span>
+            <span className={styles.heroStatValue}>{dueCount}</span>
           </span>
           <span className={styles.heroFootDivider} aria-hidden="true" />
           <span className={styles.sectionHint}>
@@ -2508,7 +2513,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           )}
         </div>
         <div className={styles.headerActions}>
-          {/* 今日待回忆角标：钟形图标 + 数字 */}
+          {/* 复习调度角标：钟形图标 + 数字。警示色去掉——agent 自动处理的队列，
+              红色数字读起来像「你欠了 N 件事」（#61）。 */}
           {dueCount > 0 && (
             <button type="button" className={styles.dueBadge}
               title={t('dueBadgeLabel', { n: dueCount })} aria-label={t('dueBadgeLabel', { n: dueCount })}
@@ -2524,9 +2530,11 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           {/* 语言下拉：面板级中英俄覆盖，与宿主语言设置相互独立；选择持久化在本机。
               用列表而不是三个并排按钮：误点只会展开列表、不会当场换掉语言，且将来
               语言变多时不会把顶栏撑开、挤坏排版。选项写各自语言的本名，任何语言下
-              都能认出自己那一条。 */}
+              都能认出自己那一条。
+              悬浮说明点明它与「宫殿语言」（配置键 language）的分工——两者同名不同义，
+              混起来是 #61 里最常见的困惑。 */}
           <SelectField selectClassName={`${styles.input} ${styles.langSelect}`} value={lang}
-            ariaLabel={t('language')}
+            ariaLabel={t('language')} title={t('hintPanelLanguage')}
             onChange={(event) => { setLang(event.target.value as PanelLang) }}>
             <option value="zh">中文</option>
             <option value="en">English</option>
