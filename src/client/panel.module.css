@@ -125,9 +125,11 @@
 /* ---------- 项目宫殿工作区下拉（project 作用域下紧贴三宫格同行） ---------- */
 .wsSelect { width: 170px; flex: none; }
 
-/* ---------- 今日待回忆角标（Header；有待回忆时一眼可见，点击直达待回忆卡） ---------- */
-.dueBadge { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 var(--space-3); border-radius: var(--radius-control); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 38%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, var(--dsw-alias-bg-layer-1)); color: var(--dsw-alias-label-primary); font-size: var(--fs-body); font-variant-numeric: tabular-nums; line-height: 1; cursor: pointer; transition: background var(--dur-fast) var(--ease-spring), border-color var(--dur-fast) var(--ease-spring), transform 80ms var(--ease-spring); }
-.dueBadge:hover { border-color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, var(--dsw-alias-bg-layer-1)); }
+/* ---------- 复习调度角标（Header；agent 自动处理的队列，点击直达筛选） ----------
+   旧版用 error 色（红边+红底）——「今日到期」配红字读起来像用户欠账，制造焦虑。
+   这不是错误状态，是 agent 的工作队列：改用品牌色 + 默认边框（#61）。 */
+.dueBadge { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 var(--space-3); border-radius: var(--radius-control); border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font-size: var(--fs-body); font-variant-numeric: tabular-nums; line-height: 1; cursor: pointer; transition: background var(--dur-fast) var(--ease-spring), border-color var(--dur-fast) var(--ease-spring), transform 80ms var(--ease-spring); }
+.dueBadge:hover { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-layer-1)); }
 .dueBadge:active { transform: scale(0.96); }
 /* 角标图标：钟形 + 数字混合。 */
 .dueIcon { width: 12px; height: 12px; flex: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; fill: none; opacity: 0.9; }
@@ -627,6 +629,9 @@ select.input { padding-right: 28px; appearance: none; }
 .jevForm { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 260px)); gap: var(--space-3); }
 .jevField { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
 .jevMuted { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); line-height: 1.5; }
+/* 配置键标注（#61）：面板项旁边直接写出 cordis.yml 里的键名，两边能对上号。
+   等宽 + 极淡：它是指路，不是正文，不该跟标签抢注意力。 */
+.cfgKey { font-family: var(--dsw-font-mono, ui-monospace); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); opacity: 0.75; }
 /* Строка состояния связи: параметры проверки и её последний замер.
    Цифры моноширинные по разрядам, чтобы «1 200 мс» не дёргало соседние слова. */
 .jevCheck { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); line-height: 1.5; font-variant-numeric: tabular-nums; }
@@ -677,8 +682,6 @@ select.input { padding-right: 28px; appearance: none; }
 .heroStat { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
 .heroStatLabel { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
 .heroStatValue { font-size: var(--fs-ctrl); font-weight: 600; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; line-height: 1; }
-/* 今日到期 > 0 时数字点亮警示色，与 Header 待忆角标同语义 */
-.heroStatDue { color: var(--dsw-alias-state-error-primary); }
 .heroFootDivider { width: 1px; height: 12px; background: var(--dsw-alias-border-l2); flex: none; }
 .metric { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding-right: var(--space-5); }
 .metric + .metric { border-left: 1px solid var(--dsw-alias-border-soft); padding-left: var(--space-5); padding-right: 0; }

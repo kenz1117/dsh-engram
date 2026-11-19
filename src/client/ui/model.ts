@@ -87,6 +87,17 @@ export const STATUS_KEY: Record<MemoryRow['status'], EngramKey> = {
   forgotten: 'statusForgotten',
 }
 
+/**
+ * 状态词的悬浮解释（#61）：「封门」与「已闭馆」是同一个操作、「展厅陈列」听着
+ * 还能看其实检索不到——这些隐喻光看字面会理解反，悬浮说明给一句翻译。
+ * 与 STATUS_KEY 同处一表，两边不会漂移。
+ */
+export const STATUS_HINT_KEY: Record<MemoryRow['status'], EngramKey> = {
+  active: 'hintStatusActive',
+  archived: 'hintStatusArchived',
+  forgotten: 'hintStatusForgotten',
+}
+
 export const SCOPE_KEY: Record<MemoryRow['scope'], EngramKey> = {
   user: 'scopeUser',
   project: 'scopeProject',

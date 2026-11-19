@@ -11,7 +11,7 @@ import styles from '../../panel.module.css'
 import { api } from '../../rpc.ts'
 import { usePersistedState, usePersistedString } from '../../UiStorage.ts'
 import { EmptyState, kindLabel, KINDS, roomPillClass, type T } from '../../ui/panel-kit.tsx'
-import { fmtTime, type ListResult, type MemoryRow, PAGE_SIZE, relTime, SCOPE_KEY, sourceLabel, STATUS_KEY } from '../../ui/model.ts'
+import { fmtTime, type ListResult, type MemoryRow, PAGE_SIZE, relTime, SCOPE_KEY, sourceLabel, STATUS_HINT_KEY, STATUS_KEY } from '../../ui/model.ts'
 import type { ToastController } from '../../Toast.tsx'
 
 /** 外部对列表过滤的请求（角标「今日到期」、Atlas 房间跳转）。 */
@@ -164,30 +164,34 @@ export function RecordsPanel({
         </span>
         <div className={styles.segGroup}>
           {([
-            ['all', t('allStatuses')],
-            ['active', t('statusActive')],
-            ['archived', t('statusArchived')],
-            ['forgotten', t('statusForgotten')],
-          ] as const).map(([value, label]) => (
+            ['all', t('allStatuses'), undefined],
+            ['active', t('statusActive'), t('hintStatusActive')],
+            ['archived', t('statusArchived'), t('hintStatusArchived')],
+            ['forgotten', t('statusForgotten'), t('hintStatusForgotten')],
+          ] as const).map(([value, label, hint]) => (
             <button key={value} type="button"
               className={status === value ? `${styles.segItem} ${styles.on}` : styles.segItem}
+              title={hint} aria-label={hint ?? label}
               onClick={() => { setStatus(value); setOffset(0); clearSelection() }}>
               {label}
             </button>
           ))}
         </div>
-        {/* 今日到期：复习调度今天到期的条目（消费者是 agent，这里只做观测筛选）。
+        {/* 复习调度今天到期的条目（消费者是 agent，这里只做观测筛选）。
             单独一个按钮不嵌 .segGroup（没有玻璃指示器可滑动）；用 .chip/.chipOn 的视觉语言
-            让激活态有清晰品牌色提示，跟其他激活态一致。 */}
+            让激活态有清晰品牌色提示，跟其他激活态一致。悬浮说明写明「agent 自动处理、
+            你无需操作」——旧措辞「今日到期」看着像待办，制造焦虑（#61）。 */}
         <button type="button" aria-pressed={dueOnly}
           className={dueOnly ? `${styles.chip} ${styles.chipOn}` : styles.chip}
+          title={t('hintDue')} aria-label={t('hintDue')}
           onClick={() => { setDueOnly(!dueOnly); setOffset(0); clearSelection() }}>
           {t('filterDueToday')}
         </button>
         <div className={styles.segGroup}>
-          {([['time', t('sortTime')], ['tour', t('sortTour')]] as const).map(([value, label]) => (
+          {([['time', t('sortTime'), undefined], ['tour', t('sortTour'), t('hintTour')]] as const).map(([value, label, hint]) => (
             <button key={value} type="button"
               className={sort === value ? `${styles.segItem} ${styles.on}` : styles.segItem}
+              title={hint} aria-label={hint ?? label}
               onClick={() => { setSort(value); setOffset(0); clearSelection() }}>
               {label}
             </button>
@@ -249,7 +253,8 @@ export function RecordsPanel({
                 aria-label={record.content.slice(0, 24)} onChange={() => toggleSelect(record.id)} />
               <div className={styles.itemBody}>
                 <div className={styles.itemTags}>
-                  <span className={`${styles.pill} ${styles[`status${record.status.charAt(0).toUpperCase()}${record.status.slice(1)}`] ?? ''}`}>{t(STATUS_KEY[record.status])}</span>
+                  <span className={`${styles.pill} ${styles[`status${record.status.charAt(0).toUpperCase()}${record.status.slice(1)}`] ?? ''}`}
+                    title={t(STATUS_HINT_KEY[record.status])}>{t(STATUS_KEY[record.status])}</span>
                   <span className={roomPillClass(record.kind)}>{kindLabel(t, record.kind)}</span>
                   {record.slot !== undefined && (
                     <span className={styles.pill}>{record.slot.room}#{record.slot.index}</span>
@@ -268,9 +273,9 @@ export function RecordsPanel({
                 </div>
                 <div className={styles.content}>{record.content}</div>
                 <div className={styles.itemMeta}>
-                  <span><b>{t('importance')}</b> {record.importance.toFixed(2)}</span>
-                  <span><b>{t('confidence')}</b> {record.confidence.toFixed(2)}</span>
-                  <span>{t('accessCount', { n: record.accessCount })}</span>
+                  <span title={t('hintImportance')}><b>{t('importance')}</b> {record.importance.toFixed(2)}</span>
+                  <span title={t('hintConfidence')}><b>{t('confidence')}</b> {record.confidence.toFixed(2)}</span>
+                  <span title={t('hintAccessCount')}>{t('accessCount', { n: record.accessCount })}</span>
                   <span>{sourceLabel(t, record)}</span>
                 </div>
               </div>
@@ -280,7 +285,7 @@ export function RecordsPanel({
                 <button type="button" className={styles.button}
                   onClick={() => { onToggle(record, 'edit') }}>{t('edit')}</button>
                 {record.status === 'active'
-                  ? <button type="button" className={styles.button}
+                  ? <button type="button" className={styles.button} title={t('hintForget')}
                       onClick={() => { act('forget', record) }}>{t('forget')}</button>
                   : <button type="button" className={styles.button}
                       onClick={() => { act('restore', record) }}>{t('restore')}</button>}
