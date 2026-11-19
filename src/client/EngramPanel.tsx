@@ -686,6 +686,13 @@ function PluginCard({ t }: { t: T }): React.ReactElement {
           <span className={styles.pluginMetaLabel}>{t('aboutNpm')}</span>
           <a className={styles.pluginMetaLink} href={PLUGIN_NPM_URL} target="_blank" rel="noreferrer">{pluginPackageJson.name}</a>
         </div>
+        {/* 文档入口（#61）：术语与配置分处仓库、面板、cordis.yml 三处，没有入口就等于没有。
+            「关于」卡是使用者最先找「这看不懂」时去的地方。 */}
+        <div className={styles.pluginMetaItem}>
+          <span className={styles.pluginMetaLabel}>{t('aboutDocs')}</span>
+          <a className={styles.pluginMetaLink} href={`${PLUGIN_REPO_URL}/blob/main/docs/glossary.md`} target="_blank" rel="noreferrer">{t('aboutDocsGlossary')}</a>
+          <a className={styles.pluginMetaLink} href={`${PLUGIN_REPO_URL}/blob/main/docs/config-reference.md`} target="_blank" rel="noreferrer">{t('aboutDocsConfig')}</a>
+        </div>
         <div className={styles.pluginMetaItem}>
           <span className={styles.pluginMetaLabel}>{t('aboutLicense')}</span>
           <span className={styles.pluginMetaVal}>{PLUGIN_LICENSE}</span>

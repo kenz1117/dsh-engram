@@ -4,6 +4,8 @@
 > 配套文档：[术语表](./glossary.md)
 >
 > 所有默认值取自 `src/config.ts` 的 `resolveConfig()`（唯一默认值落地处），所有行号可自行复核。
+>
+> **本表与 `src/config.ts` 同步维护**：新增、改名或调整默认值的配置键，必须一并更新本表（`src/config.ts` 的 `EngramConfig` 注释里有同样的提醒）。表与代码对不上，使用者查到的就是错的。
 
 ---
 

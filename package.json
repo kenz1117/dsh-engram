@@ -1,7 +1,7 @@
 {
   "name": "@kenz1117/dsh-engram",
   "description": "Local-first cross-session long-term memory for DeepSeek Harness: three-scope SQLite stores (user / project / shared), hybrid FTS5 + local-vector retrieval with RRF, an evidence gate, provenance audit and SM-2 spaced repetition. 23 narrow tools, zero external services, zero API keys.",
-  "version": "0.13.14",
+  "version": "0.13.15",
   "icon": "icon.svg",
   "logo": "icon-256.svg",
   "publishConfig": {

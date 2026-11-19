@@ -112,7 +112,13 @@ export interface JevConfig {
   contradictMinProbability?: number
 }
 
-/** 插件配置。 */
+/**
+ * 插件配置。
+ *
+ * 新增/改名/调整默认值的键时，**同步更新** `docs/config-reference.md`（配置速查表，
+ * 逐键说明默认值与取值范围）与 `docs/glossary.md`（界面术语 → 底层字段对照）——
+ * 这两份是使用者查配置与术语的权威索引，漏更会让它们与代码对不上（#61 由来）。
+ */
 export interface EngramConfig {
   /** 两个 SQLite 分库与嵌入模型缓存的根目录；默认 `~/.dsh/engram`。 */
   dbDir?: string
