@@ -283,8 +283,20 @@ export interface EngramStore {
    * 或嵌入不可用返回 undefined。refuted 信念不参与归并。
    */
   nearestObservation(embedding: Float32Array): Promise<{ record: ObservationRecord; similarity: number } | undefined>
-  /** 写入一条结构化审计记录（辅助 LLM 请求等，不进会话日志——下游插件禁止写未知事件类型）。 */
-  audit(op: string, targetId: string, detail: string | null): Promise<void>
+  /**
+   * 写入一条结构化审计记录（辅助 LLM 请求等，不进会话日志——下游插件禁止写未知事件类型）。
+   * 返回该行的 seq（op_log 的自增主键）：它是「操作发生的严格先后」的凭据——
+   * 同一毫秒里的两条操作，时间戳分不出先后，seq 分得出。
+   */
+  audit(op: string, targetId: string, detail: string | null): Promise<number>
+  /**
+   * 统计 seq 大于给定值的操作计数（按 op 分组）。
+   * 闭馆整理的「自上轮以来有没有变更」判定用它：边界是 seq 而不是时间戳，
+   * 因此整理自己写下的那些行（seq 更小）不会被算成「外部变更」。
+   */
+  countOpsSince(seq: number): Promise<Record<string, number>>
+  /** 某个 op 最近一行的 seq；没有则 undefined。 */
+  latestAuditSeq(op: string): Promise<number | undefined>
   /**
    * 写 `meta` 键（upsert）。同一键只有一个当前值，重复写即覆盖。
    * 用于「这库站在哪个模型上」这类基底事实——它们不属于记忆，不该进 op_log；

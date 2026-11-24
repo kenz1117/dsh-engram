@@ -98,6 +98,22 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig({ model: 'v4' })).toThrow(/provider and model/)
   })
 
+  it('consolidation 缺省开启且启动轮延后 60s，显式值透传（#64）', () => {
+    expect(resolveConfig({}).consolidation).toEqual({ enabled: true, startupDelayMs: 60_000 })
+    expect(resolveConfig({ consolidation: {} }).consolidation).toEqual({ enabled: true, startupDelayMs: 60_000 })
+    expect(resolveConfig({ consolidation: { enabled: false } }).consolidation.enabled).toBe(false)
+    expect(resolveConfig({ consolidation: { startupDelayMs: 0 } }).consolidation.startupDelayMs).toBe(0)
+    expect(resolveConfig({ consolidation: { startupDelayMs: 5_000 } }).consolidation.startupDelayMs).toBe(5_000)
+  })
+
+  it('consolidation 非法值与未知键 loud 失败（#64）', () => {
+    expect(() => resolveConfig({ consolidation: { enabled: 'yes' as never } })).toThrow(/consolidation\.enabled/)
+    expect(() => resolveConfig({ consolidation: { startupDelayMs: -1 } })).toThrow(/consolidation\.startupDelayMs/)
+    expect(() => resolveConfig({ consolidation: { startupDelayMs: 86_400_001 } })).toThrow(/consolidation\.startupDelayMs/)
+    expect(() => resolveConfig({ consolidation: { startupDelayMs: 1.5 } })).toThrow(/consolidation\.startupDelayMs/)
+    expect(() => resolveConfig({ consolidation: { onStartup: true } as never })).toThrow(/unknown consolidation key/)
+  })
+
   it('decay 参数越界 loud 失败', () => {
     expect(() => resolveConfig({ decayAfterDays: 0 })).toThrow(/decayAfterDays/)
     expect(() => resolveConfig({ decayImportanceBelow: 2 })).toThrow(/decayImportanceBelow/)
