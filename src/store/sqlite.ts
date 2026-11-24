@@ -1958,7 +1958,12 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         // id 取稳定逻辑身份：优先按 memory_id 定位（active 修订优先），退回按 revision id 直查；
         // 条目缺位或无向量时静默缺位——调用方把「没向量」当「不可比较」处理。
         const row = (sqlGetMemory.get(id) ?? sqlGet.get(id)) as unknown as NodeRow | undefined
-        if (row?.embedding != null && row.embedding.byteLength >= Float32Array.BYTES_PER_ELEMENT) {
+        // 长度非 4 倍数的 BLOB（损坏行）不进结果：blobToVec 读它会抛 RangeError，
+        // 而其余读向量的地方（向量池、打包矩阵）都用同一口径过滤——审计 N10 就是
+        // 为这个立的：一个坏行不该让整条检索链路报错。
+        if (row?.embedding != null
+          && row.embedding.byteLength >= Float32Array.BYTES_PER_ELEMENT
+          && row.embedding.byteLength % Float32Array.BYTES_PER_ELEMENT === 0) {
           vectors.set(id, blobToVec(row.embedding))
         }
       }

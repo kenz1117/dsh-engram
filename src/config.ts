@@ -9,6 +9,7 @@ import z from '@deepseek-ai/schemastery'
 
 import { isLanguageCode, resolveLanguage, type EngramLanguage, type LanguageSetting } from './i18n/language.ts'
 import { legacyJevFields, noteLegacyJevFields } from './jev/stale.ts'
+import { ENGRAM_TOOL_NAMES, isEngramToolName } from './tools/names.ts'
 
 /**
  * 宿主数据根目录：`$DSH_HOME`，缺省 `~/.dsh`。
@@ -221,6 +222,14 @@ export interface EngramConfig {
    * что пакета не хватило. Пробельные строки отбрасываются.
    */
   redactWords?: string[]
+  /**
+   * Инструменты, которые нужно зарегистрировать (белый список, #65).
+   *
+   * Схема инструментов — постоянная стоимость: зарегистрированные описания
+   * видны в каждом запросе. Не записан = все; пустой массив = не регистрировать
+   * ничего; список = только перечисленные.
+   */
+  tools?: string[]
 }
 
 /** 历史回填规则（面板/工具可在默认值之上按次调整；总轮数受硬上限约束）。 */
@@ -337,6 +346,11 @@ export interface ResolvedEngramConfig {
   readonly languageSetting: LanguageSetting | undefined
   /** Слова пользователя для вычистки секретов (действуют поверх языковых наборов). */
   readonly redactWords: readonly string[]
+  /**
+   * Инструменты для регистрации (белый список, #65); undefined = все.
+   * Список пустой = не регистрировать ничего.
+   */
+  readonly tools: readonly string[] | undefined
 }
 
 /** 合法配置键集合（未知键 loud 失败）。 */
@@ -349,7 +363,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'consolidation',
   'historyBackfillDays', 'historyBackfillMaxTurnsPerSession', 'historyBackfillMaxTotalTurns',
   'historyBackfillIncludeSubagents', 'historyBackfillIncludeSeeded', 'historyBackfillIncludeNoCwd',
-  'jev', 'embedder', 'language', 'redactWords',
+  'jev', 'embedder', 'language', 'redactWords', 'tools',
 ])
 
 const INGEST_MODES: ReadonlySet<string> = new Set(['off', 'light', 'eager'])
@@ -426,6 +440,11 @@ export const Config: z<EngramConfig> = z.object({
   // (загрузчик коммитит новое значение в живую ссылку и шлёт loader/volatile-update).
   language: z.string().volatile() as unknown as z<LanguageSetting | { get(): LanguageSetting }>,
   redactWords: z.array(z.string()),
+  // `tools` — белый список регистрируемых инструментов (#65). Семантика трёх
+  // состояний: ключа нет = все; пустой массив = никто; список = только эти.
+  // schemastery по умолчанию ставит для массива `[]`, и «ключа нет» слилось бы с
+  // «пустым списком» — default(undefined) возвращает различию.
+  tools: z.array(z.string()).default(undefined as unknown as string[]),
 })
 
 /**
@@ -464,6 +483,21 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   }
   if (config.panelAccess !== undefined && config.panelAccess !== 'loopback' && config.panelAccess !== 'lan') {
     throw new Error(`dsh-engram: panelAccess must be one of loopback|lan, got "${String(config.panelAccess)}"`)
+  }
+  // 工具白名单（#65）：三态语义——未写 = 全开（存量用户零影响）、空数组 = 全关、
+  // 列表 = 只注册列出的。名字拼错必须 loud 失败：白名单少一个工具等于那个能力
+  // 静默消失，而用户以为它还在。
+  const toolsConfig = config.tools
+  let tools: readonly string[] | undefined
+  if (toolsConfig !== undefined) {
+    const seen = new Set<string>()
+    for (const name of toolsConfig) {
+      if (!isEngramToolName(name)) {
+        throw new Error(`dsh-engram: unknown tool "${name}" in tools (known: ${ENGRAM_TOOL_NAMES.join(', ')})`)
+      }
+      seen.add(name)
+    }
+    tools = [...seen]
   }
   // 闭馆整理子配置（#64）：启动轮默认延后 60s——挂载那一刻就跑整理，等于把本地推理
   // 摆在宿主的开机窗口里（报告人实测 DSH ready 之后主线程仍被占 10–25s）。
@@ -646,6 +680,7 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     language: resolveLanguage(languageSetting ?? 'auto'),
     languageSetting,
     redactWords: config.redactWords ?? [],
+    tools,
     routeOverride: hasProvider && hasModel ? { provider: config.provider!, model: config.model! } : undefined,
     decayAfterDays: config.decayAfterDays ?? 30,
     decayImportanceBelow: config.decayImportanceBelow ?? 0.3,

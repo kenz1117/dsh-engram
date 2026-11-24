@@ -78,6 +78,7 @@ export const zh = {
   'tool.saveFailureEntry': '#{index} {reason}',
   'tool.saveRecallNote': '后续会话可用 engram_search 召回。',
   'tool.saveAcceptedText': '已保存记忆 {id}（kind={kind}, importance={importance}{slot}）。后续会话可用 engram_search 召回。',
+  'tool.saveAcceptedTextNoRecall': '已保存记忆 {id}（kind={kind}, importance={importance}{slot}）。',
   'tool.saveMergeText': '与既有记忆高度重复（相似度 {similarity}），已并入 {mergedInto} 并强化其置信度与访问计数，未新建条目。若这是修正而非复述，请用 engram_update 归并。',
   'tool.saveDeferText': '已保存 {id}。注意：与现有记忆高度相似——{listed}。若这是修正而非新事实，请用 engram_update 归并，或 engram_forget 去重。{placardHint}',
   'tool.contradictionEntry': '「{content}」（id={id}）',
@@ -135,7 +136,7 @@ export const zh = {
 
   // ---- Схема и результат engram_facts ----
   'tool.factsDescription': '实体事实链：查询某实体的时序事实（asOf 时点回看 / includeInvalid 全链展开），或写入与修正事实（facts 数组）。事实是关于具体实体的一条客观陈述（状态/归属/关系/数据）。修正过时事实时传 replaces=旧事实 id：旧事实软失效、新事实接棒，历史链保留——不要反复保存互相矛盾的事实，用取代链表达演变。',
-  'tool.factsEntityIdDescription': '查询模式：实体 id（engram_search/engram_entities 输出中获取；与 entity 二选一，优先）',
+  'tool.factsEntityIdDescription': '查询模式：实体 id（engram_search/engram_facts 输出中获取；与 entity 二选一，优先）',
   'tool.factsEntityDescription': '查询模式：实体名（按名称与别名精确匹配；未命中不新建，返回近似候选）',
   'tool.factsAsOfDescription': '时点回看（ISO 日期或毫秒时间戳）：只看该时点仍有效的事实',
   'tool.factsIncludeInvalidDescription': 'true 展开全链（含已失效事实，查看事实演变历史）',
@@ -465,6 +466,7 @@ export const en = {
   'tool.saveFailureEntry': '#{index} {reason}',
   'tool.saveRecallNote': 'Later sessions can recall it with engram_search.',
   'tool.saveAcceptedText': 'Saved memory {id} (kind={kind}, importance={importance}{slot}). Later sessions can recall it with engram_search.',
+  'tool.saveAcceptedTextNoRecall': 'Saved memory {id} (kind={kind}, importance={importance}{slot}).',
   'tool.saveMergeText': 'Highly duplicated with an existing memory (similarity {similarity}); merged into {mergedInto} and reinforced its confidence and visit count; no new entry was created. If this is a correction rather than a restatement, merge it with engram_update.',
   'tool.saveDeferText': 'Saved {id}. Note: highly similar to existing memories — {listed}. If this is a correction rather than a new fact, merge it with engram_update or deduplicate with engram_forget.{placardHint}',
   'tool.contradictionEntry': '“{content}” (id={id})',
@@ -522,7 +524,7 @@ export const en = {
 
   // ---- engram_facts schema and result ----
   'tool.factsDescription': 'Entity fact chains: query an entity’s facts over time (asOf for a point-in-time lookback / includeInvalid to expand the whole chain), or write and correct facts (the facts array). A fact is one objective statement about a concrete entity (state/ownership/relation/data). When correcting an outdated fact, pass replaces=<old fact id>: the old fact is softly invalidated, the new one takes over and the history chain is kept — do not keep saving contradictory facts; express evolution with a replacement chain.',
-  'tool.factsEntityIdDescription': 'query mode: entity id (obtained from the engram_search/engram_entities output; mutually exclusive with entity and preferred)',
+  'tool.factsEntityIdDescription': 'query mode: entity id (obtained from the engram_search/engram_facts output; mutually exclusive with entity and preferred)',
   'tool.factsEntityDescription': 'query mode: entity name (exact match against names and aliases; a miss creates nothing and returns near candidates)',
   'tool.factsAsOfDescription': 'point-in-time lookback (an ISO date or a millisecond timestamp): only facts still valid at that moment',
   'tool.factsIncludeInvalidDescription': 'true expands the whole chain (including invalidated facts, to see how the fact evolved)',
