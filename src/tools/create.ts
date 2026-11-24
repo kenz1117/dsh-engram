@@ -41,6 +41,8 @@ import type { JudgeProvider, MemoryJudge, WriteDisposition } from '../write-disp
 import type { EngramLanguage } from '../i18n/language.ts'
 import { message } from '../i18n/messages.ts'
 import { resolveRoomInput, roomLabel } from '../i18n/rooms.ts'
+import type { ToolAvailability } from './names.ts'
+import { stripUnavailableToolMentions } from './names.ts'
 
 /** 工具依赖：分库打开器、嵌入器承诺、辅助 LLM 调用与导出目录。 */
 export interface ToolDeps {
@@ -79,6 +81,13 @@ export interface ToolDeps {
     /** 执行：逐会话逐轮摄取（同步等待，受调用方 signal 约束）。 */
     readonly run: (rules: HistoryBackfillRules, signal: AbortSignal) => Promise<HistoryRunResult>
   }
+  /**
+   * 工具可用性（白名单之外的工具对外不存在，#65）；缺省 = 全开。
+   * 工具结果文本里会点到别的工具（「作答前用 engram_assess 判定」），被点名的
+   * 工具不在白名单里时那句话就不该出现——叫 agent 去调一个没注册的工具，
+   * 它只会拿到「工具不存在」。
+   */
+  readonly availability?: ToolAvailability
 }
 
 const KINDS = ['fact', 'preference', 'decision', 'episode', 'skill'] as const
@@ -204,7 +213,7 @@ const STRATEGY_HINT: Record<NextStrategy, () => string> = {
 }
 
 /** 证据门判定的模型可读文本（含被拒绝的 ref 与强制改写说明）。 */
-function renderAssessText(verdict: AssessVerdict, batchId: string): string {
+function renderAssessText(verdict: AssessVerdict, batchId: string, availability?: ToolAvailability): string {
   const lines = [
     verdict.sufficient
       ? message('tool.assessSufficient', { batchId, count: verdict.evidenceRefs.length })
@@ -215,7 +224,11 @@ function renderAssessText(verdict: AssessVerdict, batchId: string): string {
   if (verdict.droppedRefs.length > 0) lines.push(message('tool.assessDroppedRefs', { max: MAX_EVIDENCE_REFS, refs: verdict.droppedRefs.join(message('tool.separatorIdea')) }))
   const missing = `${verdict.missing === '' ? message('tool.assessMissingEmpty') : verdict.missing}${verdict.missingTruncated ? message('tool.assessMissingTruncated') : ''}`
   lines.push(message('tool.assessMissing', { missing }))
-  lines.push(message('tool.assessNextStep', { strategy: verdict.nextStrategy, hint: STRATEGY_HINT[verdict.nextStrategy]() }))
+  // 策略提示里点名别的工具（#65）：白名单之外的工具不该被点名——注记去掉，策略本身保留。
+  const hint = availability === undefined
+    ? STRATEGY_HINT[verdict.nextStrategy]()
+    : stripUnavailableToolMentions(STRATEGY_HINT[verdict.nextStrategy](), availability)
+  lines.push(message('tool.assessNextStep', { strategy: verdict.nextStrategy, hint }))
   if (verdict.forced) {
     lines.push(message('tool.assessForcedNote'))
   }
@@ -293,6 +306,12 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
   }
   /** 批量保存上限（协议内常量：与单轮摄取候选量级对齐，防一次灌入过多）。 */
   const MAX_SAVE_BATCH = 10
+  /**
+   * 工具可用性（#65）：白名单之外的工具对外不存在。
+   * 工具结果文本里点到别的工具时（「下轮用 engram_search 召回」），被点名的工具
+   * 不在白名单里，那半句就不该出现——否则 agent 会被叫去调一个不存在的工具。
+   */
+  const toolAvailable = (name: string): boolean => baseDeps.availability?.has(name) ?? true
 
   /** engram_save 输出视图（schema 放宽后单条/批量字段均可能缺席）。 */
   interface SaveResultView {
@@ -338,7 +357,8 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         const entries = failures.map(entry => message('tool.saveFailureEntry', { index: entry.index + 1, reason: entry.reason }))
         parts.push(message('tool.saveFailuresSummary', { count: failures.length, entries: entries.join(message('tool.separatorSemicolon')) }))
       }
-      parts.push(message('tool.saveRecallNote'))
+      // 召回提示点名 engram_search（#65）：白名单之外没有检索工具，这半句就不该出现。
+      if (toolAvailable('engram_search')) parts.push(message('tool.saveRecallNote'))
       return parts.join(message('tool.separatorSemicolon'))
     }
     if (value.text !== undefined) return value.text
@@ -658,7 +678,10 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         }
       }
       const slot = record.slot === undefined ? '' : `, ${roomLabel(record.slot.room, deps.language)}#${record.slot.index}`
-      const base = message('tool.saveAcceptedText', { id: record.id, kind: record.kind, importance: record.importance, slot })
+      // 召回提示点名 engram_search（#65）：白名单之外没有检索工具，这半句就不该出现。
+      const base = toolAvailable('engram_search')
+        ? message('tool.saveAcceptedText', { id: record.id, kind: record.kind, importance: record.importance, slot })
+        : message('tool.saveAcceptedTextNoRecall', { id: record.id, kind: record.kind, importance: record.importance, slot })
       return { id: record.id, kind: record.kind, importance: record.importance, disposition: 'accept' as const, text: `${base}${placardHint}` }
     },
   })
@@ -770,7 +793,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const prefix = degraded && lines.length > 0 ? message('tool.searchDegradedPrefix') : ''
       const roomNote = rooms === undefined ? '' : message('tool.searchRoomRoutePrefix', { rooms: rooms.join(message('tool.separatorIdea')) })
       const asOfNote = asOfMs === undefined ? '' : message('tool.searchAsOfPrefix', { date: new Date(asOfMs).toISOString().slice(0, 10) })
-      const batchNote = batch === undefined
+      const batchNote = batch === undefined || !toolAvailable('engram_assess')
         ? ''
         : message('tool.searchBatchNote', { batchId: batch.batchId, count: batch.refs.size })
       // 输出包协议标签：记忆正文是不可信历史上下文，当前请求为检索词本身。
@@ -1012,7 +1035,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         rejected: verdict.rejectedRefs,
         strategy: verdict.nextStrategy,
       }))
-      return { sufficient: verdict.sufficient, nextStrategy: verdict.nextStrategy, text: renderAssessText(verdict, batch.batchId) }
+      return { sufficient: verdict.sufficient, nextStrategy: verdict.nextStrategy, text: renderAssessText(verdict, batch.batchId, baseDeps.availability) }
     },
   })
 

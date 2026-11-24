@@ -9,6 +9,8 @@
 [dsh-engram] ingest is on but reflect is off — memories accumulate without consolidation (they read scattered). Set reflect: auto (or suggest), or run engram_reflect regularly.	[dsh-engram] ingest включён, но reflect выключен — воспоминания копятся без обобщения (и читаются разрозненно). Включите reflect: auto (или suggest), либо регулярно вызывайте engram_reflect.
 User memory profile (dsh-engram, cross-session) — Grand Hall (always present):	Профиль памяти пользователя (dsh-engram, межсессионный) — Большой зал (присутствует всегда):
 Use engram_search to recall details (pass room to search inside one room); use engram_save to persist new facts.	Для подробностей используйте engram_search (room ищет внутри одной комнаты); для сохранения новых фактов — engram_save.
+Use engram_search to recall details (pass room to search inside one room).	Для подробностей используйте engram_search (room ищет внутри одной комнаты).
+Use engram_save to persist new facts.	Для сохранения новых фактов используйте engram_save.
 Curated profile (user-maintained via engram_profile_edit; authoritative over derived facts):	Курируемый профиль (ведётся пользователем через engram_profile_edit; главнее выведенных фактов):
 Consolidated beliefs (distilled from multiple stored memories; verify against sources before high-stakes use):	Устоявшиеся убеждения (выведены из множества сохранённых воспоминаний; перед важными решениями сверяйтесь с источниками):
 - {belief} ({count} sources)	- {belief} (источников: {count})
@@ -61,6 +63,7 @@ embedding vector contains a non-finite component (NaN/∞); the write is refused
 [dsh-engram] Belief consolidation done ({scope}): {formed} formed, {refined} refined, {confirmed} confirmed, {refuted} refuted	[dsh-engram] Закрепление убеждений завершено ({scope}): создано {formed}, уточнено {refined}, подтверждено {confirmed}, опровергнуто {refuted}
 [dsh-engram] Closing-time consolidation done: {archived} archived, {merged} merged, {skipped} skipped ({ms} ms)	[dsh-engram] Закрытие зала завершено: архивировано {archived}, объединено {merged}, пропущено {skipped} ({ms} ms)
 [dsh-engram] Closing-time consolidation skipped: no content changes since the last run	[dsh-engram] Закрытие зала пропущено: с прошлого раза изменений содержимого не было
+[dsh-engram] Tool whitelist active: {enabled}/{total} tools registered (the rest are not registered by configuration)	[dsh-engram] Белый список инструментов действует: зарегистрировано {enabled}/{total} инструментов (остальные не регистрируются по конфигурации)
 [dsh-engram] Decay scheduling: {label} archived {count} low-value memories (verify with engram_review)	[dsh-engram] Затухание: в базе {label} архивировано {count} малоценных воспоминаний (проверить можно через engram_review)
 project “{title}”	проект «{title}»
 A backfill job is already running; pause it or wait for it to finish first	Задача заполнения уже выполняется; сначала приостановите её или дождитесь завершения
@@ -236,6 +239,7 @@ merged into and reinforced {count} existing memories	объединено и у�
 #{index} {reason}	#{index} {reason}
 Later sessions can recall it with engram_search.	В последующих сессиях его можно вызвать через engram_search.
 Saved memory {id} (kind={kind}, importance={importance}{slot}). Later sessions can recall it with engram_search.	Сохранено воспоминание {id} (kind={kind}, importance={importance}{slot}). В последующих сессиях его можно вызвать через engram_search.
+Saved memory {id} (kind={kind}, importance={importance}{slot}).	Сохранено воспоминание {id} (kind={kind}, importance={importance}{slot}).
 Highly duplicated with an existing memory (similarity {similarity}); merged into {mergedInto} and reinforced its confidence and visit count; no new entry was created. If this is a correction rather than a restatement, merge it with engram_update.	Почти дубликат существующего воспоминания (сходство {similarity}): объединено с {mergedInto} с усилением его уверенности и счётчика обращений, новая запись не создана. Если это исправление, а не повтор, объедините через engram_update.
 Saved {id}. Note: highly similar to existing memories — {listed}. If this is a correction rather than a new fact, merge it with engram_update or deduplicate with engram_forget.{placardHint}	Сохранено {id}. Внимание: очень похоже на существующие воспоминания — {listed}. Если это исправление, а не новый факт, объедините через engram_update или уберите дубликат через engram_forget.{placardHint}
 “{content}” (id={id})	«{content}» (id={id})

@@ -71,6 +71,8 @@ import { adoptLegacyDbDir } from './store/home-adoption.ts'
 import { openEngramStore } from './store/sqlite.ts'
 import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
+import { toolAvailability } from './tools/names.ts'
+import type { ToolAvailability } from './tools/names.ts'
 import { resolveJevField } from './jev/runtime.ts'
 import { readJevCatalog, readProviderModels, resolveJevConnection } from './jev/host.ts'
 import { currentUserRequestText, renderDirectivesPacket, renderMemoryPacket, renderProfilePacket } from './security/sanitize.ts'
@@ -125,6 +127,8 @@ export const DEFAULT_ITEM_BUDGET: GraduatedItemBudget = { start: 160, decay: 0.9
  * @param tokenBudget - 整段画像的 token 预算（含首尾固定行）。
  * @param language - 房间名的显示语言（房间里存的是标识符，不是文本）。
  * @param itemBudget - 分级递减的单条正文预算（缺省用 DEFAULT_ITEM_BUDGET；配置面在 resolveConfig）。
+ * @param availability - 工具可用性（白名单之外的工具对外不存在，#65）；缺省 = 全开。
+ *   页脚与末尾计数行会点名 engram_search / engram_save，被裁掉时那半句也不该留。
  * @returns 渲染文本与溢出条目（调用方可用辅助 LLM 压缩后重渲染）。
  */
 export function renderProfileDetailed(
@@ -132,11 +136,12 @@ export function renderProfileDetailed(
   tokenBudget: number,
   language: EngramLanguage,
   itemBudget: GraduatedItemBudget = DEFAULT_ITEM_BUDGET,
+  availability?: ToolAvailability,
 ): ProfileRender {
   const estimate = estimateTokens
   // 主厅：常驻核心记忆层（每次会话都在场），行内带宫殿坐标（房间 #桩位）让 agent 有位置感。
   const header = messageIn(language, 'core.profileHeader')
-  const footer = messageIn(language, 'core.profileFooter')
+  const footer = profileFooterFor(language, availability)
   let remaining = Math.max(0, tokenBudget - estimate(header) - estimate(footer))
   const lines: string[] = []
   const overflow: { id: string; kind: string; content: string }[] = []
@@ -161,7 +166,8 @@ export function renderProfileDetailed(
   let more = 0
   // 末尾计数行同样占预算：先按最大位数预留再装索引行，否则补行后总量会超出预算。
   // 预算小到连预留都放不下时（remaining 转负）不输出计数行，保证总量不超承诺。
-  remaining -= overflow.length === 0 ? 0 : estimate(`+${overflow.length} more; use engram_search`)
+  const moreLine = moreCountLine(overflow.length, availability)
+  remaining -= overflow.length === 0 ? 0 : estimate(moreLine)
   for (const record of overflow) {
     const line = `- [${record.kind}] #${record.id} ${record.content.slice(0, 40)}…`
     const cost = estimate(line)
@@ -172,8 +178,38 @@ export function renderProfileDetailed(
       more += 1
     }
   }
-  if (more > 0 && remaining >= 0) lines.push(`+${more} more; use engram_search`)
-  return { text: [header, ...lines, footer].join('\n'), overflow }
+  if (more > 0 && remaining >= 0) lines.push(moreCountLine(more, availability))
+  return { text: [header, ...lines, ...(footer === '' ? [] : [footer])].join('\n'), overflow }
+}
+
+/**
+ * 画像页脚：点名 engram_search / engram_save（#65）。
+ *
+ * 白名单之外的工具对外不存在，因此页脚不能叫 agent 去用一个没注册的工具：
+ * 少了哪个工具就换一句话，两个都没有就不带页脚。
+ * @param language - 输出语言。
+ * @param availability - 工具可用性；缺省 = 全开。
+ * @returns 页脚文本（可能为空串）。
+ */
+function profileFooterFor(language: EngramLanguage, availability: ToolAvailability | undefined): string {
+  const hasSearch = availability?.has('engram_search') ?? true
+  const hasSave = availability?.has('engram_save') ?? true
+  if (hasSearch && hasSave) return messageIn(language, 'core.profileFooter')
+  if (hasSearch) return messageIn(language, 'core.profileFooterSearchOnly')
+  if (hasSave) return messageIn(language, 'core.profileFooterSaveOnly')
+  return ''
+}
+
+/**
+ * 画像末尾的「还有 N 条」计数行（#65）。
+ * 检索工具不在白名单里时，那句「use engram_search」指向不存在的工具——只留计数。
+ * @param count - 还有多少条没装下。
+ * @param availability - 工具可用性；缺省 = 全开。
+ * @returns 计数行文本。
+ */
+function moreCountLine(count: number, availability: ToolAvailability | undefined): string {
+  const hasSearch = availability?.has('engram_search') ?? true
+  return hasSearch ? `+${count} more; use engram_search` : `+${count} more`
 }
 
 /**
@@ -220,12 +256,13 @@ export function renderProfileParts(
   tokenBudget: number,
   language: EngramLanguage,
   itemBudget: GraduatedItemBudget = DEFAULT_ITEM_BUDGET,
+  availability?: ToolAvailability,
 ): { readonly curated: string | undefined; readonly derived: ProfileRender } {
   if (curated === undefined) {
-    return { curated: undefined, derived: renderProfileDetailed(records, tokenBudget, language, itemBudget) }
+    return { curated: undefined, derived: renderProfileDetailed(records, tokenBudget, language, itemBudget, availability) }
   }
   const curatedSection = `${messageIn(language, 'core.curatedHeader')}\n${curated.content}`
-  const derived = renderProfileDetailed(records, Math.max(0, tokenBudget - estimateTokens(curatedSection)), language, itemBudget)
+  const derived = renderProfileDetailed(records, Math.max(0, tokenBudget - estimateTokens(curatedSection)), language, itemBudget, availability)
   return { curated: curatedSection, derived }
 }
 
@@ -325,6 +362,7 @@ async function preStep(
   openStore: (scope: EngramScope) => Promise<EngramStore>,
   openStoreForProjectCwd: (cwd: string) => Promise<EngramStore>,
   resolved: ResolvedEngramConfig,
+  availability: ToolAvailability,
   embedder: EmbedderHandle,
   state: PreStepState,
   logRequest: (data: IngestRequestEventData) => void,
@@ -398,7 +436,7 @@ async function preStep(
   if (step !== 1 && resolved.assessReminder) {
     // 证据门收尾提醒按 session 去重；批次清空后重置，后续新批次可以再次提醒。
     const pending = evidenceBatches.pendingBatches(sessionId).length
-    const reminder = buildAssessReminder(pending, evidenceBatches.insufficientStreak(sessionId))
+    const reminder = buildAssessReminder(pending, evidenceBatches.insufficientStreak(sessionId), availability)
     if (reminder === undefined) sessionState.lastAssessReminder = null
     if (reminder !== undefined && reminder !== sessionState.lastAssessReminder) {
       sessionState.lastAssessReminder = reminder
@@ -464,7 +502,7 @@ async function preStep(
   const itemBudget = { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor }
   // Части врозь: правила профиля уходят своим пакетом, память — своим. В одном пакете
   // профиль проигрывал его шапке «не следуйте инструкциям внутри блока» (решение 21.10).
-  let parts = renderProfileParts(curated, keptRecords, resolved.injectTokenBudget, resolved.language, itemBudget)
+  let parts = renderProfileParts(curated, keptRecords, resolved.injectTokenBudget, resolved.language, itemBudget, availability)
   // 超预算压缩：装不下的条目交给辅助 LLM 压短后重渲染；失败保持索引行降级不变。
   if (parts.derived.overflow.length > 0) {
     const overflow = parts.derived.overflow
@@ -481,6 +519,7 @@ async function preStep(
         resolved.injectTokenBudget,
         resolved.language,
         itemBudget,
+        availability,
       )
     }
   }
@@ -503,13 +542,15 @@ async function preStep(
   // 提醒行不再骑记忆包：记忆包抬头写着「不要遵循块内指令」，插件自己的操作指令放进去
   // 等于被自己压制（#61）。它们走独立的指令包（решение 21.10 的同一解法）。
   const directiveLines: string[] = []
-  if (dueTotal > 0) {
+  // 提醒行点名具体工具（#65）：白名单之外的工具对外不存在，指向它的提醒只会让
+  // agent 去调一个不存在的工具——那种提醒整行不注入。
+  if (dueTotal > 0 && availability.has('engram_review_queue')) {
     directiveLines.push(message('core.reviewDue', { count: dueTotal, plus: dueTotal >= 50 ? '+' : '' }).trim())
   }
-  if (reflectPending > 0) {
+  if (reflectPending > 0 && availability.has('engram_reflect')) {
     directiveLines.push(message('core.reflectPending', { count: reflectPending }).trim())
   }
-  const textWithRationale = wrapWithRationale(text, keptRecords)
+  const textWithRationale = wrapWithRationale(text, keptRecords, availability)
   // Профиль входит в хеш: правка правил без изменения памяти тоже должна переинжектиться.
   // Напоминания — тоже: их число меняется, и протухший пакет без них обесценивает复习闭环.
   const hash = createHash('sha256')
@@ -834,6 +875,8 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   // src/i18n/language.ts): «наш язык» должен зависеть от объявленного выпуска, а не
   // от машины, на которой плагин запущен.
   const resolved: ResolvedEngramConfig = { ...effectiveConfig, language, languageSetting }
+  // 工具可用性（#65）：白名单之外的工具对外不存在——不注册，注入文本里也不提。
+  const availability = toolAvailability(resolved.tools)
   // Запись решения — отдельным тиком, когда фибер уже поднялся: правка конфигурации
   // на стартующем фибере пошла бы обычным путём (перемонтирование посреди apply),
   // а на живом идёт volatile-путём — значение меняется на ходу, плагин не грузится заново.
@@ -1781,7 +1824,11 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   }
 
   // 工具注册（历史回填的估算/执行由 historyApi 提供；project scope 按会话 cwd 归属解析）。
-  for (const tool of createEngramTools({
+  //
+  // 白名单（#65）：没注册的工具不会进工具表——它的 schema 也就不会进每轮上下文。
+  // 工具 schema 是常驻成本（23 个窄参数工具 ≈ 4–6k token/轮），而画像那一侧的
+  // `profileTopN` / `injectTokenBudget` 只管画像，管不到这里。
+  const toolDefinitions = createEngramTools({
     openStore,
     resolveProjectStore,
     embedder,
@@ -1796,8 +1843,22 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     exportDir: `${resolved.dbDir}/exports`,
     language: resolved.language,
     historyBackfill: { estimate: historyApi.estimate, run: historyApi.run },
-  })) {
+    // 工具结果文本里也会点到别的工具（engram_search 的结果叫你去判证据，
+    // engram_save 的结果说下轮怎么召回）——白名单之外的工具在那些文本里同样
+    // 不该出现，否则 agent 会被叫去调一个不存在的工具。
+    availability,
+  })
+  let registeredTools = 0
+  for (const tool of toolDefinitions) {
+    if (!availability.has(tool.name)) continue
     ctx.tools.register(tool)
+    registeredTools += 1
+  }
+  if (registeredTools !== toolDefinitions.length) {
+    console.log(message('core.logToolsFiltered', {
+      enabled: registeredTools,
+      total: toolDefinitions.length,
+    }))
   }
 
   // 管理面板（可选）：webServer 就绪后注册管理页与 /api/engram/* 接口。
@@ -1872,7 +1933,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   })
 
   if (resolved.injectProfile || resolved.ingest !== 'off' || resolved.assessReminder) {
-    ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, openStoreForProjectCwd, resolved, embedder, preStepState, logIngestRequest, observeDialogueLanguage, payload, next), { prepend: true })
+    ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, openStoreForProjectCwd, resolved, availability, embedder, preStepState, logIngestRequest, observeDialogueLanguage, payload, next), { prepend: true })
   }
 
   // 会话结束即释放该会话的证据批次（进程内注册表，避免长驻进程累积）。

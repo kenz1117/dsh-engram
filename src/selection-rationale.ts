@@ -6,13 +6,20 @@
  */
 
 import { message } from './i18n/messages.ts'
+import type { ToolAvailability } from './tools/names.ts'
 import type { MemoryRecord } from './types.ts'
 
 /** 单条记忆的入选原因（可叠加）。 */
 export type Reason = 'recent' | 'bright' | 'corridor-hit' | 'strong-evidence'
 
-/** 给定一组入选记忆，返回归因 XML 字符串；空 rooms 返回空串。 */
-export function buildSelectionRationale(records: readonly MemoryRecord[]): string {
+/**
+ * 给定一组入选记忆，返回归因 XML 字符串；空 rooms 返回空串。
+ * @param records - 入选的记忆。
+ * @param availability - 工具可用性（#65）：归因页脚点名 engram_report，白名单之外
+ *   就没有这半句。
+ * @returns 归因 XML。
+ */
+export function buildSelectionRationale(records: readonly MemoryRecord[], availability?: ToolAvailability): string {
   if (records.length === 0) return ''
   const now = Date.now()
   const lines: string[] = [
@@ -24,13 +31,21 @@ export function buildSelectionRationale(records: readonly MemoryRecord[]): strin
     const reasons = classifyRecord(record, now)
     lines.push(`- #${record.memoryId.slice(0, 8)} [${record.kind}/${record.scope}] ${reasonsLabel(reasons)}：${record.content.slice(0, 40)}${record.content.length > 40 ? '…' : ''}`)
   }
-  lines.push('', message('core.rationaleFooter'), '</engram_selection_rationale>')
+  // 页脚叫 agent 用 engram_report 反馈——工具不在白名单里就没有「反馈」这条路。
+  if (availability?.has('engram_report') ?? true) lines.push('', message('core.rationaleFooter'))
+  lines.push('</engram_selection_rationale>')
   return lines.join('\n')
 }
 
-/** 把画像正文 + 归因拼成最终注入文本。 */
-export function wrapWithRationale(profileText: string, records: readonly MemoryRecord[]): string {
-  const rationale = buildSelectionRationale(records)
+/**
+ * 把画像正文 + 归因拼成最终注入文本。
+ * @param profileText - 画像正文。
+ * @param records - 入选的记忆。
+ * @param availability - 工具可用性（#65）。
+ * @returns 最终注入文本。
+ */
+export function wrapWithRationale(profileText: string, records: readonly MemoryRecord[], availability?: ToolAvailability): string {
+  const rationale = buildSelectionRationale(records, availability)
   return rationale === '' ? profileText : `${rationale}\n\n${profileText}`
 }
 

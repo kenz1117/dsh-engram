@@ -14,6 +14,8 @@ export const zh = {
   // ---- Профиль сессии (renderProfileDetailed / renderProfileParts) ----
   'core.profileHeader': 'User memory profile (dsh-engram, cross-session) — Grand Hall (always present):',
   'core.profileFooter': 'Use engram_search to recall details (pass room to search inside one room); use engram_save to persist new facts.',
+  'core.profileFooterSearchOnly': 'Use engram_search to recall details (pass room to search inside one room).',
+  'core.profileFooterSaveOnly': 'Use engram_save to persist new facts.',
   'core.curatedHeader': 'Curated profile (user-maintained via engram_profile_edit; authoritative over derived facts):',
   'core.observationsHeader': 'Consolidated beliefs (distilled from multiple stored memories; verify against sources before high-stakes use):',
   'core.observationItem': '- {belief} ({count} sources)',
@@ -76,6 +78,7 @@ export const zh = {
   'core.logReflectDone': '[dsh-engram] 信念巩固完成（{scope}）：新建 {formed}，细化 {refined}，维持 {confirmed}，否定 {refuted}',
   'core.logConsolidationDone': '[dsh-engram] 闭馆整理完成：归档 {archived}，合并 {merged}，跳过 {skipped}（{ms} ms）',
   'core.logConsolidationSkipped': '[dsh-engram] 闭馆整理跳过：自上轮以来没有内容变更',
+  'core.logToolsFiltered': '[dsh-engram] 工具白名单生效：注册 {enabled}/{total} 个工具（其余按配置不注册）',
   'core.warnDecayArchived': '[dsh-engram] 衰减调度：{label} 库归档 {count} 条低价值记忆（可在 engram_review 查证）',
   'core.decayTargetProject': 'project「{title}」',
   'core.backfillBusy': '已有回填任务正在运行，请先暂停或等待完成',
@@ -86,6 +89,8 @@ export const en = {
   // ---- Session profile (renderProfileDetailed / renderProfileParts) ----
   'core.profileHeader': 'User memory profile (dsh-engram, cross-session) — Grand Hall (always present):',
   'core.profileFooter': 'Use engram_search to recall details (pass room to search inside one room); use engram_save to persist new facts.',
+  'core.profileFooterSearchOnly': 'Use engram_search to recall details (pass room to search inside one room).',
+  'core.profileFooterSaveOnly': 'Use engram_save to persist new facts.',
   'core.curatedHeader': 'Curated profile (user-maintained via engram_profile_edit; authoritative over derived facts):',
   'core.observationsHeader': 'Consolidated beliefs (distilled from multiple stored memories; verify against sources before high-stakes use):',
   'core.observationItem': '- {belief} ({count} sources)',
@@ -148,6 +153,7 @@ export const en = {
   'core.logReflectDone': '[dsh-engram] Belief consolidation done ({scope}): {formed} formed, {refined} refined, {confirmed} confirmed, {refuted} refuted',
   'core.logConsolidationDone': '[dsh-engram] Closing-time consolidation done: {archived} archived, {merged} merged, {skipped} skipped ({ms} ms)',
   'core.logConsolidationSkipped': '[dsh-engram] Closing-time consolidation skipped: no content changes since the last run',
+  'core.logToolsFiltered': '[dsh-engram] Tool whitelist active: {enabled}/{total} tools registered (the rest are not registered by configuration)',
   'core.warnDecayArchived': '[dsh-engram] Decay scheduling: {label} archived {count} low-value memories (verify with engram_review)',
   'core.decayTargetProject': 'project “{title}”',
   'core.backfillBusy': 'A backfill job is already running; pause it or wait for it to finish first',

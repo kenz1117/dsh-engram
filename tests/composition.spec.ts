@@ -261,6 +261,30 @@ describe('dsh-engram real Loader composition', () => {
     }
   })
 
+  it('tools 白名单：只注册白名单里的工具（#65）', { timeout: 60_000 }, async () => {
+    // 白名单是「工具 schema 常驻成本」的闸门：没注册的工具不会进工具表，
+    // 也就不会进每轮上下文的 schema。
+    const loaded = await loadComposition([
+      '    tools:',
+      "      - 'engram_save'",
+      "      - 'engram_search'",
+    ])
+    const names = loaded.tools.schemas().map(schema => schema.name).filter(name => name.startsWith('engram_'))
+    expect(names.sort()).toEqual(['engram_save', 'engram_search'])
+  })
+
+  it('tools 空数组：一个工具都不注册，插件照常装载（#65）', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition(['    tools: []'])
+    const names = loaded.tools.schemas().map(schema => schema.name).filter(name => name.startsWith('engram_'))
+    expect(names).toHaveLength(0)
+  })
+
+  it('tools 未写：仍是全部 23 个工具（默认向后兼容，#65）', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const names = loaded.tools.schemas().map(schema => schema.name).filter(name => name.startsWith('engram_'))
+    expect(names).toHaveLength(EXPECTED_TOOLS.length)
+  })
+
   it('闭馆整理的启动轮默认延后：装载后不立刻整理（#64）', { timeout: 60_000 }, async () => {
     // 默认 startupDelayMs=60s：整理不再摆在宿主的开机窗口里（报告人实测主线程被占
     // 10–25s 的那笔账）。装载后立刻查 op_log：不该有整理轮。

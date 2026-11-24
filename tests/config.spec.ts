@@ -2,6 +2,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resolveConfig } from '../src/config.ts'
+import type { EngramConfig } from '../src/config.ts'
 
 describe('resolveConfig', () => {
   it('поля Jev прежнего формата не мешают разбору и предупреждают один раз', () => {
@@ -96,6 +97,24 @@ describe('resolveConfig', () => {
   it('provider/model 只给其一 loud 失败', () => {
     expect(() => resolveConfig({ provider: 'deepseek' })).toThrow(/provider and model/)
     expect(() => resolveConfig({ model: 'v4' })).toThrow(/provider and model/)
+  })
+
+  it('tools 白名单三态：未写=全开、空数组=全关、列表=子集（#65）', () => {
+    // 未写 = 全开（存量用户零影响）。
+    expect(resolveConfig({}).tools).toBeUndefined()
+    expect(resolveConfig({} as EngramConfig).tools).toBeUndefined()
+    // 空数组 = 一个都不注册（只保留存储层与面板）。
+    expect(resolveConfig({ tools: [] }).tools).toEqual([])
+    // 列表 = 只注册列出的（去重保序）。
+    expect(resolveConfig({ tools: ['engram_save', 'engram_search', 'engram_save'] }).tools)
+      .toEqual(['engram_save', 'engram_search'])
+  })
+
+  it('tools 里的未知工具名 loud 失败（#65）', () => {
+    // 白名单少一个工具等于那个能力静默消失——拼错必须当场报错，而不是照常启动。
+    expect(() => resolveConfig({ tools: ['engram_sav'] })).toThrow(/unknown tool/)
+    expect(() => resolveConfig({ tools: ['engram_save', 'not_a_tool'] })).toThrow(/not_a_tool/)
+    expect(() => resolveConfig({ tools: ['engram_save'] })).not.toThrow()
   })
 
   it('consolidation 缺省开启且启动轮延后 60s，显式值透传（#64）', () => {

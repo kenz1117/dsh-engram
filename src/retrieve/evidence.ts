@@ -11,6 +11,7 @@
 import type { Slot } from '../types.ts'
 import type { EngramLanguage } from '../i18n/language.ts'
 import { roomLabel } from '../i18n/rooms.ts'
+import type { ToolAvailability } from '../tools/names.ts'
 
 /** 单次判定最多接受的证据条数（有界契约：防止把整个结果集当证据）。 */
 export const MAX_EVIDENCE_REFS = 8
@@ -44,16 +45,36 @@ export const INSUFFICIENT_HINT_THRESHOLD = 2
 
 /**
  * 构造证据门收尾提醒（agent 面向文本，英文与检索工具输出一致）。
+ *
+ * 提醒点名 engram_assess / engram_search / engram_timeline（#65）：白名单之外的工具
+ * 对外不存在——agent 没有 engram_assess 时，提醒它「去调用 engram_assess」毫无意义，
+ * 那种情况下整条提醒都不注入。
  * @param pendingCount - 尚未判定的批次数。
  * @param insufficientStreak - 连续不足判定次数。
- * @returns 提醒文本；无待判定批次返回 undefined（不需要提醒）。
+ * @param availability - 工具可用性；缺省 = 全开。
+ * @returns 提醒文本；无待判定批次或没有判定工具时返回 undefined（不需要提醒）。
  */
-export function buildAssessReminder(pendingCount: number, insufficientStreak: number): string | undefined {
+export function buildAssessReminder(
+  pendingCount: number,
+  insufficientStreak: number,
+  availability?: ToolAvailability,
+): string | undefined {
   if (pendingCount <= 0) return undefined
+  if (!(availability?.has('engram_assess') ?? true)) return undefined
   const base = `Evidence gate: ${pendingCount} search batch(es) from this conversation have not been assessed. `
     + 'Before answering, call engram_assess with the batchId and your evidence refs — or briefly state why assessment is not needed.'
   if (insufficientStreak < INSUFFICIENT_HINT_THRESHOLD) return base
-  return `${base} Multiple insufficient verdicts in a row — try a different room (engram_search room=), engram_timeline, or ask the user for the missing details.`
+  const hasSearch = availability?.has('engram_search') ?? true
+  const hasTimeline = availability?.has('engram_timeline') ?? true
+  if (!hasSearch && !hasTimeline) {
+    return `${base} Multiple insufficient verdicts in a row — ask the user for the missing details.`
+  }
+  const ways = [
+    ...(hasSearch ? ['try a different room (engram_search room=)'] : []),
+    ...(hasTimeline ? ['engram_timeline'] : []),
+    'ask the user for the missing details',
+  ]
+  return `${base} Multiple insufficient verdicts in a row — ${ways.join(', ')}.`
 }
 
 /** 模型提交的判定请求（字段值尚未校验）。 */
