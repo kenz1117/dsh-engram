@@ -50,6 +50,7 @@ import type {
   HistorySessionHeader,
 } from './ingest/history.ts'
 import { runConsolidation } from './consolidation/run.ts'
+import { changedSinceLastConsolidation } from './consolidation/schedule.ts'
 import { startAutoReflectWorker } from './jobs/host-reflect.ts'
 import type { HostedReflectWorker } from './jobs/host-reflect.ts'
 import type { IngestRequestEventData } from './ingest/hook.ts'
@@ -1146,6 +1147,8 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   // 宽限期的量级：本地模型首次下载是分钟级，但那是「后台继续」的部分；这里只限制
   // 「消费者愿意为一次嵌入等多久」——15s 覆盖本地磁盘缓存的常规加载。
   const EMBEDDER_AWAIT_GRACE_MS = 15_000
+  // 预热延后（#64）：模型加载与热身推理是同步的 WASM 工作，开机窗口里不该有它。
+  const EMBEDDER_PREHEAT_DELAY_MS = 10_000
   let embedderPending: Promise<EngramEmbedder | undefined> | undefined
   const embedderAttempt = (): Promise<EngramEmbedder | undefined> => {
     if (embedderPending === undefined) {
@@ -1169,9 +1172,15 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       ]).then(onfulfilled, onrejected)
     },
   }
-  // 预热：挂载即开始加载（旧实现 createEmbedder() 立即执行；句柄化后若无人 await，
+  // 预热：挂载后延后开始加载（旧实现 createEmbedder() 立即执行；句柄化后若无人 await，
   // 首次语义操作才付模型加载延迟——冷启动时首回合候选会拿不到向量且无补救重嵌）。
-  void embedderAttempt()
+  // 延后 10s（#64）：本地模型加载 + 热身推理是同步的 WASM 工作（~1s 主线程占用 +
+  // 数百 MB RSS），摆在开机窗口里会拖住会话列表与首个对话。延后后它落在宿主就绪之后；
+  // 语义不变——任何消费者 await 嵌入器句柄仍会立刻触发加载（15s 宽限）。
+  ctx.effect(() => {
+    const timer = setTimeout(() => { void embedderAttempt() }, EMBEDDER_PREHEAT_DELAY_MS)
+    return () => { clearTimeout(timer) }
+  }, 'dsh-engram: embedder preheat')
   // Эмбеддер держит ONNX-инстанс и память под модель: при выгрузке плагина его надо
   // отпустить, иначе перемонтирование оставляет в процессе ещё один живой инстанс,
   // а память под модель не возвращается. Закрываем независимо от того, успел ли он
@@ -2035,10 +2044,20 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     'dsh-engram: decay timer',
   )
 
-  // 闭馆整理调度：启动一次 + 每日一次；嵌入不可用时仅归档 + 启发式去重，整理结果写 op_log 'consolidation'。
+  // 闭馆整理调度：启动后延后跑一次 + 每日一次；嵌入不可用时仅归档 + 启发式去重，
+  // 整理结果写 op_log 'consolidation'。
+  //
+  // 启动轮为什么延后（#64）：整理要在宿主主线程上做本地推理（一次 ONNX WASM 前向
+  // 2s+），挂在开机那一刻等于让 DSH ready 之后的主线程再被占十几秒——会话列表与首个
+  // 对话都被拖住。报告人实测：整理延后 10 分钟，首行侧栏从 9.7s 回到 2.3s。
+  // 延后只是挪时间，整理本身仍会跑；`consolidation.startupDelayMs: 0` 可回到旧行为。
   const runConsolidateOnce = async (): Promise<void> => {
     try {
       const store = await openStore('user')
+      if (!await changedSinceLastConsolidation(store)) {
+        console.log(message('core.logConsolidationSkipped'))
+        return
+      }
       const report = await runConsolidation(store, embedder, {
         olderThanDays: resolved.decayAfterDays,
         importanceBelow: resolved.decayImportanceBelow,
@@ -2053,12 +2072,20 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       console.warn(message('core.warnConsolidationFailed'), error)
     }
   }
-  void runConsolidateOnce()
-  ctx.effect(
-    () => {
-      const timer = setInterval(() => { void runConsolidateOnce() }, 24 * 60 * 60 * 1000)
-      return () => { clearInterval(timer) }
-    },
-    'dsh-engram: consolidation timer',
-  )
+  if (resolved.consolidation.enabled) {
+    ctx.effect(
+      () => {
+        const timer = setTimeout(() => { void runConsolidateOnce() }, resolved.consolidation.startupDelayMs)
+        return () => { clearTimeout(timer) }
+      },
+      'dsh-engram: consolidation startup timer',
+    )
+    ctx.effect(
+      () => {
+        const timer = setInterval(() => { void runConsolidateOnce() }, 24 * 60 * 60 * 1000)
+        return () => { clearInterval(timer) }
+      },
+      'dsh-engram: consolidation timer',
+    )
+  }
 }

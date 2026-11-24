@@ -261,6 +261,33 @@ describe('dsh-engram real Loader composition', () => {
     }
   })
 
+  it('闭馆整理的启动轮默认延后：装载后不立刻整理（#64）', { timeout: 60_000 }, async () => {
+    // 默认 startupDelayMs=60s：整理不再摆在宿主的开机窗口里（报告人实测主线程被占
+    // 10–25s 的那笔账）。装载后立刻查 op_log：不该有整理轮。
+    await loadComposition()
+    const store = await openEngramStore(join(root!, 'engram', 'user.db'))
+    const ops = (await store.recentOps(100)).filter(op => op.op === 'consolidation')
+    expect(ops).toHaveLength(0)
+    await store.close()
+  })
+
+  it('startupDelayMs=0 时启动轮照跑，并记下整理汇总（#64）', { timeout: 60_000 }, async () => {
+    // 0 = 立即（旧的阻塞行为）：整理轮在装载后跑起来，并把汇总写进 op_log——
+    // 这一行同时是下一轮的分界点（seq 边界）。
+    await loadComposition(['    consolidation:', '      startupDelayMs: 0'])
+    const store = await openEngramStore(join(root!, 'engram', 'user.db'))
+    let rows = [] as { op: string; detail: string | null }[]
+    for (let attempt = 0; attempt < 60 && rows.length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      rows = (await store.recentOps(100)).filter(op => op.op === 'consolidation')
+    }
+    expect(rows.length).toBeGreaterThan(0)
+    const detail = JSON.parse(rows[rows.length - 1]!.detail!) as { scope?: unknown; merged?: unknown }
+    expect(detail.scope).toBe('user')
+    expect(typeof detail.merged).toBe('number')
+    await store.close()
+  })
+
   it('管理页与 API 全链路：页面/统计/列表/更新/遗忘/恢复/导出/回环写守卫', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
     const port = loaded.webServer.port

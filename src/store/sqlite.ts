@@ -666,6 +666,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlReinforce = db.prepare(`UPDATE nodes SET access_count = access_count + 1, last_accessed_at = ?,
     confidence = MIN(1, confidence + ${CONFIDENCE_BUMP}) WHERE id = ?`)
   const sqlLog = db.prepare('INSERT INTO op_log (at, op, target_id, detail) VALUES (?, ?, ?, ?)')
+  // seq 边界的两个查询：闭馆整理的「自上轮以来有没有变更」判定（按 seq 而非时间戳）。
+  const sqlCountOpsSince = db.prepare('SELECT op, COUNT(*) AS n FROM op_log WHERE seq > ? GROUP BY op')
+  const sqlLatestAuditSeq = db.prepare('SELECT MAX(seq) AS s FROM op_log WHERE op = ?')
   const sqlHasAudit = db.prepare('SELECT 1 AS x FROM op_log WHERE op = ? AND detail = ? LIMIT 1')
   const sqlListAudit = db.prepare('SELECT detail FROM op_log WHERE op = ? AND detail IS NOT NULL ORDER BY seq')
   const sqlClearAudit = db.prepare('DELETE FROM op_log WHERE op = ? AND detail = ?')
@@ -2373,7 +2376,22 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     },
 
     async audit(op: string, targetId: string, detail: string | null) {
-      sqlLog.run(Date.now(), op, targetId, detail)
+      // lastInsertRowid = op_log.seq（seq 是 INTEGER PRIMARY KEY AUTOINCREMENT，即 rowid 别名）：
+      // 「这条操作排在所有更早的操作之后」由它给出，比毫秒时间戳精确。
+      const result = sqlLog.run(Date.now(), op, targetId, detail)
+      return Number(result.lastInsertRowid)
+    },
+
+    async countOpsSince(seq: number) {
+      const rows = sqlCountOpsSince.all(seq) as unknown as { op: string; n: number }[]
+      const counts: Record<string, number> = {}
+      for (const row of rows) counts[row.op] = row.n
+      return counts
+    },
+
+    async latestAuditSeq(op: string) {
+      const row = sqlLatestAuditSeq.get(op) as unknown as { s: number | null } | undefined
+      return row?.s == null ? undefined : Number(row.s)
     },
 
     async hasAudit(op: string, detail: string) {

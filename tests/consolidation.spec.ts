@@ -146,4 +146,84 @@ describe('Background Consolidation', () => {
     expect(n).toBe(3)
     rawAgain.close()
   })
+
+  it('#64：条目已带存量向量时不再重嵌——嵌入器一次都不被调用', async () => {
+    // 两条「同义但字面不同」的条目各带同一个 3 维向量：cosine=1 ≥ 0.92 → 应合并。
+    // 正文不同正是关键：只有真去嵌入才谈得上发现同义，存量向量直接给出答案。
+    const vec = new Float32Array([1, 0, 0])
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '偏好 TypeScript', importance: 0.5, confidence: 0.5, embedding: vec })
+    const b = await store.write({ scope: 'user', kind: 'fact', content: '喜欢 TypeScript', importance: 0.6, confidence: 0.5, embedding: vec })
+
+    let embedded = 0
+    const embedder = {
+      model: 'fake',
+      close: async () => {},
+      embed: async (texts: readonly string[]) => {
+        embedded += texts.length
+        return texts.map(() => new Float32Array([0, 1, 0]))
+      },
+    }
+    const report = await runConsolidation(store, Promise.resolve(embedder), { olderThanDays: 30, importanceBelow: 0.3 })
+    expect(embedded).toBe(0)
+    expect(report.merged).toBe(1)
+
+    const actives = await store.topActive('user', 10)
+    expect(actives).toHaveLength(1)
+    expect(actives[0]!.importance).toBe(0.6)
+    expect((await store.get(a.id))?.status).toBe('archived')
+    expect((await store.get(b.id))?.status).toBe('archived')
+  })
+
+  it('#64：存量向量维度不一致时按维分组，既不抛维度不匹配也不跨维合并', async () => {
+    const vec3 = new Float32Array([1, 0, 0])
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '甲', importance: 0.5, confidence: 0.5, embedding: vec3 })
+    const b = await store.write({ scope: 'user', kind: 'fact', content: '乙', importance: 0.6, confidence: 0.5, embedding: vec3 })
+    const c = await store.write({ scope: 'user', kind: 'fact', content: '丙', importance: 0.7, confidence: 0.5, embedding: vec3 })
+    // 直接改库把丙的向量换成 4 维：模拟守卫上线前留下的历史混合库（换过模型的旧数据）。
+    const path = join(dir, 'user.db')
+    const { DatabaseSync } = await import('node:sqlite')
+    const raw = new DatabaseSync(path)
+    raw.prepare('UPDATE nodes SET embedding = ? WHERE id = ?')
+      .run(new Uint8Array(new Float32Array([1, 0, 0, 0]).buffer), c.id)
+    raw.close()
+
+    let embedded = 0
+    const embedder = {
+      model: 'fake',
+      close: async () => {},
+      embed: async (texts: readonly string[]) => {
+        embedded += texts.length
+        return texts.map(() => vec3)
+      },
+    }
+    const report = await runConsolidation(store, Promise.resolve(embedder), { olderThanDays: 30, importanceBelow: 0.3 })
+    expect(embedded).toBe(0)
+    expect(report.merged).toBe(1)
+
+    const actives = await store.topActive('user', 10)
+    // 甲乙同维合并为一条；丙是 4 维，异维不参与比较，留在原处。
+    expect(actives).toHaveLength(2)
+    expect(actives.some(record => record.id === c.id)).toBe(true)
+    expect((await store.get(a.id))?.status).toBe('archived')
+    expect((await store.get(b.id))?.status).toBe('archived')
+  })
+
+  it('#64：缺向量的条目仍走嵌入路径（嵌入器被调用）', async () => {
+    const vec = new Float32Array([1, 0, 0])
+    await store.write({ scope: 'user', kind: 'fact', content: '时区 fact', importance: 0.5, confidence: 0.5 })
+    await store.write({ scope: 'user', kind: 'fact', content: '时区 fact', importance: 0.6, confidence: 0.5 })
+
+    let embedded = 0
+    const embedder = {
+      model: 'fake',
+      close: async () => {},
+      embed: async (texts: readonly string[]) => {
+        embedded += texts.length
+        return texts.map(() => vec)
+      },
+    }
+    const report = await runConsolidation(store, Promise.resolve(embedder), { olderThanDays: 30, importanceBelow: 0.3 })
+    expect(embedded).toBe(2)
+    expect(report.merged).toBe(1)
+  })
 })

@@ -86,6 +86,17 @@ export interface EmbedderConfig {
   timeoutMs?: number
 }
 
+/** 闭馆整理（后台巡检）子配置：启动轮何时跑、要不要跑。 */
+export interface ConsolidationConfig {
+  /** 是否做闭馆整理（归档 + 合并）；默认 true。 */
+  enabled?: boolean
+  /**
+   * 启动后延后多久跑第一轮整理（毫秒）；默认 60000。
+   * 0 = 立即（旧的阻塞行为：整理在挂载那一刻就占住宿主主线程，#64）。
+   */
+  startupDelayMs?: number
+}
+
 /** Jev System One 模型子配置：DEFER 模糊带自动裁决与矛盾边确认；默认关闭时四态判定保持纯规则。 */
 export interface JevConfig {
   /** 是否启用 Jev 裁决；默认 false。 */
@@ -191,6 +202,8 @@ export interface EngramConfig {
   historyBackfillIncludeNoCwd?: boolean
   /** 管理面板 API 的访问面：默认 loopback（行为不变）；lan 放行私网 peer（手机/无头服务器场景，#49）。 */
   panelAccess?: PanelAccessConfig
+  /** 闭馆整理子配置：启动轮延后多少毫秒跑、要不要跑（#64）。 */
+  consolidation?: ConsolidationConfig
   /** Jev System One 裁决子配置；默认关闭（纯规则四态判定，行为与旧版一致）。 */
   jev?: JevConfig
   /** 嵌入器：本地离线模型或远程 OpenAI 兼容端点；默认 local。 */
@@ -240,6 +253,14 @@ export interface ResolvedJevConfig {
   readonly deferMergeAbove: number
   readonly deferAcceptBelow: number
   readonly contradictMinProbability: number
+}
+
+/** 解析后的闭馆整理子配置（默认值已落地）。 */
+export interface ResolvedConsolidationConfig {
+  /** 是否做闭馆整理。 */
+  readonly enabled: boolean
+  /** 启动后延后多久跑第一轮（毫秒）；0 = 立即。 */
+  readonly startupDelayMs: number
 }
 
 /** 解析后的嵌入器子配置（默认值已落地）。 */
@@ -293,6 +314,8 @@ export interface ResolvedEngramConfig {
   readonly reviewScheduling: boolean
   /** 管理面板 API 的访问面（默认 loopback；lan 放行私网 peer 与字面 IP Host/Origin）。 */
   readonly panelAccess: PanelAccessConfig
+  /** 闭馆整理子配置（默认已落地；启动轮默认延后 60s，#64）。 */
+  readonly consolidation: ResolvedConsolidationConfig
   /**
    * Окно собранного условия смены языка дворца, в секундах. Читают оба: панель считает
    * по нему отсчёт, сервер — принимает ли он запрос смены языка (окно истекло — отказ).
@@ -323,6 +346,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'injectTokenBudget', 'injectItemBudgetStart', 'injectItemBudgetDecay', 'injectItemBudgetFloor',
   'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
   'autoSlot', 'reviewScheduling', 'assessReminder', 'reflectReminder', 'palaceChangeWindowSec', 'panelAccess',
+  'consolidation',
   'historyBackfillDays', 'historyBackfillMaxTurnsPerSession', 'historyBackfillMaxTotalTurns',
   'historyBackfillIncludeSubagents', 'historyBackfillIncludeSeeded', 'historyBackfillIncludeNoCwd',
   'jev', 'embedder', 'language', 'redactWords',
@@ -335,6 +359,9 @@ const REFLECT_MODES: ReadonlySet<string> = new Set(['off', 'suggest', 'auto'])
 const EMBEDDER_KEYS: ReadonlySet<string> = new Set([
   'kind', 'localModel', 'localPooling', 'model', 'baseUrl', 'apiKey', 'apiKeyEnv', 'batchSize', 'timeoutMs',
 ])
+
+/** `consolidation` 块的键：未知键按错误处理，而不是静默忽略。 */
+const CONSOLIDATION_KEYS: ReadonlySet<string> = new Set(['enabled', 'startupDelayMs'])
 
 /** Schemastery 校验面（cordis.yml 读取时校验）。 */
 export const Config: z<EngramConfig> = z.object({
@@ -360,6 +387,10 @@ export const Config: z<EngramConfig> = z.object({
   autoSlot: z.boolean(),
   reviewScheduling: z.boolean(),
   panelAccess: z.string() as unknown as z<PanelAccessConfig>,
+  consolidation: z.object({
+    enabled: z.boolean(),
+    startupDelayMs: z.number().step(1).min(0).max(86_400_000),
+  }) as unknown as z<ConsolidationConfig>,
   palaceChangeWindowSec: z.number().step(1).min(5).max(600),
   assessReminder: z.boolean(),
   reflectReminder: z.boolean(),
@@ -433,6 +464,22 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   }
   if (config.panelAccess !== undefined && config.panelAccess !== 'loopback' && config.panelAccess !== 'lan') {
     throw new Error(`dsh-engram: panelAccess must be one of loopback|lan, got "${String(config.panelAccess)}"`)
+  }
+  // 闭馆整理子配置（#64）：启动轮默认延后 60s——挂载那一刻就跑整理，等于把本地推理
+  // 摆在宿主的开机窗口里（报告人实测 DSH ready 之后主线程仍被占 10–25s）。
+  // 0 = 立即（旧的阻塞行为，留给要立刻整理的部署）。
+  const consolidationConfig = config.consolidation
+  if (consolidationConfig !== undefined) {
+    for (const key of Object.keys(consolidationConfig)) {
+      if (!CONSOLIDATION_KEYS.has(key)) throw new Error(`dsh-engram: unknown consolidation key "${key}"`)
+    }
+    if (consolidationConfig.enabled !== undefined && typeof consolidationConfig.enabled !== 'boolean') {
+      throw new Error('dsh-engram: consolidation.enabled must be a boolean')
+    }
+    if (consolidationConfig.startupDelayMs !== undefined
+      && (!Number.isInteger(consolidationConfig.startupDelayMs) || consolidationConfig.startupDelayMs < 0 || consolidationConfig.startupDelayMs > 86_400_000)) {
+      throw new Error('dsh-engram: consolidation.startupDelayMs must be an integer in [0, 86400000] (milliseconds)')
+    }
   }
   const languageSetting = readLanguageSetting(config.language)
   if (languageSetting !== undefined && languageSetting !== 'auto' && !isLanguageCode(languageSetting)) {
@@ -614,6 +661,10 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     autoSlot: config.autoSlot ?? true,
     reviewScheduling: config.reviewScheduling ?? true,
     panelAccess: config.panelAccess ?? 'loopback',
+    consolidation: {
+      enabled: consolidationConfig?.enabled ?? true,
+      startupDelayMs: consolidationConfig?.startupDelayMs ?? 60_000,
+    },
     palaceChangeWindowSec: config.palaceChangeWindowSec ?? 30,
     historyBackfill: {
       days: config.historyBackfillDays ?? 7,
