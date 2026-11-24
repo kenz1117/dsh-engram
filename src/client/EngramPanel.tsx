@@ -888,7 +888,7 @@ const EMPTY_PREVIEWS: readonly { id: string; kind: string; content: string; impo
 
 /** 翻新清单：扫描 active 条目，给出 merge / demote / review / split 四类建议；带手动刷新 + 写回按钮。
  *  - review / split：跳到对应记忆抽屉查看（无副作用）。
- *  - demote：调用 engram_forget（带三问墓志铭），记忆转 archived。
+ *  - demote：调用 engram_forget（带三问墓志铭），记忆转 forgotten（遗忘墓碑桶，进「闭馆考古」视图）。
  *  - merge：触发当前 scope 的 engram_distill（用户级闭馆整理），把多条相似记忆蒸馏为一条高层规律。 */
 function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast, lang }: {
   t: T

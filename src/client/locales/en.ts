@@ -238,7 +238,7 @@ export const en: Record<EngramKey, string> = {
   viewCrashed: 'This view failed to render — click Retry; if it keeps happening, please report with this error message',
   refurbDemoteReasonText: 'Refurb list demotion',
   refurbDemoteAffects: 'None',
-  refurbDemoteStillUseful: 'Restorable via engram_restore',
+  refurbDemoteStillUseful: 'Note kept on demotion: this memory may still be valuable (e.g. still referenced elsewhere); flag it for manual review.',
   versionMismatch: 'Panel ({client}) and backend ({server}) versions differ — restart the DSH app to finish updating; some features may misbehave until then.',
   heroDue: 'Review schedule',
   filterDueToday: 'Review schedule',

@@ -238,7 +238,7 @@ export const zh: Record<EngramKey, string> = {
   viewCrashed: '该视图渲染失败——点击重试；若持续出现，请携带本条错误信息反馈',
   refurbDemoteReasonText: '翻新清单降级',
   refurbDemoteAffects: '无',
-  refurbDemoteStillUseful: '可经 engram_restore 复原',
+  refurbDemoteStillUseful: '降级时保留的备注：这条仍可能有价值（如仍被别处引用），供日后人工复核。',
   versionMismatch: '面板（{client}）与后端（{server}）版本不一致——请重启 DSH 应用完成更新；更新前部分功能可能异常。',
   heroDue: '复习调度',
   filterDueToday: '复习调度',

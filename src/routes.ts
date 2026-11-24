@@ -1347,7 +1347,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           }
           if (req.method === 'GET' && route === 'health') {
             // 健康评分（Memory Prize scorecard）：5 维 0-100，越高宫殿越稳。
-            //   - 信噪比 (0-40)：命中强化 / 候选数，0-1 线性
+            //   - 存量比（字段名 signal，0-40）：active / total，0-1 线性——不是信噪比
             //   - 活跃率 (0-25)：active / total，越接近目标活跃率越满分（user/project=0.85；shared=0.7）
             //   - 走廊密度 (0-15)：edges / active，封顶 0.5
             //   - 涂改率惩罚 (0-10)：redacted 占比反向
